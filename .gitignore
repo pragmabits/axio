@@ -1,0 +1,100 @@
+# ============================================
+# Go - Binaries and Build Artifacts
+# ============================================
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Compiled binaries and executables
+bin/
+dist/
+build/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# ============================================
+# Environment and Configuration
+# ============================================
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Configuration files
+config.*
+.config*
+!config.go
+!config.example.yaml
+
+# ============================================
+# Logs and Data
+# ============================================
+
+# Logs
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================
+# Development and Temporary Files
+# ============================================
+
+# Local development files
+.local
+*.local*
+.reference
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# ============================================
+# IDE and Editor Files
+# ============================================
+
+# JetBrains IDEs (GoLand, IntelliJ)
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# Vim
+*.swp
+*.swo
+
+# Emacs
+*~
+
+# ============================================
+# OS Generated Files
+# ============================================
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

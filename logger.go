@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+var entryPool = sync.Pool{
+	New: func() any { return &Entry{} },
+}
 
 const minimumCallerSkip = 2
 
@@ -23,7 +28,6 @@ type logger struct {
 	hooks       *HookChain
 	metrics     Metrics
 	annotations []Annotation
-	http        *HTTP
 	outputs     []Output
 }
 
@@ -166,17 +170,7 @@ func (l logger) Named(name string) Logger {
 
 func (l logger) With(annotations ...Annotation) Logger {
 	l.clear()
-	for _, annotation := range annotations {
-		if annotation == nil {
-			continue
-		}
-		switch a := annotation.(type) {
-		case *HTTP:
-			l.http = a
-		default:
-			l.annotations = append(l.annotations, annotation)
-		}
-	}
+	l.annotations = append(l.annotations, annotations...)
 	return &l
 }
 
@@ -209,17 +203,24 @@ func (l *logger) log(
 	}
 
 	trace, span, _ := l.trace.Extract(ctx)
-	entry := &Entry{
-		Timestamp:   log.Time,
-		Logger:      log.LoggerName,
-		Caller:      log.Caller.String(),
-		Level:       level,
-		Message:     log.Message,
-		Error:       err,
-		TraceID:     trace,
-		SpanID:      span,
-		Annotations: l.annotations,
-	}
+
+	entry := entryPool.Get().(*Entry)
+	entry.Timestamp = log.Time
+	entry.Logger = log.LoggerName
+	entry.Caller = log.Caller.String()
+	entry.Level = level
+	entry.Message = log.Message
+	entry.Error = err
+	entry.TraceID = trace
+	entry.SpanID = span
+	entry.Annotations = l.annotations
+	entry.Hash = ""
+	entry.PreviousHash = ""
+
+	defer func() {
+		*entry = Entry{}
+		entryPool.Put(entry)
+	}()
 
 	if err := l.hooks.Process(ctx, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "axio: hook error: %v\n", err)
@@ -232,48 +233,85 @@ func (l *logger) log(
 }
 
 func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
-	fields := []zap.Field{
-		zap.String("trace_id", entry.TraceID),
-		zap.String("span_id", entry.SpanID),
-		zap.Error(entry.Error),
-	}
+	var buf [5]zap.Field
+	fields := buf[:0]
 
-	if l.http != nil {
-		fields = append(fields, zap.Object("http", marshaler{l.http}))
+	if entry.TraceID != "" {
+		fields = append(fields, zap.String("trace_id", entry.TraceID))
 	}
-
-	annotationFields := annotationsToFields(entry.Annotations)
-	fields = append(fields, zap.Any("annotations", annotationFields))
+	if entry.SpanID != "" {
+		fields = append(fields, zap.String("span_id", entry.SpanID))
+	}
+	if entry.Error != nil {
+		fields = append(fields, zap.Error(entry.Error))
+	}
+	if annotationFields := annotationsToFields(entry.Annotations); annotationFields != nil {
+		fields = append(fields, annotationFields...)
+	}
 
 	return fields
 }
 
 func annotationsToFields(annotations []Annotation) []zap.Field {
-	fields := make([]zap.Field, len(annotations))
-	for index, annotation := range annotations {
-		fields[index] = toField(annotation.Name(), annotation.Data())
+	if len(annotations) == 0 {
+		return nil
+	}
+
+	expanded := expandAnnotable(annotations)
+	fields := make([]zap.Field, len(expanded))
+	for index := range expanded {
+		fields[index] = expanded[index].field
 	}
 	return fields
 }
 
-func (l *logger) clear() {
-	l.annotations = nil
-	l.http = nil
+// expandAnnotable replaces Annotable annotations with their expanded fields.
+func expandAnnotable(annotations []Annotation) []Annotation {
+	hasAnnotable := false
+	for _, annotation := range annotations {
+		if _, ok := annotation.field.Interface.(Annotable); ok {
+			hasAnnotable = true
+			break
+		}
+	}
+	if !hasAnnotable {
+		return annotations
+	}
+
+	expanded := make([]Annotation, 0, len(annotations))
+	for _, annotation := range annotations {
+		if provider, ok := annotation.field.Interface.(Annotable); ok {
+			expanded = provider.Append(expanded)
+		} else {
+			expanded = append(expanded, annotation)
+		}
+	}
+	return expanded
 }
 
-// formatMessage formats the message with the arguments, recovering from panic
-// if the arguments are incompatible with the format.
-func (l *logger) formatMessage(format string, args ...any) (msg string) {
+func (l *logger) clear() {
+	l.annotations = nil
+}
+
+// formatMessage formats the message with the arguments.
+// When no args are provided, the format string is returned directly
+// without defer overhead.
+func (l *logger) formatMessage(format string, args ...any) string {
+	if len(args) == 0 {
+		return format
+	}
+	return l.sprintfRecover(format, args)
+}
+
+// sprintfRecover calls fmt.Sprintf recovering from panics caused by
+// incompatible format/args combinations.
+func (l *logger) sprintfRecover(format string, args []any) (msg string) {
 	defer func() {
 		if r := recover(); r != nil {
 			msg = fmt.Sprintf("[INVALID FORMAT] format=%q args=%v panic=%v", format, args, r)
 			fmt.Fprintf(os.Stderr, "axio: panic in message formatting: %v\n", r)
 		}
 	}()
-
-	if len(args) == 0 {
-		return format
-	}
 	return fmt.Sprintf(format, args...)
 }
 

@@ -51,5 +51,6 @@ var consoleEncoderConfig = zapcore.EncoderConfig{
 
 // encodeRFC3339NanoUTC encodes the timestamp in UTC using RFC3339 format with nanoseconds.
 func encodeRFC3339NanoUTC(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-	enc.AppendString(t.UTC().Format(time.RFC3339Nano))
+	var buf [len(time.RFC3339Nano) + 10]byte
+	enc.AppendString(string(t.UTC().AppendFormat(buf[:0], time.RFC3339Nano)))
 }

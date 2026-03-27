@@ -240,7 +240,9 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 func (m *PIIMasker) MaskString(input string) string {
 	result := input
 	for _, info := range m.patterns {
-		result = info.regex.ReplaceAllString(result, info.mask)
+		if info.regex.MatchString(result) {
+			result = info.regex.ReplaceAllString(result, info.mask)
+		}
 	}
 	return result
 }
@@ -258,17 +260,15 @@ func (m *PIIMasker) MaskFields(fields Annotations) {
 		return
 	}
 
-	for _, annotation := range fields {
-		if m.isSensitiveField(annotation.Name()) {
-			annotation.Set("[REDACTED]")
+	for index := range fields {
+		if m.isSensitiveField(fields[index].Name()) {
+			fields[index].Set("[REDACTED]")
 			continue
 		}
 
-		switch value := annotation.Data().(type) {
+		switch value := fields[index].Data().(type) {
 		case string:
-			annotation.Set(m.MaskString(value))
-		case []Annotation:
-			m.MaskFields(value)
+			fields[index].Set(m.MaskString(value))
 		default:
 			continue
 		}
@@ -300,9 +300,9 @@ func (m *PIIMasker) MaskStringWithCounts(input string) PIIMaskResult {
 	}
 
 	for _, info := range m.patterns {
-		matches := info.regex.FindAllString(result.Masked, -1)
-		if len(matches) > 0 {
-			result.Matches[info.name] = len(matches)
+		indices := info.regex.FindAllStringIndex(result.Masked, -1)
+		if len(indices) > 0 {
+			result.Matches[info.name] = len(indices)
 			result.Masked = info.regex.ReplaceAllString(result.Masked, info.mask)
 		}
 	}
@@ -321,22 +321,17 @@ func (m *PIIMasker) MaskFieldsWithCounts(fields Annotations) map[PIIPattern]int 
 		return matches
 	}
 
-	for _, annotation := range fields {
-		if m.isSensitiveField(annotation.Name()) {
-			annotation.Set("[REDACTED]")
+	for index := range fields {
+		if m.isSensitiveField(fields[index].Name()) {
+			fields[index].Set("[REDACTED]")
 			continue
 		}
 
-		switch value := annotation.Data().(type) {
+		switch value := fields[index].Data().(type) {
 		case string:
 			result := m.MaskStringWithCounts(value)
-			annotation.Set(result.Masked)
+			fields[index].Set(result.Masked)
 			for pattern, count := range result.Matches {
-				matches[pattern] += count
-			}
-		case []Annotation:
-			subMatches := m.MaskFieldsWithCounts(value)
-			for pattern, count := range subMatches {
 				matches[pattern] += count
 			}
 		}
@@ -347,9 +342,26 @@ func (m *PIIMasker) MaskFieldsWithCounts(fields Annotations) map[PIIPattern]int 
 
 // isSensitiveField checks whether the field name matches any sensitive pattern.
 func (m *PIIMasker) isSensitiveField(fieldName string) bool {
-	lower := strings.ToLower(fieldName)
 	for sensitiveField := range m.fields {
-		if strings.Contains(lower, sensitiveField) {
+		if containsFold(fieldName, sensitiveField) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFold reports whether value contains target, case-insensitively, without allocating.
+// It iterates by byte offset, which is correct for ASCII substrings but may miss
+// matches involving multi-byte Unicode case folding where byte lengths differ.
+func containsFold(value, target string) bool {
+	if len(target) == 0 {
+		return true
+	}
+	if len(target) > len(value) {
+		return false
+	}
+	for index := 0; index <= len(value)-len(target); index++ {
+		if strings.EqualFold(value[index:index+len(target)], target) {
 			return true
 		}
 	}

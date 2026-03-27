@@ -144,7 +144,7 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 		})
 
 		annotations := Annotations{
-			&Note{Key: "document", Value: "123.456.789-01"},
+			Annotate("document", "123.456.789-01"),
 		}
 
 		masker.MaskFields(annotations)
@@ -160,9 +160,9 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 		})
 
 		annotations := Annotations{
-			&Note{Key: "user_password", Value: "secret123"},
-			&Note{Key: "api_token", Value: "abc123"},
-			&Note{Key: "username", Value: "john"},
+			Annotate("user_password", "secret123"),
+			Annotate("api_token", "abc123"),
+			Annotate("username", "john"),
 		}
 
 		masker.MaskFields(annotations)
@@ -276,7 +276,7 @@ func TestPIIHook(t *testing.T) {
 		entry := &Entry{
 			Message: "log",
 			Annotations: Annotations{
-				&Note{Key: "email", Value: "user@test.com"},
+				Annotate("email", "user@test.com"),
 			},
 		}
 

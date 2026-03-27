@@ -232,14 +232,14 @@ func TestLogger_WithHTTP(t *testing.T) {
 	assertNoError(t, err)
 	defer logger.Close()
 
-	httpAnnotation := &HTTP{
+	httpAnnotation := HTTP{
 		Method:     "POST",
 		URL:        "/api/users",
 		StatusCode: 201,
 		LatencyMS:  45,
 	}
 
-	logger.With(httpAnnotation).Info(context.Background(), "http request")
+	logger.With(Annotate("http", httpAnnotation)).Info(context.Background(), "http request")
 
 	content := readFile(t, path)
 	if !strings.Contains(content, "POST") {
@@ -279,8 +279,8 @@ func TestLogger_WithNilAnnotation(t *testing.T) {
 	assertNoError(t, err)
 	defer logger.Close()
 
-	// Should not panic
-	logger.With(nil).Info(context.Background(), "test")
+	// Should not panic with empty annotations
+	logger.With().Info(context.Background(), "test")
 }
 
 func TestLogger_Close(t *testing.T) {
@@ -307,6 +307,53 @@ func TestLogger_Close(t *testing.T) {
 		logger.Close()
 		// Second call should not cause a serious error
 		logger.Close()
+	})
+}
+
+func TestLogger_OmitsEmptyTraceAndError(t *testing.T) {
+	path := tempFile(t, "omit.log")
+	config := Config{
+		ServiceName: "test",
+		Environment: Development,
+		Level:       LevelDebug,
+		Outputs: []OutputConfig{
+			{Type: OutputFile, Format: FormatJSON, Path: path},
+		},
+	}
+
+	logger, err := New(config)
+	assertNoError(t, err)
+	defer logger.Close()
+
+	ctx := context.Background()
+
+	t.Run("no_trace_no_error_omits_fields", func(t *testing.T) {
+		logger.Info(ctx, "clean message")
+
+		content := readFile(t, path)
+		if strings.Contains(content, `"trace_id"`) {
+			t.Error("trace_id should be omitted when empty")
+		}
+		if strings.Contains(content, `"span_id"`) {
+			t.Error("span_id should be omitted when empty")
+		}
+		// "error" key from zap.Error should not appear when nil
+		// Check that there's no "error":null in the output
+		if strings.Contains(content, `"error"`) {
+			t.Error("error should be omitted when nil")
+		}
+	})
+
+	t.Run("error_present_when_set", func(t *testing.T) {
+		logger.Error(ctx, errors.New("something broke"), "error message")
+
+		content := readFile(t, path)
+		if !strings.Contains(content, `"error"`) {
+			t.Error("error field should be present when error is set")
+		}
+		if !strings.Contains(content, "something broke") {
+			t.Error("error value should appear in log")
+		}
 	})
 }
 

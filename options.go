@@ -165,7 +165,6 @@ func WithAudit(storePath string) Option {
 //   - logs.total: Log counter by level
 //   - pii.masked: Masked PII counter by pattern
 //   - audit.records: Audit records counter
-//   - output.errors: Write errors counter by output type
 //   - hook.duration: Hook duration histogram
 //
 // Example:

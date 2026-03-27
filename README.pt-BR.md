@@ -637,7 +637,6 @@ Axio emite métricas sobre o próprio processo de logging, permitindo monitorar 
 | `logs.total`    | Counter   | `level`              | Total de logs emitidos         |
 | `pii.masked`    | Counter   | `pattern`            | Ocorrências de PII mascaradas  |
 | `audit.records` | Counter   | -                    | Registros de auditoria criados |
-| `output.errors` | Counter   | `output.type`        | Erros de escrita em outputs    |
 | `hook.duration` | Histogram | `hook.name`, `error` | Duração de execução de hooks   |
 
 #### Configuração
@@ -661,7 +660,6 @@ type Metrics interface {
     LogsTotal(ctx context.Context, level Level)
     PIIMasked(ctx context.Context, pattern PIIPattern)
     AuditRecords(ctx context.Context)
-    OutputErrors(ctx context.Context, output OutputType)
     HookDuration(ctx context.Context, hookName string, duration time.Duration)
     HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }

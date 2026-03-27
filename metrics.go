@@ -20,7 +20,6 @@ import (
 //   - Log count by level
 //   - Masked PII count by type
 //   - Audit records count
-//   - Output write errors
 //   - Hook execution duration
 //
 // Implementations must be thread-safe, as methods can be
@@ -43,8 +42,6 @@ type Metrics interface {
 	PIIMasked(ctx context.Context, pattern PIIPattern)
 	// AuditRecords increments the counter of created audit records.
 	AuditRecords(ctx context.Context)
-	// OutputErrors increments the counter when an output fails to write.
-	OutputErrors(ctx context.Context, output OutputType)
 	// HookDuration records the execution duration of a hook.
 	HookDuration(ctx context.Context, hookName string, duration time.Duration)
 	// HookDurationWithError records the execution duration of a hook with error status.
@@ -65,9 +62,6 @@ func (NoopMetrics) PIIMasked(context.Context, PIIPattern) {}
 // AuditRecords does nothing.
 func (NoopMetrics) AuditRecords(context.Context) {}
 
-// OutputErrors does nothing.
-func (NoopMetrics) OutputErrors(context.Context, OutputType) {}
-
 // HookDuration does nothing.
 func (NoopMetrics) HookDuration(context.Context, string, time.Duration) {}
 
@@ -79,7 +73,6 @@ type otelMetrics struct {
 	logsTotal    metric.Int64Counter
 	piiMasked    metric.Int64Counter
 	auditRecords metric.Int64Counter
-	outputErrors metric.Int64Counter
 	hookDuration metric.Float64Histogram
 }
 
@@ -117,15 +110,6 @@ func newOtelMetrics(provider metric.MeterProvider, config MetricsConfig) (*otelM
 		return nil, fmt.Errorf("%w: audit.records: %w", ErrCreateMetric, err)
 	}
 
-	outputErrors, err := meter.Int64Counter(
-		"output.errors",
-		metric.WithDescription("Total output write errors"),
-		metric.WithUnit("{error}"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: output.errors: %w", ErrCreateMetric, err)
-	}
-
 	hookDuration, err := meter.Float64Histogram(
 		"hook.duration",
 		metric.WithDescription("Hook execution duration"),
@@ -139,7 +123,6 @@ func newOtelMetrics(provider metric.MeterProvider, config MetricsConfig) (*otelM
 		logsTotal:    logsTotal,
 		piiMasked:    piiMasked,
 		auditRecords: auditRecords,
-		outputErrors: outputErrors,
 		hookDuration: hookDuration,
 	}, nil
 }
@@ -161,13 +144,6 @@ func (metrics *otelMetrics) PIIMasked(ctx context.Context, pattern PIIPattern) {
 // AuditRecords increments the counter of created audit records.
 func (metrics *otelMetrics) AuditRecords(ctx context.Context) {
 	metrics.auditRecords.Add(ctx, 1)
-}
-
-// OutputErrors increments the counter when an output fails to write.
-func (metrics *otelMetrics) OutputErrors(ctx context.Context, output OutputType) {
-	metrics.outputErrors.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("output.type", string(output)),
-	))
 }
 
 // HookDuration records the execution duration of a hook.

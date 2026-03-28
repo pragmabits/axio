@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // OutputType defines the log output destination.
@@ -45,6 +47,48 @@ func (o *OutputType) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// RotationConfig configures log file rotation behavior.
+//
+// Rotation can be triggered by file size, time interval, or both.
+// When both are configured, whichever condition is met first triggers rotation.
+//
+// YAML example:
+//
+//	outputs:
+//	  - type: file
+//	    format: json
+//	    path: /var/log/app.log
+//	    rotation:
+//	      maxSize: 100
+//	      maxAge: 30
+//	      maxBackups: 10
+//	      compress: true
+//	      interval: 24h
+type RotationConfig struct {
+	// MaxSize is the maximum size in megabytes before rotation.
+	// Zero means no size-based rotation.
+	MaxSize int `json:"maxSize,omitempty" yaml:"maxSize,omitempty" toml:"maxSize,omitempty" mapstructure:"maxSize,omitempty"`
+	// MaxAge is the maximum number of days to retain old log files.
+	// Zero means no age-based cleanup.
+	MaxAge int `json:"maxAge,omitempty" yaml:"maxAge,omitempty" toml:"maxAge,omitempty" mapstructure:"maxAge,omitempty"`
+	// MaxBackups is the maximum number of old log files to retain.
+	// Zero means retain all old files (subject to MaxAge).
+	MaxBackups int `json:"maxBackups,omitempty" yaml:"maxBackups,omitempty" toml:"maxBackups,omitempty" mapstructure:"maxBackups,omitempty"`
+	// Compress determines whether rotated files are compressed with gzip.
+	Compress bool `json:"compress,omitempty" yaml:"compress,omitempty" toml:"compress,omitempty" mapstructure:"compress,omitempty"`
+	// LocalTime determines whether the timestamps in backup file names use local time.
+	// By default, UTC is used.
+	LocalTime bool `json:"localTime,omitempty" yaml:"localTime,omitempty" toml:"localTime,omitempty" mapstructure:"localTime,omitempty"`
+	// Interval is the time duration between rotations (e.g., "24h", "1h", "30m").
+	// Zero means no time-based rotation.
+	Interval Duration `json:"interval,omitempty" yaml:"interval,omitempty" toml:"interval,omitempty" mapstructure:"interval,omitempty"`
+}
+
+// Enabled reports whether any rotation is configured.
+func (rotation RotationConfig) Enabled() bool {
+	return rotation.MaxSize > 0 || rotation.Interval > 0
+}
+
 // OutputConfig represents output configuration for serialization.
 //
 // This struct allows outputs to be configured via file (YAML, JSON, TOML)
@@ -58,6 +102,9 @@ func (o *OutputType) UnmarshalText(text []byte) error {
 //	  - type: file
 //	    format: json
 //	    path: /var/log/app.log
+//	    rotation:
+//	      maxSize: 100
+//	      interval: 24h
 type OutputConfig struct {
 	// Type defines the output destination (console, stdout, file).
 	Type OutputType `json:"type" yaml:"type" toml:"type" mapstructure:"type"`
@@ -65,6 +112,8 @@ type OutputConfig struct {
 	Format Format `json:"format" yaml:"format" toml:"format" mapstructure:"format"`
 	// Path is the file path (required only when Type is "file").
 	Path string `json:"path,omitempty" yaml:"path,omitempty" toml:"path,omitempty" mapstructure:"path,omitempty"`
+	// Rotation configures log file rotation (only used when Type is "file").
+	Rotation RotationConfig `json:"rotation,omitzero" yaml:"rotation,omitempty" toml:"rotation,omitempty" mapstructure:"rotation,omitempty"`
 }
 
 // BuildOutputs creates concrete outputs from configuration.
@@ -93,7 +142,11 @@ func BuildOutputs(config Config) ([]Output, error) {
 			if outputConfig.Path == "" {
 				return nil, fmt.Errorf("output[%d]: type 'file' requires 'path'", index)
 			}
-			output, err = File(outputConfig.Path, outputConfig.Format)
+			if outputConfig.Rotation.Enabled() {
+				output, err = RotatingFile(outputConfig.Path, outputConfig.Format, outputConfig.Rotation)
+			} else {
+				output, err = File(outputConfig.Path, outputConfig.Format)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("output[%d]: %w", index, err)
 			}
@@ -199,20 +252,54 @@ func Stdout(format Format) Output {
 }
 
 // fileOutput encapsulates a file with its path for identification.
+// When rotation is configured, lumberjack handles the underlying file;
+// otherwise, a plain os.File is used.
 type fileOutput struct {
 	*output
-	path string
-	file *os.File
+	path       string
+	file       *os.File           // used for plain files (nil when rotating)
+	lumberjack *lumberjack.Logger // used for rotating files (nil otherwise)
+	interval   Duration           // time-based rotation interval (zero if disabled)
+	ticker     *time.Ticker       // time-based rotation (nil otherwise)
+	done       chan struct{}       // stops time rotation goroutine (nil otherwise)
 }
 
-// Close closes the file associated with this output.
+// Close releases resources associated with this file output.
+// For rotating files, stops the time-based rotation goroutine and closes lumberjack.
+// For plain files, closes the os.File.
 func (f *fileOutput) Close() error {
+	if f.ticker != nil {
+		f.ticker.Stop()
+		close(f.done)
+	}
+	if f.lumberjack != nil {
+		if err := f.lumberjack.Close(); err != nil {
+			return fmt.Errorf("close rotating file %s: %w", f.path, err)
+		}
+		return nil
+	}
 	if f.file != nil {
 		if err := f.file.Close(); err != nil {
 			return fmt.Errorf("close file %s: %w", f.path, err)
 		}
 	}
 	return nil
+}
+
+func (f *fileOutput) startTimeRotation(interval time.Duration) {
+	f.ticker = time.NewTicker(interval)
+	f.done = make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-f.ticker.C:
+				_ = f.lumberjack.Rotate()
+			case <-f.done:
+				return
+			}
+		}
+	}()
 }
 
 // File creates an output that writes to a file at the specified path.
@@ -258,6 +345,70 @@ func File(path string, format Format) (Output, error) {
 //	)
 func MustFile(path string, format Format) Output {
 	out, err := File(path, format)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// RotatingFile creates a file output with automatic rotation.
+//
+// Rotation is triggered by file size (MaxSize), time interval (Interval), or both.
+// When both are configured, whichever condition is met first triggers rotation.
+//
+// Example:
+//
+//	out, err := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+//	    MaxSize:    100,
+//	    MaxBackups: 5,
+//	    MaxAge:     30,
+//	    Compress:   true,
+//	    Interval:   axio.Duration(24 * time.Hour),
+//	})
+func RotatingFile(path string, format Format, rotation RotationConfig) (Output, error) {
+	lumber := &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    rotation.MaxSize,
+		MaxAge:     rotation.MaxAge,
+		MaxBackups: rotation.MaxBackups,
+		Compress:   rotation.Compress,
+		LocalTime:  rotation.LocalTime,
+	}
+
+	fileOut := &fileOutput{
+		output: &output{
+			WriteSyncer: zapcore.AddSync(lumber),
+			format:      format,
+			outputType:  OutputFile,
+		},
+		path:       path,
+		lumberjack: lumber,
+		interval:   rotation.Interval,
+	}
+
+	if rotation.Interval > 0 {
+		fileOut.startTimeRotation(time.Duration(rotation.Interval))
+	}
+
+	return fileOut, nil
+}
+
+// MustRotatingFile is like [RotatingFile] but panics on error.
+//
+// Useful for initialization where failure should be fatal.
+//
+// Example:
+//
+//	logger, _ := axio.New(config,
+//	    axio.WithOutputs(
+//	        axio.MustRotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+//	            MaxSize:  100,
+//	            Compress: true,
+//	        }),
+//	    ),
+//	)
+func MustRotatingFile(path string, format Format, rotation RotationConfig) Output {
+	out, err := RotatingFile(path, format, rotation)
 	if err != nil {
 		panic(err)
 	}

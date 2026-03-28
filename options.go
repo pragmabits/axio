@@ -51,6 +51,16 @@ func WithOutputs(outputs ...Output) Option {
 
 			if fileOut, ok := output.(*fileOutput); ok {
 				outputConfig.Path = fileOut.path
+				if fileOut.lumberjack != nil {
+					outputConfig.Rotation = RotationConfig{
+						MaxSize:    fileOut.lumberjack.MaxSize,
+						MaxAge:     fileOut.lumberjack.MaxAge,
+						MaxBackups: fileOut.lumberjack.MaxBackups,
+						Compress:   fileOut.lumberjack.Compress,
+						LocalTime:  fileOut.lumberjack.LocalTime,
+						Interval:   fileOut.interval,
+					}
+				}
 				if err := fileOut.Close(); err != nil {
 					return fmt.Errorf("close intermediate file output %s: %w", fileOut.path, err)
 				}

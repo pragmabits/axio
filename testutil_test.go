@@ -1,8 +1,10 @@
 package axio
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +72,11 @@ func assertNoError(t *testing.T, err error) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
+}
+
+// stringReader creates an io.Reader from a string for testing.
+func stringReader(content string) io.Reader {
+	return strings.NewReader(content)
 }
 
 // assertEqual checks that got equals want.

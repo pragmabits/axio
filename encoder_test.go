@@ -46,6 +46,15 @@ func TestJsonEncoderConfig(t *testing.T) {
 	assertEqual(t, jsonEncoderConfig.StacktraceKey, "stacktrace")
 }
 
+func TestEventEncoderConfig(t *testing.T) {
+	assertEqual(t, eventEncoderConfig.TimeKey, "timestamp")
+	assertEqual(t, eventEncoderConfig.LevelKey, "")     // omitted
+	assertEqual(t, eventEncoderConfig.MessageKey, "event")
+	assertEqual(t, eventEncoderConfig.NameKey, "")       // omitted
+	assertEqual(t, eventEncoderConfig.CallerKey, "")     // omitted
+	assertEqual(t, eventEncoderConfig.StacktraceKey, "") // omitted
+}
+
 func TestConsoleEncoderConfig(t *testing.T) {
 	assertEqual(t, consoleEncoderConfig.TimeKey, "timestamp")
 	assertEqual(t, consoleEncoderConfig.LevelKey, "level")

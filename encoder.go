@@ -49,6 +49,25 @@ var consoleEncoderConfig = zapcore.EncoderConfig{
 	EncodeCaller:   zapcore.ShortCallerEncoder,
 }
 
+// eventEncoderConfig defines the JSON encoder configuration for wide events.
+//
+// Differences from jsonEncoderConfig:
+//   - LevelKey omitted (wide events don't use severity levels)
+//   - MessageKey is "event" (carries the event name)
+//   - NameKey, CallerKey, StacktraceKey omitted (not relevant for events)
+var eventEncoderConfig = zapcore.EncoderConfig{
+	TimeKey:        "timestamp",
+	LevelKey:       zapcore.OmitKey,
+	MessageKey:     "event",
+	NameKey:        zapcore.OmitKey,
+	CallerKey:      zapcore.OmitKey,
+	StacktraceKey:  zapcore.OmitKey,
+	LineEnding:     zapcore.DefaultLineEnding,
+	EncodeLevel:    zapcore.LowercaseLevelEncoder,
+	EncodeTime:     encodeRFC3339NanoUTC,
+	EncodeDuration: zapcore.MillisDurationEncoder,
+}
+
 // encodeRFC3339NanoUTC encodes the timestamp in UTC using RFC3339 format with nanoseconds.
 func encodeRFC3339NanoUTC(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
 	var buf [len(time.RFC3339Nano) + 10]byte

@@ -1,0 +1,66 @@
+{
+  "includeCoAuthoredBy": false,
+  "attribution": {
+    "commit": ""
+  },
+  "enabledPlugins": {
+    "gopls-lsp@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(curl:*)",
+      "Bash(echo *=== ALL TAGS*)",
+      "Bash(echo *=== COMMITS ===*)",
+      "Bash(echo *=== COMMITS SINCE LAST TAG ===*)",
+      "Bash(echo *=== DIFF*)",
+      "Bash(echo *=== HEAD ===*)",
+      "Bash(echo *=== LATEST TAG ===*)",
+      "Bash(echo *=== LOG ===*)",
+      "Bash(echo *=== STATUS ===*)",
+      "Bash(echo *NO_TAGS_FOUND*)",
+      "Bash(find:*)",
+      "Bash(git add *)",
+      "Bash(git add:*)",
+      "Bash(git commit *)",
+      "Bash(git commit -m:*)",
+      "Bash(git describe *)",
+      "Bash(git diff *)",
+      "Bash(git diff)",
+      "Bash(git log *)",
+      "Bash(git log:*)",
+      "Bash(git rev-parse *)",
+      "Bash(git status*)",
+      "Bash(git tag --sort*)",
+      "Bash(git tag -a *)",
+      "Bash(git tag -l *)",
+      "Bash(go build:*)",
+      "Bash(go doc:*)",
+      "Bash(go get:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(python *git-staging.pyz*)",
+      "Bash(python *validate-commit.py*)",
+      "Bash(python3 *git-staging.pyz*)",
+      "Bash(python3 *validate-commit.py*)",
+      "Bash(tree:*)",
+      "Bash(wc:*)",
+      "Bash(xargs cat:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(git branch -d:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git branch --delete:*)"
+    ],
+    "ask": [
+      "Bash(git rebase:*)"
+    ]
+  }
+}

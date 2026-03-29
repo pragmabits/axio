@@ -129,12 +129,27 @@ func buildEventEngine(outputs []Output) (*zap.Logger, error) {
 }
 
 // WithEvent stores the event in the context for retrieval by downstream handlers.
+//
+// Typically called in middleware to make the event available to the entire
+// request chain. Retrieve the event later with [EventFromContext].
+//
+// Example:
+//
+//	event, _ := axio.NewEvent("http_request", config)
+//	ctx = axio.WithEvent(ctx, event)
 func WithEvent(ctx context.Context, event *Event) context.Context {
 	return context.WithValue(ctx, eventContextKey{}, event)
 }
 
 // EventFromContext retrieves the event from the context.
 // Returns nil if no event is stored in the context.
+//
+// Example:
+//
+//	event := axio.EventFromContext(ctx)
+//	if event != nil {
+//	    event.Add("user_id", userID)
+//	}
 func EventFromContext(ctx context.Context) *Event {
 	event, _ := ctx.Value(eventContextKey{}).(*Event)
 	return event
@@ -249,6 +264,17 @@ func (e *Event) Emit(ctx context.Context) {
 }
 
 // Close releases resources associated with the event's outputs.
+//
+// Call Close after [Event.Emit] to release file handles and other resources.
+// For events without file outputs, Close is a no-op but should still be called
+// for correctness.
+//
+// Example:
+//
+//	event, _ := axio.NewEvent("checkout", config)
+//	defer event.Close()
+//	// ... enrich event ...
+//	event.Emit(ctx)
 func (e *Event) Close() error {
 	for _, output := range e.outputs {
 		if err := output.Close(); err != nil {

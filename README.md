@@ -64,6 +64,7 @@ Axio functions as an abstraction layer with a stable interface (`Logger`). Busin
 - [Configuration](#configuration)
   - [Main Config](#main-config)
   - [OutputConfig](#outputconfig)
+  - [RotationConfig](#rotationconfig)
   - [AuditConfig](#auditconfig)
   - [MetricsConfig](#metricsconfig)
   - [File Loading](#file-loading)
@@ -76,6 +77,7 @@ Axio functions as an abstraction layer with a stable interface (`Logger`). Busin
   - [Audit (Hash Chain)](#audit-hash-chain)
   - [Distributed Tracing (OpenTelemetry)](#distributed-tracing-opentelemetry)
   - [Metrics](#metrics)
+  - [Wide Events](#wide-events)
 - [Logging Best Practices](#logging-best-practices)
 - [Guide by Service Type](#guide-by-service-type)
 - [Examples and Anti-patterns](#examples-and-anti-patterns)
@@ -183,6 +185,18 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `Type`   | `OutputType` | Yes         | -       | `console`, `stdout`, `file` | `ErrInvalidOutputType` if invalid             |
 | `Format` | `Format`     | Yes         | -       | `json`, `text`              | `ErrInvalidFormat` if invalid                 |
 | `Path`   | `string`     | Conditional | `""`    | file path                   | `ErrFileOutputNoPath` if `Type=file` and empty|
+| `Rotation` | `RotationConfig` | No     | disabled | see RotationConfig         | Only used when `Type=file`                    |
+
+### RotationConfig
+
+| Field        | Type       | Required | Default | Values                        | Validation |
+| ------------ | ---------- | -------- | ------- | ----------------------------- | ---------- |
+| `MaxSize`    | `int`      | No       | `0`     | megabytes (0 = no size limit) | -          |
+| `MaxAge`     | `int`      | No       | `0`     | days (0 = no age limit)       | -          |
+| `MaxBackups` | `int`      | No       | `0`     | count (0 = retain all)        | -          |
+| `Compress`   | `bool`     | No       | `false` | `true`, `false`               | -          |
+| `LocalTime`  | `bool`     | No       | `false` | `true`, `false`               | -          |
+| `Interval`   | `Duration` | No       | `0`     | e.g., `24h`, `1h30m`, `500ms` | -          |
 
 ### AuditConfig
 
@@ -231,6 +245,12 @@ outputs:
   - type: file
     format: json
     path: /var/log/app.log
+    rotation:
+      maxSize: 100
+      maxAge: 30
+      maxBackups: 10
+      compress: true
+      interval: 24h
 
 piiEnabled: true
 piiPatterns:
@@ -305,6 +325,39 @@ logger, _ := axio.New(config,
 logger, _ := axio.New(config, axio.WithAgentMode())
 ```
 
+#### Log Rotation
+
+File outputs support automatic rotation by size, time interval, or both:
+
+```go
+// Size-based rotation (rotate when file exceeds 100 MB)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    MaxSize:    100,
+    MaxBackups: 5,
+    Compress:   true,
+})
+
+// Time-based rotation (rotate every 24 hours)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    Interval: axio.Duration(24 * time.Hour),
+    MaxAge:   30,
+})
+
+// Combined (whichever triggers first)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    MaxSize:    100,
+    Interval:   axio.Duration(24 * time.Hour),
+    MaxBackups: 10,
+    MaxAge:     30,
+    Compress:   true,
+})
+
+logger, _ := axio.New(config, axio.WithOutputs(out))
+defer logger.Close()
+```
+
+`MustRotatingFile` is available for initialization where failure should be fatal.
+
 ---
 
 ### Log Levels
@@ -365,9 +418,9 @@ logger.With(&axio.HTTP{
 | `UserAgent`  | `string` | Client User-Agent              |
 | `ClientIP`   | `string` | Client IP                      |
 
-#### Marshaler (custom)
+#### Annotable (custom types)
 
-Implement `Marshaler` for complex types:
+Implement `Annotable` for types that produce multiple fields:
 
 ```go
 type Order struct {
@@ -376,13 +429,14 @@ type Order struct {
     secret string // will not be logged
 }
 
-func (o Order) MarshalLog(a axio.Annotator) error {
-    a.Add("order_id", o.ID)
-    a.Add("item_count", len(o.Items))
-    return nil
+func (o Order) Append(target []axio.Annotation) []axio.Annotation {
+    return append(target,
+        axio.Annotate("order_id", o.ID),
+        axio.Annotate("item_count", len(o.Items)),
+    )
 }
 
-// Usage
+// Usage — fields are expanded individually in the log output
 logger.With(axio.Annotate("order", order)).Info(ctx, "order processed")
 ```
 
@@ -663,6 +717,102 @@ type Metrics interface {
     HookDuration(ctx context.Context, hookName string, duration time.Duration)
     HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
+```
+
+---
+
+### Wide Events
+
+#### What are Wide Events?
+
+**Wide events** (also called canonical log lines) replace scattered per-step log lines with a single, richly-annotated entry emitted at the end of a unit of work (e.g., an HTTP request). Instead of 5–10 lines per request, one event captures the complete context of what happened.
+
+Wide events omit the log level field — severity is expressed through the event's own fields (`status_code`, `error`, etc.), not through traditional log levels.
+
+#### Basic Usage
+
+```go
+event, err := axio.NewEvent("checkout", config)
+if err != nil {
+    return err
+}
+defer event.Close()
+
+event.Add("user_id", userID)
+event.Add("cart_total", 15999)
+event.Add("item_count", 3)
+
+event.Emit(ctx)
+// Output: {"timestamp":"...","event":"checkout","user_id":"usr_456","cart_total":15999,"item_count":3,"duration_ms":42}
+```
+
+#### API
+
+| Method | Description |
+| ------ | ----------- |
+| `NewEvent(name, config, ...Option)` | Creates a new event with the same Config/Option used by `New` |
+| `Add(key, value)` | Adds a key-value field (thread-safe) |
+| `With(...Annotation)` | Adds annotations, including `Annotable` types like `HTTP` |
+| `SetError(err, ...Annotation)` | Records an error with optional detail annotations |
+| `Emit(ctx)` | Writes the event as a single log entry (computes `duration_ms`, runs hooks) |
+| `Close()` | Releases output resources (call after `Emit`) |
+
+#### Context Propagation (Middleware Pattern)
+
+Store the event in the context so downstream handlers can enrich it:
+
+```go
+// Middleware: create and store
+event, _ := axio.NewEvent("http_request", config)
+defer event.Close()
+ctx = axio.WithEvent(ctx, event)
+
+// Handler: enrich from context
+event := axio.EventFromContext(ctx)
+event.Add("user_id", userID)
+event.With(axio.Annotate("http", axio.HTTP{
+    Method:     r.Method,
+    URL:        r.URL.Path,
+    StatusCode: 201,
+    LatencyMS:  latencyMS,
+}))
+
+// Middleware: emit at end of request
+event.Emit(ctx)
+```
+
+#### Error Recording
+
+```go
+// Simple error
+event.SetError(err)
+
+// Error with structured details
+event.SetError(err,
+    axio.Annotate("error_code", "card_declined"),
+    axio.Annotate("error_retriable", false),
+)
+```
+
+#### Integration with Features
+
+Wide events support the same options as the standard logger:
+
+```go
+// With PII masking
+event, _ := axio.NewEvent("user_registration", config,
+    axio.WithPII(nil, nil),
+)
+
+// With audit hash chain
+event, _ := axio.NewEvent("access_grant", config,
+    axio.WithAudit("/var/lib/axio/chain.json"),
+)
+
+// With tracing
+event, _ := axio.NewEvent("http_request", config,
+    axio.WithTracer(axio.Otel()),
+)
 ```
 
 ---

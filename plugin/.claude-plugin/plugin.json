@@ -1,0 +1,30 @@
+{
+  "name": "axio",
+  "version": "0.1.0",
+  "description": "Deep expertise plugin for the axio Go structured logging library — covers full API usage, configuration, PII masking, audit chains, OpenTelemetry tracing, custom extensions, and autonomous migration from other Go logging libraries",
+  "author": {
+    "name": "pragmabits",
+    "email": "leonardoleoncio96@gmail.com"
+  },
+  "homepage": "https://github.com/pragmabits/axio",
+  "repository": "https://github.com/pragmabits/axio",
+  "keywords": [
+    "go",
+    "golang",
+    "logging",
+    "structured-logging",
+    "axio",
+    "pii",
+    "audit",
+    "opentelemetry",
+    "tracing",
+    "migration",
+    "agent"
+  ],
+  "skills": "./skills",
+  "commands": "./commands",
+  "agents": [
+    "./agents/axio.md",
+    "./agents/migrate.md"
+  ]
+}

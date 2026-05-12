@@ -75,14 +75,14 @@ func (*otelTraceExtractor) Extract(ctx context.Context) (string, string, bool) {
 	return span.TraceID().String(), span.SpanID().String(), true
 }
 
-// BuildTracer creates the tracer from configuration.
+// buildTracer creates the tracer from configuration.
 //
 // Precedence order:
 //  1. Custom implementation via [WithTracer]
 //  2. "otel": returns [Otel]
 //  3. "noop" or empty: returns [NoopTracing]
 //  4. Invalid value: returns [NoopTracing] as fallback
-func BuildTracer(config Config) Tracer {
+func buildTracer(config Config) Tracer {
 	if config.tracer != nil {
 		return config.tracer
 	}

@@ -41,7 +41,7 @@ import (
 type Event struct {
 	name        string
 	engine      *zap.Logger
-	hooks       *HookChain
+	hooks       *hookChain
 	trace       Tracer
 	metrics     Metrics
 	annotations []Annotation
@@ -79,22 +79,22 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
 	}
 
-	outputs, err := BuildOutputs(config)
+	outputs, err := buildOutputs(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
 	}
 
-	metrics, err := BuildMetrics(config)
+	metrics, err := buildMetrics(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildMetrics, err)
 	}
 
-	hooks, err := BuildHooks(config)
+	hooks, err := buildHooks(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
 	}
 
-	tracer := BuildTracer(config)
+	tracer := buildTracer(config)
 
 	engine, err := buildEventEngine(outputs)
 	if err != nil {
@@ -104,7 +104,7 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 	return &Event{
 		name:      name,
 		engine:    engine,
-		hooks:     NewHookChain(metrics, hooks...),
+		hooks:     newHookChain(metrics, hooks...),
 		trace:     tracer,
 		metrics:   metrics,
 		startTime: time.Now(),
@@ -229,7 +229,7 @@ func (e *Event) Emit(ctx context.Context) {
 		entryPool.Put(entry)
 	}()
 
-	if err := e.hooks.Process(ctx, entry); err != nil {
+	if err := e.hooks.process(ctx, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "axio: event hook error: %v\n", err)
 		return
 	}

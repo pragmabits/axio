@@ -26,7 +26,7 @@ func toZapLevel[T ~string | ~[]byte](level T) zapcore.Level {
 type logger struct {
 	engine      *zap.Logger
 	trace       Tracer
-	hooks       *HookChain
+	hooks       *hookChain
 	metrics     Metrics
 	annotations []Annotation
 	outputs     []Output
@@ -82,22 +82,22 @@ func New(config Config, options ...Option) (Logger, error) {
 		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
 	}
 
-	outputs, err := BuildOutputs(config)
+	outputs, err := buildOutputs(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
 	}
 
-	metrics, err := BuildMetrics(config)
+	metrics, err := buildMetrics(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildMetrics, err)
 	}
 
-	hooks, err := BuildHooks(config)
+	hooks, err := buildHooks(config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
 	}
 
-	tracer := BuildTracer(config)
+	tracer := buildTracer(config)
 
 	engine, err := buildEngine(config, outputs)
 	if err != nil {
@@ -107,7 +107,7 @@ func New(config Config, options ...Option) (Logger, error) {
 	return &logger{
 		engine:  engine,
 		trace:   tracer,
-		hooks:   NewHookChain(metrics, hooks...),
+		hooks:   newHookChain(metrics, hooks...),
 		metrics: metrics,
 		outputs: outputs,
 		closed:  new(atomic.Bool),
@@ -246,7 +246,7 @@ func (l *logger) log(
 		entryPool.Put(entry)
 	}()
 
-	if err := l.hooks.Process(ctx, entry); err != nil {
+	if err := l.hooks.process(ctx, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "axio: hook error: %v\n", err)
 		return
 	}

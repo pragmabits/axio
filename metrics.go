@@ -155,14 +155,14 @@ func (metrics *otelMetrics) HookDuration(ctx context.Context, hookName string, d
 	))
 }
 
-// BuildMetrics creates the Metrics object from configuration.
+// buildMetrics creates the Metrics object from configuration.
 //
 // Precedence order:
 //  1. Custom implementation via private field config.metrics (legacy)
 //  2. If Metrics.Enabled=false, returns NoopMetrics
 //  3. If metricsProvider defined via WithMetrics(), uses it
 //  4. If Metrics.Enabled=true without provider, uses otel.GetMeterProvider() with warning
-func BuildMetrics(config Config) (Metrics, error) {
+func buildMetrics(config Config) (Metrics, error) {
 	if config.metrics != nil {
 		return config.metrics, nil
 	}

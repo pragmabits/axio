@@ -39,11 +39,11 @@ func TestOtel_no_span(t *testing.T) {
 	}
 }
 
-func TestBuildTracer(t *testing.T) {
+func Test_buildTracer(t *testing.T) {
 	t.Run("custom_tracer_takes_precedence", func(t *testing.T) {
 		custom := NoopTracer{}
 		config := Config{tracer: custom}
-		tracer := BuildTracer(config)
+		tracer := buildTracer(config)
 
 		_, ok := tracer.(NoopTracer)
 		if !ok {
@@ -53,7 +53,7 @@ func TestBuildTracer(t *testing.T) {
 
 	t.Run("otel_type", func(t *testing.T) {
 		config := Config{TracerType: "otel"}
-		tracer := BuildTracer(config)
+		tracer := buildTracer(config)
 
 		_, ok := tracer.(*otelTraceExtractor)
 		if !ok {
@@ -63,7 +63,7 @@ func TestBuildTracer(t *testing.T) {
 
 	t.Run("noop_type", func(t *testing.T) {
 		config := Config{TracerType: "noop"}
-		tracer := BuildTracer(config)
+		tracer := buildTracer(config)
 
 		_, ok := tracer.(NoopTracer)
 		if !ok {
@@ -73,7 +73,7 @@ func TestBuildTracer(t *testing.T) {
 
 	t.Run("empty_type", func(t *testing.T) {
 		config := Config{TracerType: ""}
-		tracer := BuildTracer(config)
+		tracer := buildTracer(config)
 
 		_, ok := tracer.(NoopTracer)
 		if !ok {
@@ -83,7 +83,7 @@ func TestBuildTracer(t *testing.T) {
 
 	t.Run("unknown_type_falls_back_to_noop", func(t *testing.T) {
 		config := Config{TracerType: "unknown"}
-		tracer := BuildTracer(config)
+		tracer := buildTracer(config)
 
 		_, ok := tracer.(NoopTracer)
 		if !ok {

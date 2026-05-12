@@ -117,7 +117,7 @@ type OutputConfig struct {
 	Rotation RotationConfig `json:"rotation,omitzero" yaml:"rotation,omitempty" toml:"rotation,omitempty" mapstructure:"rotation,omitempty"`
 }
 
-// BuildOutputs creates concrete outputs from configuration.
+// buildOutputs creates concrete outputs from configuration.
 //
 // When outputs were supplied directly via [WithOutputs], they are returned
 // as-is (no file is opened twice). Otherwise the function resolves
@@ -127,7 +127,7 @@ type OutputConfig struct {
 //  3. For [OutputFile], opens the specified file
 //
 // Returns error if any output cannot be created.
-func BuildOutputs(config Config) ([]Output, error) {
+func buildOutputs(config Config) ([]Output, error) {
 	if len(config.resolvedOutputs) > 0 {
 		return config.resolvedOutputs, nil
 	}

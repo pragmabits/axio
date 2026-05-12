@@ -33,7 +33,7 @@ func benchLogger(b *testing.B) *logger {
 	return &logger{
 		engine:  engine,
 		trace:   NoopTracer{},
-		hooks:   NewHookChain(NoopMetrics{}),
+		hooks:   newHookChain(NoopMetrics{}),
 		metrics: NoopMetrics{},
 		outputs: []Output{out},
 	}
@@ -213,30 +213,30 @@ func BenchmarkToField_Map(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Component benchmarks: HookChain
+// Component benchmarks: hookChain
 // ---------------------------------------------------------------------------
 
 func BenchmarkHookChain_Process_NoHooks(b *testing.B) {
-	chain := NewHookChain(NoopMetrics{})
+	chain := newHookChain(NoopMetrics{})
 	ctx := context.Background()
 	entry := benchEntry("", "", nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = chain.Process(ctx, entry)
+		_ = chain.process(ctx, entry)
 	}
 }
 
 func BenchmarkHookChain_Process_ThreeHooks(b *testing.B) {
-	chain := NewHookChain(NoopMetrics{}, NoopHook(), NoopHook(), NoopHook())
+	chain := newHookChain(NoopMetrics{}, NoopHook(), NoopHook(), NoopHook())
 	ctx := context.Background()
 	entry := benchEntry("", "", nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = chain.Process(ctx, entry)
+		_ = chain.process(ctx, entry)
 	}
 }
 

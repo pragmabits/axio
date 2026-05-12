@@ -20,11 +20,11 @@ func TestNoopMetrics(t *testing.T) {
 	m.HookDuration(ctx, "test", time.Millisecond, true)
 }
 
-func TestBuildMetrics_noop_when_disabled(t *testing.T) {
+func Test_buildMetrics_noop_when_disabled(t *testing.T) {
 	config := minimalConfig()
 	config.Metrics.Enabled = false
 
-	metrics, err := BuildMetrics(config)
+	metrics, err := buildMetrics(config)
 	assertNoError(t, err)
 
 	_, ok := metrics.(NoopMetrics)
@@ -33,11 +33,11 @@ func TestBuildMetrics_noop_when_disabled(t *testing.T) {
 	}
 }
 
-func TestBuildMetrics_custom_metrics(t *testing.T) {
+func Test_buildMetrics_custom_metrics(t *testing.T) {
 	config := minimalConfig()
 	config.metrics = NoopMetrics{}
 
-	metrics, err := BuildMetrics(config)
+	metrics, err := buildMetrics(config)
 	assertNoError(t, err)
 
 	_, ok := metrics.(NoopMetrics)
@@ -46,12 +46,12 @@ func TestBuildMetrics_custom_metrics(t *testing.T) {
 	}
 }
 
-func TestBuildMetrics_with_provider(t *testing.T) {
+func Test_buildMetrics_with_provider(t *testing.T) {
 	config := minimalConfig()
 	config.Metrics.Enabled = true
 	config.metricsProvider = noop.NewMeterProvider()
 
-	metrics, err := BuildMetrics(config)
+	metrics, err := buildMetrics(config)
 	assertNoError(t, err)
 
 	_, ok := metrics.(*otelMetrics)

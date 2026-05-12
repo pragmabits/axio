@@ -36,8 +36,8 @@ Key source files and what they contain:
 | output.go | Output interface, OutputType, OutputConfig, Console, Stdout, File, MustFile, RotatingFile, RotationConfig |
 | pii.go | PIIMasker, PIIHook, PIIPattern, CustomPII, DefaultPIIConfig, MaskString |
 | audit.go | AuditHook, HashChain, FileStore, ChainStore, AuditConfig |
-| hook.go | Hook interface, HookChain, MetricsAware, Entry, BuildHooks |
-| tracing.go | Tracer interface, Otel(), NoopTracing, BuildTracer |
+| hook.go | Hook interface, MetricsAware, Entry, NoopHook |
+| tracing.go | Tracer interface, Otel(), NoopTracing |
 | metrics.go | Metrics interface, NoopMetrics, WithMetrics, OTel metrics |
 | annotation.go | Annotation, Annotate, Annotable, HTTP, Annotations |
 | event.go | Event (wide events), NewEvent, WithEvent, EventFromContext |

@@ -198,12 +198,6 @@ type OutputConfig struct {
 }
 ```
 
-### BuildOutputs
-
-```go
-func BuildOutputs(config Config) ([]Output, error)
-```
-
 ## Annotations (annotation.go)
 
 ```go
@@ -349,26 +343,16 @@ type MetricsAware interface {
 }
 ```
 
-### HookChain
+### NoopHook
 
 ```go
-type HookChain struct { /* internal */ }
-
-func NewHookChain(metrics Metrics, hooks ...Hook) *HookChain
-func (c *HookChain) Add(hook Hook)
-func (c *HookChain) Process(ctx context.Context, entry *Entry) error
-func (c *HookChain) Len() int
-
 func NoopHook() Hook
 ```
 
-### BuildHooks
-
-```go
-func BuildHooks(config Config) ([]Hook, error)
-```
-
-Execution order (fixed): PIIHook -> AuditHook -> Custom hooks
+Hooks supplied via [`WithHooks`](#withhooks) execute in a fixed order:
+`PIIHook` -> `AuditHook` -> custom hooks. PII masks before audit hashes,
+and custom hooks observe the already-masked, already-hashed entry. The
+chain itself is an unexported implementation detail.
 
 ## Audit (audit.go)
 
@@ -445,12 +429,6 @@ func NoopTracing() Tracer
 func Otel() Tracer
 ```
 
-### BuildTracer
-
-```go
-func BuildTracer(config Config) Tracer
-```
-
 ## Metrics (metrics.go)
 
 ```go
@@ -462,12 +440,6 @@ type Metrics interface {
 }
 
 type NoopMetrics struct{}
-```
-
-### BuildMetrics
-
-```go
-func BuildMetrics(config Config) (Metrics, error)
 ```
 
 ## Wide Events (event.go)

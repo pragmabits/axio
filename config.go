@@ -108,7 +108,7 @@ type Config struct {
 	tracer          Tracer
 	hooks           []Hook
 	// resolvedOutputs holds outputs supplied directly via WithOutputs.
-	// When non-empty, BuildOutputs returns these and skips the OutputConfig
+	// When non-empty, buildOutputs returns these and skips the OutputConfig
 	// resolution path entirely (no file is opened twice).
 	resolvedOutputs []Output
 }

@@ -7,22 +7,22 @@ import (
 	"testing"
 )
 
-func TestNewHookChain(t *testing.T) {
+func Test_newHookChain(t *testing.T) {
 	t.Run("empty_chain", func(t *testing.T) {
-		chain := NewHookChain(NoopMetrics{})
-		assertEqual(t, chain.Len(), 0)
+		chain := newHookChain(NoopMetrics{})
+		assertEqual(t, chain.length(), 0)
 	})
 
 	t.Run("with_hooks", func(t *testing.T) {
-		chain := NewHookChain(NoopMetrics{}, NoopHook(), NoopHook())
-		assertEqual(t, chain.Len(), 2)
+		chain := newHookChain(NoopMetrics{}, NoopHook(), NoopHook())
+		assertEqual(t, chain.length(), 2)
 	})
 
 	t.Run("nil_metrics_uses_noop", func(t *testing.T) {
-		chain := NewHookChain(nil, NoopHook())
-		assertEqual(t, chain.Len(), 1)
+		chain := newHookChain(nil, NoopHook())
+		assertEqual(t, chain.length(), 1)
 		// Should not panic when processing
-		err := chain.Process(context.Background(), &Entry{})
+		err := chain.process(context.Background(), &Entry{})
 		assertNoError(t, err)
 	})
 }
@@ -44,8 +44,8 @@ func TestHookChain_Process(t *testing.T) {
 		return nil
 	}}
 
-	chain := NewHookChain(NoopMetrics{}, hookA, hookB)
-	err := chain.Process(context.Background(), &Entry{})
+	chain := newHookChain(NoopMetrics{}, hookA, hookB)
+	err := chain.process(context.Background(), &Entry{})
 	assertNoError(t, err)
 
 	assertEqual(t, len(order), 2)
@@ -63,8 +63,8 @@ func TestHookChain_Process_error_stops_chain(t *testing.T) {
 		return nil
 	}}
 
-	chain := NewHookChain(NoopMetrics{}, hookA, hookB)
-	err := chain.Process(context.Background(), &Entry{})
+	chain := newHookChain(NoopMetrics{}, hookA, hookB)
+	err := chain.process(context.Background(), &Entry{})
 
 	assertError(t, err)
 	if called {
@@ -73,17 +73,17 @@ func TestHookChain_Process_error_stops_chain(t *testing.T) {
 }
 
 func TestHookChain_Add(t *testing.T) {
-	chain := NewHookChain(NoopMetrics{})
-	assertEqual(t, chain.Len(), 0)
+	chain := newHookChain(NoopMetrics{})
+	assertEqual(t, chain.length(), 0)
 
 	called := false
-	chain.Add(&testHook{name: "added", fn: func(ctx context.Context, entry *Entry) error {
+	chain.add(&testHook{name: "added", fn: func(ctx context.Context, entry *Entry) error {
 		called = true
 		return nil
 	}})
-	assertEqual(t, chain.Len(), 1)
+	assertEqual(t, chain.length(), 1)
 
-	err := chain.Process(context.Background(), &Entry{})
+	err := chain.process(context.Background(), &Entry{})
 	assertNoError(t, err)
 	if !called {
 		t.Error("added hook should have been called")
@@ -94,7 +94,7 @@ func TestHookChain_MetricsAware(t *testing.T) {
 	metrics := NoopMetrics{}
 	hook := &metricsAwareHook{}
 
-	chain := NewHookChain(metrics, hook)
+	chain := newHookChain(metrics, hook)
 	_ = chain
 
 	if !hook.received {

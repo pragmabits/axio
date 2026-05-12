@@ -89,21 +89,21 @@ Verified clean with `go build ./...`, `go vet ./...`, `go test ./...`,
       reward. The deliberate exception is now documented in the
       `Annotation` godoc at `annotation.go`.
 
-- [ ] **#6 — `HookChain` and `Add` exported, bypass ordering guarantee**
-      `chain.Add(myHook)` from external code can be called after the
-      logger is built, appending after the intended PII→Audit→Custom
-      sequence and breaking the guarantee documented at
-      `hook.go:87-99`. Unexport `HookChain`, `NewHookChain`, and
-      `Add` — only `BuildHooks` needs them internally.
-      *Location:* `hook.go:100`, `:110`, `:132`
+- [x] **#6 — `HookChain` and `Add` exported, bypass ordering guarantee** *(resolved — unexported)*
+      The doc on `HookChain` already said "Manual creation is not
+      necessary," no example or external-package test exercised it,
+      and there was no path threading a `*HookChain` into `New(...)`.
+      Renamed to `hookChain` with lowercase `add` / `process` /
+      `length` methods, and `NewHookChain` → `newHookChain`. The
+      ordering guarantee is now structurally true: external code
+      cannot construct or extend the chain.
 
-- [ ] **#7 — `Build*` helpers are public but only `New` can call them**
+- [x] **#7 — `Build*` helpers are public but only `New` can call them** *(resolved — unexported)*
       `BuildOutputs`, `BuildHooks`, `BuildMetrics`, `BuildTracer`
-      operate on private `Config` fields (`resolvedOutputs`,
-      `metrics`, `metricsProvider`, `hooks`, `tracer`) that no
-      external caller can populate. Unexport all four.
-      *Locations:* `output.go:130`, `hook.go:193`, `metrics.go:165`,
-      `tracing.go:85`
+      renamed to `buildOutputs` / `buildHooks` / `buildMetrics` /
+      `buildTracer`. The exported sentinels `ErrBuildOutputs` etc.
+      stay public — those are caller-facing error identifiers, not
+      function references.
 
 - [ ] **#8 — `DefaultSensitiveFields` is mutable exported slice**
       Any caller can `axio.DefaultSensitiveFields = nil` or `append`

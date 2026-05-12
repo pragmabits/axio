@@ -77,16 +77,15 @@ type Hook interface {
 // MetricsAware indicates that a hook can emit metrics.
 //
 // Hooks that implement this interface will receive the Metrics object
-// during logger construction via [NewHookChain].
+// automatically during logger construction.
 type MetricsAware interface {
 	// SetMetrics configures the metrics object for the hook.
 	SetMetrics(metrics Metrics)
 }
 
-// HookChain manages a sequence of hooks executed in order.
+// hookChain manages a sequence of hooks executed in order.
 //
-// The chain is automatically created by the logger from hooks
-// passed via [WithHooks]. Manual creation is not necessary.
+// The chain is built by the logger from hooks passed via [WithHooks].
 //
 // # Execution Order
 //
@@ -101,22 +100,22 @@ type MetricsAware interface {
 //     sensitive data never appears in the audit chain
 //   - Custom hooks execute last to have access to the already
 //     processed entry (with masked PII and calculated hash)
-type HookChain struct {
+type hookChain struct {
 	hooks   []Hook
 	metrics Metrics
 	mutex   sync.RWMutex
 }
 
-// NewHookChain creates a new hook chain with metrics support.
+// newHookChain creates a new hook chain with metrics support.
 //
 // If metrics is nil, NoopMetrics will be used.
 // Hooks that implement [MetricsAware] will receive the metrics object automatically.
-func NewHookChain(metrics Metrics, hooks ...Hook) *HookChain {
+func newHookChain(metrics Metrics, hooks ...Hook) *hookChain {
 	if metrics == nil {
 		metrics = NoopMetrics{}
 	}
 
-	chain := &HookChain{
+	chain := &hookChain{
 		hooks:   hooks,
 		metrics: metrics,
 	}
@@ -130,10 +129,10 @@ func NewHookChain(metrics Metrics, hooks ...Hook) *HookChain {
 	return chain
 }
 
-// Add appends a hook to the end of the chain.
+// add appends a hook to the end of the chain.
 //
 // If the hook implements [MetricsAware], it will receive the metrics object automatically.
-func (c *HookChain) Add(hook Hook) {
+func (c *hookChain) add(hook Hook) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -144,11 +143,11 @@ func (c *HookChain) Add(hook Hook) {
 	}
 }
 
-// Process executes all hooks in sequence on the entry.
+// process executes all hooks in sequence on the entry.
 //
 // For each hook, records execution duration via metrics.
 // If any hook returns an error, processing stops and the error is returned.
-func (c *HookChain) Process(ctx context.Context, entry *Entry) error {
+func (c *hookChain) process(ctx context.Context, entry *Entry) error {
 	c.mutex.RLock()
 	hooks := c.hooks
 	c.mutex.RUnlock()
@@ -166,8 +165,8 @@ func (c *HookChain) Process(ctx context.Context, entry *Entry) error {
 	return nil
 }
 
-// Len returns the number of hooks in the chain.
-func (c *HookChain) Len() int {
+// length returns the number of hooks in the chain.
+func (c *hookChain) length() int {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	return len(c.hooks)
@@ -186,15 +185,16 @@ func NoopHook() Hook {
 	return noopHook{}
 }
 
-// BuildHooks creates hooks from configuration.
+// buildHooks creates hooks from configuration.
 //
 // Creation order follows the fixed execution order:
 //  1. PIIHook (if PIIEnabled)
 //  2. AuditHook (if Audit.Enabled)
 //  3. Custom hooks (from WithHooks)
 //
-// See [HookChain] for details about execution order.
-func BuildHooks(config Config) ([]Hook, error) {
+// PII must mask before audit calculates the hash; custom hooks run
+// last and observe the already-masked and already-hashed entry.
+func buildHooks(config Config) ([]Hook, error) {
 	var hooks []Hook
 
 	if config.PIIEnabled {

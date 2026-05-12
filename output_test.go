@@ -128,7 +128,7 @@ func TestMustFile(t *testing.T) {
 	})
 }
 
-func TestBuildOutputs(t *testing.T) {
+func Test_buildOutputs(t *testing.T) {
 	t.Run("builds_console", func(t *testing.T) {
 		config := Config{
 			Outputs: []OutputConfig{
@@ -136,7 +136,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		outputs, err := BuildOutputs(config)
+		outputs, err := buildOutputs(config)
 		assertNoError(t, err)
 
 		if len(outputs) != 1 {
@@ -152,7 +152,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		outputs, err := BuildOutputs(config)
+		outputs, err := buildOutputs(config)
 		assertNoError(t, err)
 
 		if len(outputs) != 1 {
@@ -169,7 +169,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		outputs, err := BuildOutputs(config)
+		outputs, err := buildOutputs(config)
 		assertNoError(t, err)
 		defer outputs[0].Close()
 
@@ -189,7 +189,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		outputs, err := BuildOutputs(config)
+		outputs, err := buildOutputs(config)
 		assertNoError(t, err)
 		defer outputs[2].Close()
 
@@ -205,7 +205,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		_, err := BuildOutputs(config)
+		_, err := buildOutputs(config)
 		assertError(t, err)
 	})
 
@@ -216,7 +216,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		_, err := BuildOutputs(config)
+		_, err := buildOutputs(config)
 		assertError(t, err)
 	})
 
@@ -227,7 +227,7 @@ func TestBuildOutputs(t *testing.T) {
 			},
 		}
 
-		_, err := BuildOutputs(config)
+		_, err := buildOutputs(config)
 		assertError(t, err)
 	})
 
@@ -236,7 +236,7 @@ func TestBuildOutputs(t *testing.T) {
 			Outputs: []OutputConfig{},
 		}
 
-		outputs, err := BuildOutputs(config)
+		outputs, err := buildOutputs(config)
 		assertNoError(t, err)
 
 		if len(outputs) != 0 {

@@ -178,6 +178,163 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 	})
 }
 
+func TestPIIMasker_MaskFields_MapRecursion(t *testing.T) {
+	masker, _ := NewPIIMasker(PIIConfig{
+		Patterns: []PIIPattern{PatternCPF},
+		Fields:   []string{"password"},
+	})
+
+	annotations := Annotations{
+		Annotate("context", map[string]any{
+			"user":     "alice",
+			"password": "hunter2",
+			"document": "123.456.789-01",
+		}),
+	}
+
+	masker.MaskFields(annotations)
+
+	masked, ok := annotations[0].Data().(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any after masking, got %T", annotations[0].Data())
+	}
+
+	assertEqual(t, masked["user"].(string), "alice")
+	assertEqual(t, masked["password"].(string), "[REDACTED]")
+	assertEqual(t, masked["document"].(string), "***.***.***-**")
+}
+
+func TestPIIMasker_MaskFields_MapRecursion_DepthCap(t *testing.T) {
+	build := func() Annotations {
+		// payload nests "password" at depth 3 from the annotation root:
+		// annotation -> level1 -> level2 -> level3 -> password
+		level3 := map[string]any{"password": "p3"}
+		level2 := map[string]any{"deep": level3}
+		level1 := map[string]any{"nested": level2}
+		return Annotations{Annotate("root", level1)}
+	}
+
+	t.Run("default_max_depth_2_does_not_reach_depth_3", func(t *testing.T) {
+		masker, _ := NewPIIMasker(PIIConfig{
+			Fields: []string{"password"},
+		})
+		annotations := build()
+		masker.MaskFields(annotations)
+
+		root := annotations[0].Data().(map[string]any)
+		nested := root["nested"].(map[string]any)
+		deep := nested["deep"].(map[string]any)
+		if deep["password"] != "p3" {
+			t.Errorf("expected unmasked at depth 3 with default MaxDepth=2, got %v", deep["password"])
+		}
+	})
+
+	t.Run("max_depth_3_masks_depth_3", func(t *testing.T) {
+		masker, _ := NewPIIMasker(PIIConfig{
+			Fields:   []string{"password"},
+			MaxDepth: 3,
+		})
+		annotations := build()
+		masker.MaskFields(annotations)
+
+		root := annotations[0].Data().(map[string]any)
+		nested := root["nested"].(map[string]any)
+		deep := nested["deep"].(map[string]any)
+		if deep["password"] != "[REDACTED]" {
+			t.Errorf("expected masked at depth 3 with MaxDepth=3, got %v", deep["password"])
+		}
+	})
+}
+
+func TestPIIMasker_MaskFields_MapRecursion_NoAliasing(t *testing.T) {
+	masker, _ := NewPIIMasker(PIIConfig{
+		Fields: []string{"password"},
+	})
+
+	original := map[string]any{
+		"user":     "alice",
+		"password": "hunter2",
+	}
+	annotations := Annotations{Annotate("context", original)}
+
+	masker.MaskFields(annotations)
+
+	// The original caller-side map must be untouched by masking.
+	if original["password"] != "hunter2" {
+		t.Errorf("expected caller map unchanged, got password=%v", original["password"])
+	}
+
+	masked := annotations[0].Data().(map[string]any)
+	if masked["password"] != "[REDACTED]" {
+		t.Errorf("expected masked output, got password=%v", masked["password"])
+	}
+}
+
+func TestPIIMasker_MaskFields_MapRecursion_MixedValues(t *testing.T) {
+	masker, _ := NewPIIMasker(PIIConfig{
+		Patterns: []PIIPattern{PatternCPF},
+		Fields:   []string{"password"},
+	})
+
+	annotations := Annotations{
+		Annotate("payload", map[string]any{
+			"name":      "alice",
+			"age":       30,
+			"active":    true,
+			"document":  "123.456.789-01",
+			"password":  "hunter2",
+			"profile": map[string]any{
+				"phone":    "11999998888",
+				"password": "nested-secret",
+			},
+		}),
+	}
+
+	masker.MaskFields(annotations)
+
+	payload := annotations[0].Data().(map[string]any)
+	assertEqual(t, payload["name"].(string), "alice")
+	assertEqual(t, payload["age"].(int), 30)
+	assertEqual(t, payload["active"].(bool), true)
+	assertEqual(t, payload["document"].(string), "***.***.***-**")
+	assertEqual(t, payload["password"].(string), "[REDACTED]")
+
+	profile := payload["profile"].(map[string]any)
+	assertEqual(t, profile["password"].(string), "[REDACTED]")
+}
+
+func TestPIIMasker_MaskFields_NonMapStruct_Passthrough(t *testing.T) {
+	type userProfile struct {
+		Name     string
+		Password string
+	}
+
+	masker, _ := NewPIIMasker(PIIConfig{
+		Fields: []string{"password"},
+	})
+
+	profile := userProfile{Name: "alice", Password: "hunter2"}
+	annotations := Annotations{Annotate("user", profile)}
+
+	masker.MaskFields(annotations)
+
+	got := annotations[0].Data().(userProfile)
+	if got.Password != "hunter2" {
+		t.Errorf("expected struct passthrough (Annotable required for masking), got Password=%q", got.Password)
+	}
+}
+
+func TestPIIConfig_MaxDepth_ZeroDefaults(t *testing.T) {
+	masker, err := NewPIIMasker(PIIConfig{})
+	if err != nil {
+		t.Fatalf("NewPIIMasker failed: %v", err)
+	}
+	if masker.maxDepth != DefaultPIIMaxDepth {
+		t.Errorf("expected maxDepth=%d when MaxDepth is zero, got %d",
+			DefaultPIIMaxDepth, masker.maxDepth)
+	}
+}
+
 func TestPIIMasker_MaskStringWithCounts(t *testing.T) {
 	masker, _ := NewPIIMasker(PIIConfig{
 		Patterns: []PIIPattern{PatternCPF, PatternEmail},

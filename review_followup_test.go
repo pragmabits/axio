@@ -178,8 +178,8 @@ func TestPIIHook_DoesNotMutateCallerAnnotations(t *testing.T) {
 		Annotate("doc", "123.456.789-01"),
 		Annotate("password", "hunter2"),
 	})
-	// mutating the clone must not change the originals (smoke test).
-	cloned[0].Set("[REDACTED]")
+	// reassigning a clone element must not change the originals (smoke test).
+	cloned[0] = Annotate(cloned[0].Name(), "[REDACTED]")
 	if got := cloned[0].Data().(string); got != "[REDACTED]" {
 		t.Fatalf("clone mutation failed: %q", got)
 	}

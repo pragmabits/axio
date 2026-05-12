@@ -100,6 +100,13 @@ var defaultSensitiveFields = []string{
 	"client_secret", "clientsecret",
 }
 
+// DefaultPIIMaxDepth is the depth used when [PIIConfig.MaxDepth] is zero.
+//
+// At MaxDepth = 2, masking enters a top-level map[string]any annotation
+// value and one level of nested map[string]any inside it. Deeper nesting
+// is logged as-is.
+const DefaultPIIMaxDepth = 2
+
 // CustomPII defines a custom PII pattern via regex.
 //
 // Allows adding domain-specific patterns that are not
@@ -133,6 +140,11 @@ type PIIConfig struct {
 	// Fields specifies field names whose values should be redacted.
 	// Matching is case-insensitive and uses partial matching.
 	Fields []string
+	// MaxDepth caps recursion into nested map[string]any annotation values.
+	// A value of zero falls back to [DefaultPIIMaxDepth] (2).
+	// Set to 1 to mask only top-level map keys; nested maps at deeper levels
+	// are logged as-is.
+	MaxDepth int `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty" toml:"maxDepth,omitempty" mapstructure:"maxDepth,omitempty"`
 }
 
 // DefaultPIIConfig returns a configuration with common patterns enabled.
@@ -151,7 +163,8 @@ func DefaultPIIConfig() PIIConfig {
 			PatternCNPJ,
 			PatternCreditCard,
 		},
-		Fields: DefaultSensitiveFields(),
+		Fields:   DefaultSensitiveFields(),
+		MaxDepth: DefaultPIIMaxDepth,
 	}
 }
 
@@ -182,6 +195,7 @@ func DefaultPIIConfig() PIIConfig {
 type PIIMasker struct {
 	patterns []piiPatternInfo
 	fields   map[string]bool
+	maxDepth int
 }
 
 // MustPIIMasker is like [NewPIIMasker] but panics on error.
@@ -204,8 +218,14 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 //
 // Returns an error if any CustomPattern has an invalid regex.
 func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
+	maxDepth := config.MaxDepth
+	if maxDepth == 0 {
+		maxDepth = DefaultPIIMaxDepth
+	}
+
 	masker := &PIIMasker{
-		fields: make(map[string]bool),
+		fields:   make(map[string]bool),
+		maxDepth: maxDepth,
 	}
 
 	for _, pattern := range config.Patterns {
@@ -257,14 +277,22 @@ func (m *PIIMasker) MaskString(input string) string {
 	return result
 }
 
-// MaskFields masks sensitive values in a map.
+// MaskFields masks sensitive values in an annotations slice in place.
 //
-// Field names are matched case-insensitively using partial matching.
-// Nested maps are processed recursively.
+// Sensitivity is matched two ways:
+//   - Annotation names are checked case-insensitively against [PIIConfig.Fields].
+//     A match replaces the entire annotation value with "[REDACTED]".
+//   - String values are scanned for PII patterns via [PIIMasker.MaskString].
 //
-// Fields whose names contain sensitive terms (password, token, etc.)
-// are replaced with "[REDACTED]". String values are processed
-// by [MaskString] to detect PII patterns.
+// Values of type map[string]any are recursively masked up to
+// [PIIConfig.MaxDepth] levels (default 2). At each level, keys are checked
+// against [PIIConfig.Fields] and string values against patterns. Values at
+// or beyond the depth cap are passed through unchanged.
+//
+// Struct-typed annotation values are NOT recursively scanned. To make a
+// struct's fields visible to masking, implement [Annotable] on the type —
+// Annotable values are flattened to top-level annotations before this hook
+// runs, so each resulting field is subject to the same name/value checks.
 func (m *PIIMasker) MaskFields(fields Annotations) {
 	if fields == nil {
 		return
@@ -272,13 +300,15 @@ func (m *PIIMasker) MaskFields(fields Annotations) {
 
 	for index := range fields {
 		if m.isSensitiveField(fields[index].Name()) {
-			fields[index].Set("[REDACTED]")
+			fields[index] = Annotate(fields[index].Name(), "[REDACTED]")
 			continue
 		}
 
 		switch value := fields[index].Data().(type) {
 		case string:
-			fields[index].Set(m.MaskString(value))
+			fields[index] = Annotate(fields[index].Name(), m.MaskString(value))
+		case map[string]any:
+			fields[index] = Annotate(fields[index].Name(), m.maskMap(value, 1))
 		default:
 			continue
 		}
@@ -322,8 +352,14 @@ func (m *PIIMasker) MaskStringWithCounts(input string) PIIMaskResult {
 
 // MaskFieldsWithCounts masks sensitive values and returns match counts.
 //
-// Similar to [MaskFields], but returns a map with the count of each pattern
-// detected across all processed fields.
+// Coverage is identical to [PIIMasker.MaskFields]: string values are
+// pattern-scanned, sensitive-named annotations are redacted, and
+// map[string]any values are recursively masked up to [PIIConfig.MaxDepth]
+// levels. Struct annotations are not recursed — see [Annotable] for the
+// flattening contract.
+//
+// Returns a map with the count of each pattern detected across all
+// processed fields, including matches found inside nested maps.
 func (m *PIIMasker) MaskFieldsWithCounts(fields Annotations) map[PIIPattern]int {
 	matches := make(map[PIIPattern]int)
 
@@ -333,21 +369,80 @@ func (m *PIIMasker) MaskFieldsWithCounts(fields Annotations) map[PIIPattern]int 
 
 	for index := range fields {
 		if m.isSensitiveField(fields[index].Name()) {
-			fields[index].Set("[REDACTED]")
+			fields[index] = Annotate(fields[index].Name(), "[REDACTED]")
 			continue
 		}
 
 		switch value := fields[index].Data().(type) {
 		case string:
 			result := m.MaskStringWithCounts(value)
-			fields[index].Set(result.Masked)
+			fields[index] = Annotate(fields[index].Name(), result.Masked)
 			for pattern, count := range result.Matches {
 				matches[pattern] += count
 			}
+		case map[string]any:
+			fields[index] = Annotate(fields[index].Name(), m.maskMapWithCounts(value, 1, matches))
 		}
 	}
 
 	return matches
+}
+
+// maskMap returns a copy of input with sensitive entries masked.
+//
+// Recurses into nested map[string]any values up to m.maxDepth levels.
+// The input map is not mutated; callers receive a fresh map and may
+// safely retain references to the original.
+func (m *PIIMasker) maskMap(input map[string]any, depth int) map[string]any {
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		if m.isSensitiveField(key) {
+			output[key] = "[REDACTED]"
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			output[key] = m.MaskString(typed)
+		case map[string]any:
+			if depth < m.maxDepth {
+				output[key] = m.maskMap(typed, depth+1)
+			} else {
+				output[key] = typed
+			}
+		default:
+			output[key] = typed
+		}
+	}
+	return output
+}
+
+// maskMapWithCounts mirrors [PIIMasker.maskMap] and accumulates per-pattern
+// match counts into the supplied counts map. The counts map must be non-nil.
+func (m *PIIMasker) maskMapWithCounts(input map[string]any, depth int, counts map[PIIPattern]int) map[string]any {
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		if m.isSensitiveField(key) {
+			output[key] = "[REDACTED]"
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			result := m.MaskStringWithCounts(typed)
+			output[key] = result.Masked
+			for pattern, count := range result.Matches {
+				counts[pattern] += count
+			}
+		case map[string]any:
+			if depth < m.maxDepth {
+				output[key] = m.maskMapWithCounts(typed, depth+1, counts)
+			} else {
+				output[key] = typed
+			}
+		default:
+			output[key] = typed
+		}
+	}
+	return output
 }
 
 // isSensitiveField checks whether the field name matches any sensitive pattern.

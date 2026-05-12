@@ -10,13 +10,10 @@ func TestAnnotate(t *testing.T) {
 	assertEqual(t, note.Data().(string), "value")
 }
 
-func TestAnnotation_Name_Data_Set(t *testing.T) {
+func TestAnnotation_Name_Data(t *testing.T) {
 	annotation := Annotate("k", "v1")
 	assertEqual(t, annotation.Name(), "k")
 	assertEqual(t, annotation.Data().(string), "v1")
-
-	annotation.Set("v2")
-	assertEqual(t, annotation.Data().(string), "v2")
 }
 
 func TestAnnotations_Names_Data_Add(t *testing.T) {

@@ -4,7 +4,7 @@
 [Português](./README.pt-BR.md) | **English**
 
 ![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+![License](https://img.shields.io/badge/License-0BSD-blue.svg)
 
 ## What is Axio
 
@@ -559,6 +559,36 @@ config := axio.PIIConfig{
     },
     Fields: axio.DefaultSensitiveFields(),
 }
+```
+
+#### Coverage and Struct Annotations
+
+PII masking applies to:
+
+- **String annotation values** — scanned for configured patterns (CPF, CNPJ, etc.) and replaced where matched.
+- **Annotation names matching `PIIConfig.Fields`** — the full value is replaced with `[REDACTED]` regardless of type.
+- **`map[string]any` annotation values** — recursively masked up to `PIIConfig.MaxDepth` levels (default `2`). At each level, keys are checked against `Fields` and string values are pattern-scanned. Values at or beyond the depth cap are passed through unchanged. Set `MaxDepth: 1` to mask only top-level map keys.
+
+**Struct-typed annotation values are NOT recursively scanned.** If you log a struct whose fields contain sensitive data, axio cannot see those fields from the annotation hook. To make a struct's fields visible to masking, implement [`Annotable`](#annotable-custom-types) on the type — `Annotable` values are flattened to top-level annotations before the PII hook runs, so each resulting field is subject to the same name/value checks.
+
+```go
+type User struct {
+    Email    string
+    Password string
+}
+
+// Without Annotable: the whole struct ships to the wire intact.
+//   logger.With(axio.Annotate("user", User{Email: "a@b.com", Password: "x"})).Info(ctx, "...")
+//   -> {"user": {"Email": "a@b.com", "Password": "x"}}
+
+// With Annotable: each field becomes a top-level annotation, masked individually.
+func (u User) Append(target []axio.Annotation) []axio.Annotation {
+    return append(target,
+        axio.Annotate("user_email", u.Email),
+        axio.Annotate("user_password", u.Password),
+    )
+}
+//   -> {"user_email": "***@***.***", "user_password": "[REDACTED]"}
 ```
 
 ---

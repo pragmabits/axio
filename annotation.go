@@ -1,7 +1,6 @@
 package axio
 
 import (
-	"fmt"
 	"math"
 
 	"go.uber.org/zap"
@@ -16,11 +15,10 @@ import (
 // The internal storage wraps a zapcore.Field directly to avoid a second
 // type-switch on every log call. The field is unexported and unreachable
 // through any method or signature on the public API; downstream consumers
-// interact only via [Annotation.Name], [Annotation.Data], and
-// [Annotation.Set]. This is a deliberate exception to the project rule
-// that axio's public types use only axio-native types — the alternative
-// would pay a per-call translation cost with no user-visible reward
-// (godoc already hides unexported fields).
+// interact only via [Annotation.Name] and [Annotation.Data]. This is a
+// deliberate exception to the project rule that axio's public types use
+// only axio-native types — the alternative would pay a per-call translation
+// cost with no user-visible reward (godoc already hides unexported fields).
 //
 // Example:
 //
@@ -99,11 +97,6 @@ func (a Annotation) Data() any {
 	default:
 		return a.field.Interface
 	}
-}
-
-// Set updates the annotation value, preserving the key.
-func (a *Annotation) Set(value any) {
-	a.field = toField(a.field.Key, value)
 }
 
 // Annotations is a collection of annotations with helper methods.
@@ -201,52 +194,3 @@ func (h HTTP) Append(target []Annotation) []Annotation {
 	)
 }
 
-// toField converts a Go value to an appropriate zap.Field.
-//
-// Supports: string, []byte, fmt.Stringer, int*, uint*, float*, bool,
-// map[string]any, zapcore.ObjectMarshaler, zapcore.ArrayMarshaler.
-// Any other type falls through to zap.Any for best-effort serialization.
-func toField(key string, raw any) zap.Field {
-	switch value := raw.(type) {
-	case string:
-		return zap.String(key, value)
-	case []byte:
-		return zap.ByteString(key, value)
-	case fmt.Stringer:
-		return zap.String(key, value.String())
-	case int:
-		return zap.Int(key, value)
-	case int8:
-		return zap.Int8(key, value)
-	case int16:
-		return zap.Int16(key, value)
-	case int32:
-		return zap.Int32(key, value)
-	case int64:
-		return zap.Int64(key, value)
-	case uint:
-		return zap.Uint(key, value)
-	case uint8:
-		return zap.Uint8(key, value)
-	case uint16:
-		return zap.Uint16(key, value)
-	case uint32:
-		return zap.Uint32(key, value)
-	case uint64:
-		return zap.Uint64(key, value)
-	case float32:
-		return zap.Float32(key, value)
-	case float64:
-		return zap.Float64(key, value)
-	case bool:
-		return zap.Bool(key, value)
-	case map[string]any:
-		return zap.Any(key, value)
-	case zapcore.ObjectMarshaler:
-		return zap.Object(key, value)
-	case zapcore.ArrayMarshaler:
-		return zap.Array(key, value)
-	default:
-		return zap.Any(key, value)
-	}
-}

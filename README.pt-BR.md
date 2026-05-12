@@ -4,7 +4,7 @@
 **Português** | [English](./README.md)
 
 ![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+![License](https://img.shields.io/badge/License-0BSD-blue.svg)
 
 ## O que é o Axio
 
@@ -524,6 +524,36 @@ config := axio.PIIConfig{
     },
     Fields: axio.DefaultSensitiveFields(),
 }
+```
+
+#### Cobertura e Anotações com Struct
+
+O mascaramento PII se aplica a:
+
+- **Valores de anotação do tipo string** — verificados contra os padrões configurados (CPF, CNPJ, etc.) e substituídos quando há correspondência.
+- **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro é substituído por `[REDACTED]` independentemente do tipo.
+- **Valores `map[string]any`** — mascarados recursivamente até `PIIConfig.MaxDepth` níveis (padrão `2`). Em cada nível, as chaves são verificadas contra `Fields` e valores string são analisados pelos padrões. Valores no limite ou além são preservados sem alteração. Use `MaxDepth: 1` para mascarar apenas chaves do mapa de nível superior.
+
+**Valores de anotação do tipo struct NÃO são verificados recursivamente.** Se você loga um struct cujos campos contêm dados sensíveis, axio não consegue enxergá-los a partir do hook de PII. Para tornar os campos de um struct visíveis ao mascaramento, implemente [`Annotable`](#annotable-tipos-customizados) no tipo — valores `Annotable` são achatados em anotações de nível superior antes do hook PII rodar, e cada campo resultante passa pelas mesmas verificações de nome/valor.
+
+```go
+type Usuario struct {
+    Email string
+    Senha string
+}
+
+// Sem Annotable: o struct inteiro vai para a saída intacto.
+//   logger.With(axio.Annotate("usuario", Usuario{Email: "a@b.com", Senha: "x"})).Info(ctx, "...")
+//   -> {"usuario": {"Email": "a@b.com", "Senha": "x"}}
+
+// Com Annotable: cada campo vira uma anotação de nível superior, mascarado individualmente.
+func (u Usuario) Append(target []axio.Annotation) []axio.Annotation {
+    return append(target,
+        axio.Annotate("usuario_email", u.Email),
+        axio.Annotate("usuario_senha", u.Senha),
+    )
+}
+//   -> {"usuario_email": "***@***.***", "usuario_senha": "[REDACTED]"}
 ```
 
 ---

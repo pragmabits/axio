@@ -2,9 +2,11 @@ package axio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -50,6 +52,7 @@ type Event struct {
 	startTime   time.Time
 	outputs     []Output
 	mutex       sync.Mutex
+	emitted     atomic.Bool
 }
 
 type eventContextKey struct{}
@@ -205,7 +208,11 @@ func (e *Event) SetError(err error, details ...Annotation) {
 //   - Writes the entry through the internal logger
 //
 // Emit should be called once, typically via defer in middleware.
+// Subsequent calls are no-ops; only the first call produces output.
 func (e *Event) Emit(ctx context.Context) {
+	if !e.emitted.CompareAndSwap(false, true) {
+		return
+	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
@@ -276,10 +283,14 @@ func (e *Event) Emit(ctx context.Context) {
 //	// ... enrich event ...
 //	event.Emit(ctx)
 func (e *Event) Close() error {
+	var errs []error
 	for _, output := range e.outputs {
 		if err := output.Close(); err != nil {
-			return err
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("close event: %w", errors.Join(errs...))
 	}
 	return nil
 }

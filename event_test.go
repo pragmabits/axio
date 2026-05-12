@@ -433,6 +433,30 @@ func TestEvent_Emit(t *testing.T) {
 	})
 }
 
+func TestEvent_Emit_Idempotent(t *testing.T) {
+	path := tempFile(t, "idempotent.log")
+	config := minimalConfig()
+	config.Outputs = []OutputConfig{
+		{Type: OutputFile, Format: FormatJSON, Path: path},
+	}
+
+	event, err := NewEvent("once", config)
+	assertNoError(t, err)
+
+	ctx := context.Background()
+	event.Emit(ctx)
+	event.Emit(ctx)
+
+	content := readFile(t, path)
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one emitted line, got %d:\n%s", len(lines), content)
+	}
+
+	result := parseEventJSON(t, lines[0])
+	assertEqual(t, result["event"].(string), "once")
+}
+
 // parseEventJSON parses a single JSON line from event output.
 func parseEventJSON(t *testing.T, content string) map[string]any {
 	t.Helper()

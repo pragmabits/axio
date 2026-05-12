@@ -16,8 +16,8 @@ func TestNoopMetrics(t *testing.T) {
 	m.LogsTotal(ctx, LevelInfo)
 	m.PIIMasked(ctx, PatternCPF)
 	m.AuditRecords(ctx)
-	m.HookDuration(ctx, "test", time.Millisecond)
-	m.HookDurationWithError(ctx, "test", time.Millisecond, false)
+	m.HookDuration(ctx, "test", time.Millisecond, false)
+	m.HookDuration(ctx, "test", time.Millisecond, true)
 }
 
 func TestBuildMetrics_noop_when_disabled(t *testing.T) {

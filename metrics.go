@@ -42,10 +42,9 @@ type Metrics interface {
 	PIIMasked(ctx context.Context, pattern PIIPattern)
 	// AuditRecords increments the counter of created audit records.
 	AuditRecords(ctx context.Context)
-	// HookDuration records the execution duration of a hook.
-	HookDuration(ctx context.Context, hookName string, duration time.Duration)
-	// HookDurationWithError records the execution duration of a hook with error status.
-	HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool)
+	// HookDuration records the execution duration of a hook along with
+	// whether the hook returned an error.
+	HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
 
 // NoopMetrics is a metrics implementation that does nothing.
@@ -63,10 +62,7 @@ func (NoopMetrics) PIIMasked(context.Context, PIIPattern) {}
 func (NoopMetrics) AuditRecords(context.Context) {}
 
 // HookDuration does nothing.
-func (NoopMetrics) HookDuration(context.Context, string, time.Duration) {}
-
-// HookDurationWithError does nothing.
-func (NoopMetrics) HookDurationWithError(context.Context, string, time.Duration, bool) {}
+func (NoopMetrics) HookDuration(context.Context, string, time.Duration, bool) {}
 
 // otelMetrics implements Metrics using OpenTelemetry.
 type otelMetrics struct {
@@ -146,15 +142,9 @@ func (metrics *otelMetrics) AuditRecords(ctx context.Context) {
 	metrics.auditRecords.Add(ctx, 1)
 }
 
-// HookDuration records the execution duration of a hook.
-func (metrics *otelMetrics) HookDuration(ctx context.Context, hookName string, duration time.Duration) {
-	metrics.hookDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		attribute.String("hook.name", hookName),
-	))
-}
-
-// HookDurationWithError records the execution duration of a hook with error status.
-func (metrics *otelMetrics) HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool) {
+// HookDuration records the execution duration of a hook along with whether
+// the hook returned an error.
+func (metrics *otelMetrics) HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool) {
 	errorValue := "false"
 	if hasError {
 		errorValue = "true"

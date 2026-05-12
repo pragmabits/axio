@@ -11,7 +11,7 @@ import (
 //
 // Hooks can modify fields in-place before the entry is written to outputs.
 // All fields are populated by the logger before calling hooks, except
-// Hash and PrevHash which are populated by [AuditHook].
+// Hash and PreviousHash which are populated by [AuditHook].
 type Entry struct {
 	// Timestamp is the moment when the log was created.
 	Timestamp time.Time
@@ -154,7 +154,7 @@ func (c *HookChain) Process(ctx context.Context, entry *Entry) error {
 		err := hook.Process(ctx, entry)
 		duration := time.Since(start)
 
-		c.metrics.HookDurationWithError(ctx, hook.Name(), duration, err != nil)
+		c.metrics.HookDuration(ctx, hook.Name(), duration, err != nil)
 		if err != nil {
 			return fmt.Errorf("hook '%s': %w", hook.Name(), err)
 		}

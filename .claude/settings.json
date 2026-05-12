@@ -27,6 +27,7 @@
       "Bash(git diff *)",
       "Bash(git diff)",
       "Bash(git log *)",
+      "Bash(git reset HEAD*)",
       "Bash(git rev-parse *)",
       "Bash(git status*)",
       "Bash(git tag --sort*)",
@@ -45,6 +46,7 @@
       "Bash(python *validate-commit.py*)",
       "Bash(python3 *git-staging.pyz*)",
       "Bash(python3 *validate-commit.py*)",
+      "Bash(test -x *)",
       "Bash(tree:*)",
       "Bash(wc:*)",
       "Bash(xargs cat:*)"

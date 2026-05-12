@@ -54,7 +54,9 @@ type ChainStore interface {
 type ChainEntry struct {
 	// Sequence is the entry sequence number.
 	Sequence uint64 `json:"sequence"`
-	// Timestamp is when the entry was created.
+	// Timestamp is when the entry was created. Hashed as UTC by
+	// [HashChain.Add] and [HashChain.Verify]; the stored value's timezone
+	// is preserved for display.
 	Timestamp time.Time `json:"timestamp"`
 	// Hash is the SHA256 hash of this entry.
 	Hash string `json:"hash"`
@@ -91,8 +93,9 @@ type ChainEntry struct {
 //	}
 //
 //	// Verify integrity
-//	err = chain.Verify(entries, func(i int) []byte {
-//	    return getData(i)
+//	err = chain.Verify([]axio.VerifiableEntry{
+//	    {Entry: entries[0], Data: getData(0)},
+//	    {Entry: entries[1], Data: getData(1)},
 //	})
 type HashChain struct {
 	sequence uint64
@@ -162,31 +165,45 @@ func (c *HashChain) Add(data []byte) (hash, previousHash string, err error) {
 }
 
 // computeHash generates a SHA256 hash of the entry metadata and data.
+//
+// The entry timestamp is normalized to UTC before hashing so the result is
+// independent of the caller's timezone.
 func (c *HashChain) computeHash(entry ChainEntry, data []byte) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(entry.PreviousHash))
 	_, _ = fmt.Fprintf(h, "%d", entry.Sequence)
-	_, _ = h.Write([]byte(entry.Timestamp.Format(time.RFC3339Nano)))
+	_, _ = h.Write([]byte(entry.Timestamp.UTC().Format(time.RFC3339Nano)))
 	_, _ = h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifiableEntry pairs a [ChainEntry] with the original data hashed into it.
+// Used by [HashChain.Verify] to recompute hashes without an out-of-band lookup.
+type VerifiableEntry struct {
+	// Entry is the chain entry to validate.
+	Entry ChainEntry
+	// Data is the original payload that was hashed into Entry.
+	Data []byte
 }
 
 // Verify validates that a sequence of entries forms a valid chain.
 //
 // Returns an error if any hash is invalid or the chain is broken.
-func (c *HashChain) Verify(entries []ChainEntry, getData func(int) []byte) error {
-	for index, entry := range entries {
-		data := getData(index)
-		computed := c.computeHash(entry, data)
+//
+// Timestamps inside each [VerifiableEntry] are normalized to UTC for hash
+// recomputation; the caller does not need to convert them beforehand.
+func (c *HashChain) Verify(entries []VerifiableEntry) error {
+	for index, item := range entries {
+		computed := c.computeHash(item.Entry, item.Data)
 
-		if computed != entry.Hash {
+		if computed != item.Entry.Hash {
 			return fmt.Errorf("%w: sequence %d: expected %s, got %s",
-				ErrHashMismatch, entry.Sequence, entry.Hash, computed)
+				ErrHashMismatch, item.Entry.Sequence, item.Entry.Hash, computed)
 		}
 
-		if index > 0 && entry.PreviousHash != entries[index-1].Hash {
+		if index > 0 && item.Entry.PreviousHash != entries[index-1].Entry.Hash {
 			return fmt.Errorf("%w: sequence %d",
-				ErrChainBroken, entry.Sequence)
+				ErrChainBroken, item.Entry.Sequence)
 		}
 	}
 	return nil
@@ -228,7 +245,12 @@ func NewFileStore(path string) *FileStore {
 	return &FileStore{path: path}
 }
 
-// Save persists the chain state to the file.
+// Save persists the chain state to the file atomically.
+//
+// The implementation writes to a sibling staging file, fsyncs it, then renames
+// over the destination so that a concurrent reader (or a crash mid-write) can
+// never observe a partial update — either the previous state remains intact
+// or the new state is fully visible.
 func (s *FileStore) Save(sequence uint64, lastHash string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -243,7 +265,31 @@ func (s *FileStore) Save(sequence uint64, lastHash string) error {
 		return fmt.Errorf("%w: %w", ErrMarshalChainState, err)
 	}
 
-	if err := os.WriteFile(s.path, data, 0600); err != nil {
+	stagingPath := s.path + ".staging"
+	stagingFile, err := os.OpenFile(stagingPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrSaveChainState, s.path, err)
+	}
+
+	if _, err := stagingFile.Write(data); err != nil {
+		_ = stagingFile.Close()
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("%w: %s: %w", ErrSaveChainState, s.path, err)
+	}
+
+	if err := stagingFile.Sync(); err != nil {
+		_ = stagingFile.Close()
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("%w: %s: %w", ErrSaveChainState, s.path, err)
+	}
+
+	if err := stagingFile.Close(); err != nil {
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("%w: %s: %w", ErrSaveChainState, s.path, err)
+	}
+
+	if err := os.Rename(stagingPath, s.path); err != nil {
+		_ = os.Remove(stagingPath)
 		return fmt.Errorf("%w: %s: %w", ErrSaveChainState, s.path, err)
 	}
 

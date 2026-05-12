@@ -82,10 +82,8 @@ func TestHashChain_Verify(t *testing.T) {
 		// Tamper with the stored hash
 		entry.Hash = hash + "tampered"
 
-		entries := []ChainEntry{entry}
-		err := chain.Verify(entries, func(i int) []byte {
-			return data
-		})
+		entries := []VerifiableEntry{{Entry: entry, Data: data}}
+		err := chain.Verify(entries)
 
 		if err == nil {
 			t.Error("expected invalid hash error")
@@ -117,10 +115,11 @@ func TestHashChain_Verify(t *testing.T) {
 		}
 		entry2.Hash = chain.computeHash(entry2, data[1])
 
-		entries := []ChainEntry{entry1, entry2}
-		err := chain.Verify(entries, func(i int) []byte {
-			return data[i]
-		})
+		entries := []VerifiableEntry{
+			{Entry: entry1, Data: data[0]},
+			{Entry: entry2, Data: data[1]},
+		}
+		err := chain.Verify(entries)
 
 		if err == nil {
 			t.Error("expected broken chain error")
@@ -151,11 +150,34 @@ func TestHashChain_Verify(t *testing.T) {
 		}
 		entry2.Hash = chain.computeHash(entry2, data[1])
 
-		entries := []ChainEntry{entry1, entry2}
-		err := chain.Verify(entries, func(i int) []byte {
-			return data[i]
-		})
+		entries := []VerifiableEntry{
+			{Entry: entry1, Data: data[0]},
+			{Entry: entry2, Data: data[1]},
+		}
+		err := chain.Verify(entries)
 		assertNoError(t, err)
+	})
+
+	t.Run("non_utc_timestamp_verifies", func(t *testing.T) {
+		chain, _ := NewHashChain(nil)
+		data := []byte("payload")
+
+		timestamp := time.Now().UTC()
+		entry := ChainEntry{
+			Sequence:     1,
+			Timestamp:    timestamp,
+			PreviousHash: "",
+		}
+		entry.Hash = chain.computeHash(entry, data)
+
+		easternZone := time.FixedZone("EST", -5*3600)
+		easternEntry := entry
+		easternEntry.Timestamp = entry.Timestamp.In(easternZone)
+
+		entries := []VerifiableEntry{{Entry: easternEntry, Data: data}}
+		if err := chain.Verify(entries); err != nil {
+			t.Fatalf("expected non-UTC timestamp to verify, got: %v", err)
+		}
 	})
 }
 
@@ -210,6 +232,18 @@ func TestFileStore(t *testing.T) {
 		// 0600 = owner read/write only
 		if info.Mode().Perm() != 0600 {
 			t.Errorf("expected permissions 0600, got %o", info.Mode().Perm())
+		}
+	})
+
+	t.Run("no_staging_leftover_on_success", func(t *testing.T) {
+		path := tempFile(t, "staging-leftover.json")
+		store := NewFileStore(path)
+
+		err := store.Save(7, "successhash")
+		assertNoError(t, err)
+
+		if _, err := os.Stat(path + ".staging"); !os.IsNotExist(err) {
+			t.Errorf("expected staging file to be removed, got err=%v", err)
 		}
 	})
 }

@@ -1,0 +1,30 @@
+serviceName: config-example
+serviceVersion: 1.0.0
+environment: development
+level: info
+
+outputs:
+  - type: stdout
+    format: json
+  - type: file
+    format: json
+    path: /tmp/axio-config-example.log
+    rotation:
+      maxSize: 50
+      maxAge: 7
+      maxBackups: 3
+      compress: true
+      interval: 24h
+
+piiEnabled: true
+piiPatterns:
+  - cpf
+  - email
+
+audit:
+  enabled: false
+
+tracer: noop
+
+metrics:
+  enabled: false

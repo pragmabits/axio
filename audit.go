@@ -267,7 +267,7 @@ func (s *FileStore) Load() (uint64, string, error) {
 
 // AuditHook adds hash chain information to log entries for tampering detection.
 //
-// The hook populates the Hash and PrevHash fields of [Entry], creating a
+// The hook populates the Hash and PreviousHash fields of [Entry], creating a
 // cryptographic chain that allows log integrity verification.
 //
 // AuditHook implements [MetricsAware] to emit metrics for audit records.

@@ -47,7 +47,7 @@
 // Axio automatically detects and masks sensitive personal data:
 //
 //   - CPF: 123.456.789-01 → ***.***.***-**
-//   - CNPJ: 12.345.678/0001-90 → **.***.***/**01-**
+//   - CNPJ: 12.345.678/0001-90 → **.***.***/****-**
 //   - Credit cards: 1234-5678-9012-3456 → ****-****-****-****
 //   - E-mails: user@example.com → ***@***.***
 //   - Brazilian phones: (11) 99999-9999 → (**) *****-****
@@ -84,12 +84,12 @@
 //	logger.With(
 //	    axio.Annotate("user_id", userID),
 //	    axio.Annotate("tenant", tenantName),
-//	    &axio.HTTP{
+//	    axio.Annotate("http", axio.HTTP{
 //	        Method:     "POST",
 //	        URL:        "/api/v1/orders",
 //	        StatusCode: 201,
 //	        LatencyMS:  45,
-//	    },
+//	    }),
 //	).Info(ctx, "order created successfully")
 //
 // # Agent Mode
@@ -268,7 +268,7 @@ func (f *Format) UnmarshalText(text []byte) error {
 //	// Log with structured annotations
 //	logger.With(
 //	    axio.Annotate("user_id", userID),
-//	    &axio.HTTP{Method: "POST", URL: "/api/orders"},
+//	    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders"}),
 //	).Info(ctx, "order created")
 //
 //	// Error log

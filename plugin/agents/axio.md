@@ -115,7 +115,7 @@ Note: Warn and Error take an `error` as second parameter. Debug and Info do not.
 logger.With(
     axio.Annotate("user_id", userID),
     axio.Annotate("tenant", tenantName),
-    &axio.HTTP{Method: "POST", URL: "/api/orders", StatusCode: 201, LatencyMS: 45},
+    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders", StatusCode: 201, LatencyMS: 45}),
 ).Info(ctx, "order created")
 ```
 

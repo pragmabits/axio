@@ -137,13 +137,13 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
     // ... lógica de negócio ...
 
     logger.With(
-        &axio.HTTP{
+        axio.Annotate("http", axio.HTTP{
             Method:     r.Method,
             URL:        r.URL.Path,
             StatusCode: 201,
             LatencyMS:  time.Since(start).Milliseconds(),
             ClientIP:   r.RemoteAddr,
-        },
+        }),
         axio.Annotate("user_id", "usr_123"),
     ).Info(ctx, "pedido criado")
 
@@ -346,14 +346,14 @@ logger.With(
 Struct para metadados de requisições HTTP:
 
 ```go
-logger.With(&axio.HTTP{
+logger.With(axio.Annotate("http", axio.HTTP{
     Method:     "POST",
     URL:        "/api/v1/orders",
     StatusCode: 201,
     LatencyMS:  45,
     UserAgent:  r.UserAgent(),
     ClientIP:   r.RemoteAddr,
-}).Info(ctx, "requisição processada")
+})).Info(ctx, "requisição processada")
 ```
 
 | Campo        | Tipo     | Descrição                     |
@@ -459,7 +459,7 @@ Em ambientes com logs centralizados, PII exposta representa risco de:
 | Padrão          | Constante           | Formatos detectados             | Máscara               |
 | --------------- | ------------------- | ------------------------------- | --------------------- |
 | CPF             | `PatternCPF`        | `123.456.789-01`, `12345678901` | `***.***.***-**`      |
-| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`            | `**.***.***/**01-**`  |
+| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`            | `**.***.***/****-**`  |
 | Cartão          | `PatternCreditCard` | `1234-5678-9012-3456`           | `****-****-****-****` |
 | Email           | `PatternEmail`      | `user@domain.com`               | `***@***.***`         |
 | Telefone        | `PatternPhone`      | `(11) 99999-9999`               | `(**) *****-****`     |
@@ -524,10 +524,10 @@ Uma **hash chain** (cadeia de hashes) é uma estrutura onde cada registro conté
 
 #### Campos Adicionados
 
-| Campo       | Descrição                 |
-| ----------- | ------------------------- |
-| `hash`      | Hash SHA256 desta entrada |
-| `prev_hash` | Hash da entrada anterior  |
+| Campo           | Descrição                 |
+| --------------- | ------------------------- |
+| `hash`          | Hash SHA256 desta entrada |
+| `previous_hash` | Hash da entrada anterior  |
 
 #### Configuração
 
@@ -660,8 +660,7 @@ type Metrics interface {
     LogsTotal(ctx context.Context, level Level)
     PIIMasked(ctx context.Context, pattern PIIPattern)
     AuditRecords(ctx context.Context)
-    HookDuration(ctx context.Context, hookName string, duration time.Duration)
-    HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool)
+    HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
 ```
 
@@ -722,13 +721,13 @@ Para operações críticas, use `AuditHook` e combine com armazenamento confiáv
 
 ```go
 logger.With(
-    &axio.HTTP{
+    axio.Annotate("http", axio.HTTP{
         Method:     r.Method,
         URL:        r.URL.Path,
         StatusCode: statusCode,
         LatencyMS:  latencyMS,
         ClientIP:   r.RemoteAddr,
-    },
+    }),
     axio.Annotate("request_id", requestID),
     axio.Annotate("user_id", userID),
 ).Info(ctx, "requisição concluída")
@@ -756,7 +755,7 @@ logger.With(
 | Erro de domínio      | Warn/Error | `+operation`, `+entity`, `+error`             |
 
 ```go
-logger.With(&axio.HTTP{...}, axio.Annotate("request_id", id)).Info(ctx, "requisição finalizada")
+logger.With(axio.Annotate("http", axio.HTTP{...}), axio.Annotate("request_id", id)).Info(ctx, "requisição finalizada")
 ```
 
 ### Workers e Jobs

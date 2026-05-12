@@ -56,7 +56,7 @@ func levelFiltering(ctx context.Context) {
 	fmt.Println("Logger level set to Warn — Debug and Info are discarded:")
 	logger.Debug(ctx, "This debug log should NOT appear")
 	logger.Info(ctx, "This info log should NOT appear")
-	logger.Warn(ctx, errors.New("disk 90%% full"), "This warn log SHOULD appear")
+	logger.Warn(ctx, errors.New("disk 90% full"), "This warn log SHOULD appear")
 	logger.Error(ctx, errors.New("disk full"), "This error log SHOULD appear")
 	fmt.Println()
 }

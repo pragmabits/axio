@@ -458,8 +458,7 @@ type Metrics interface {
     LogsTotal(ctx context.Context, level Level)
     PIIMasked(ctx context.Context, pattern PIIPattern)
     AuditRecords(ctx context.Context)
-    HookDuration(ctx context.Context, hookName string, duration time.Duration)
-    HookDurationWithError(ctx context.Context, hookName string, duration time.Duration, hasError bool)
+    HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
 
 type NoopMetrics struct{}

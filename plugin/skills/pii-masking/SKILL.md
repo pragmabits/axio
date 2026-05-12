@@ -9,7 +9,7 @@ Axio automatically detects and masks sensitive personal data in log messages and
 
 ## Built-in Patterns
 - CPF: 123.456.789-01 → ***.***.***-**
-- CNPJ: 12.345.678/0001-90 → **.***.***/**01-**
+- CNPJ: 12.345.678/0001-90 → **.***.***/****-**
 - Credit Card: 1234-5678-9012-3456 → ****-****-****-****
 - Email: user@example.com → ***@***.***
 - Phone: (11) 99999-9999 → (**) *****-****

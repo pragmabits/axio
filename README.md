@@ -172,7 +172,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `Outputs`           | `[]OutputConfig` | No          | auto                       | see OutputConfig                       | Validated individually                    |
 | `PIIEnabled`        | `bool`           | No          | `false`                    | `true`, `false`                        | -                                         |
 | `PIIPatterns`       | `[]PIIPattern`   | No          | `[cpf, cnpj, credit_card]` | see PII table                          | -                                         |
-| `PIIFields`         | `[]string`       | No          | `DefaultSensitiveFields`   | any                                    | -                                         |
+| `PIIFields`         | `[]string`       | No          | `DefaultSensitiveFields()` | any                                    | -                                         |
 | `PIICustomPatterns` | `[]CustomPII`    | No          | `[]`                       | see CustomPII                          | Regex must be valid                       |
 | `TracerType`        | `string`         | No          | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` if invalid             |
 | `Audit`             | `AuditConfig`    | No          | disabled                   | see AuditConfig                        | -                                         |
@@ -532,7 +532,7 @@ Fields whose names contain these terms are automatically redacted to `[REDACTED]
 logger, _ := axio.New(config,
     axio.WithPII(
         []axio.PIIPattern{axio.PatternCPF, axio.PatternEmail},
-        axio.DefaultSensitiveFields,
+        axio.DefaultSensitiveFields(),
     ),
 )
 
@@ -557,7 +557,7 @@ config := axio.PIIConfig{
             Mask:    "EMP-******",
         },
     },
-    Fields: axio.DefaultSensitiveFields,
+    Fields: axio.DefaultSensitiveFields(),
 }
 ```
 

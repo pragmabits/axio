@@ -118,7 +118,7 @@ func WithHooks(hooks ...Hook) Option {
 //	logger, _ := axio.New(config,
 //	    axio.WithPII(
 //	        []axio.PIIPattern{axio.PatternCPF, axio.PatternEmail},
-//	        axio.DefaultSensitiveFields,
+//	        axio.DefaultSensitiveFields(),
 //	    ),
 //	)
 func WithPII(patterns []PIIPattern, fields []string) Option {

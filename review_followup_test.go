@@ -157,7 +157,7 @@ func TestPIIHook_DoesNotMutateCallerAnnotations(t *testing.T) {
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields))
+	logger, err := New(cfg, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()))
 	assertNoError(t, err)
 	defer logger.Close()
 

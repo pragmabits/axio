@@ -182,7 +182,7 @@ func applyDefaults(config *Config) {
 	}
 
 	if config.PIIEnabled && len(config.PIIFields) == 0 {
-		config.PIIFields = DefaultSensitiveFields
+		config.PIIFields = DefaultSensitiveFields()
 	}
 
 	if config.Metrics.MeterName == "" {

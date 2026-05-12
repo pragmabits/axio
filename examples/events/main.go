@@ -255,7 +255,7 @@ func eventWithPII(ctx context.Context) {
 	event, err := axio.NewEvent("user_registration", config,
 		axio.WithPII(
 			[]axio.PIIPattern{axio.PatternCPF, axio.PatternEmail},
-			axio.DefaultSensitiveFields,
+			axio.DefaultSensitiveFields(),
 		),
 	)
 	if err != nil {

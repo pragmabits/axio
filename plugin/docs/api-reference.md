@@ -277,7 +277,7 @@ type PIIConfig struct {
 
 func DefaultPIIConfig() PIIConfig
 
-var DefaultSensitiveFields []string  // password, token, api_key, secret, etc.
+func DefaultSensitiveFields() []string  // returns a fresh copy: password, token, api_key, secret, etc.
 
 type PIIMasker struct { /* internal */ }
 

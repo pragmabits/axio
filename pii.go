@@ -76,11 +76,21 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 	},
 }
 
-// DefaultSensitiveFields contains field names that are automatically redacted.
+// DefaultSensitiveFields returns the default list of field names that are
+// automatically redacted.
 //
 // Matching is case-insensitive and uses partial matching
 // (e.g., "user_password" matches "password").
-var DefaultSensitiveFields = []string{
+//
+// A fresh copy is returned on every call so callers cannot mutate the package
+// default. The returned slice may be modified freely.
+func DefaultSensitiveFields() []string {
+	out := make([]string, len(defaultSensitiveFields))
+	copy(out, defaultSensitiveFields)
+	return out
+}
+
+var defaultSensitiveFields = []string{
 	"password", "senha",
 	"token", "api_key", "apikey",
 	"secret", "credential",
@@ -141,7 +151,7 @@ func DefaultPIIConfig() PIIConfig {
 			PatternCNPJ,
 			PatternCreditCard,
 		},
-		Fields: DefaultSensitiveFields,
+		Fields: DefaultSensitiveFields(),
 	}
 }
 

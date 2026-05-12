@@ -353,7 +353,7 @@ func TestEvent_Emit(t *testing.T) {
 		}
 
 		event, err := NewEvent("checkout", config,
-			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields),
+			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()),
 		)
 		assertNoError(t, err)
 
@@ -377,7 +377,7 @@ func TestEvent_Emit(t *testing.T) {
 		}
 
 		event, err := NewEvent("checkout", config,
-			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields),
+			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()),
 		)
 		assertNoError(t, err)
 

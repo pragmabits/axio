@@ -13,6 +13,15 @@ import (
 // Use [Annotate] to create annotations for simple key-value pairs.
 // For complex types that produce multiple fields, implement [Annotable].
 //
+// The internal storage wraps a zapcore.Field directly to avoid a second
+// type-switch on every log call. The field is unexported and unreachable
+// through any method or signature on the public API; downstream consumers
+// interact only via [Annotation.Name], [Annotation.Data], and
+// [Annotation.Set]. This is a deliberate exception to the project rule
+// that axio's public types use only axio-native types — the alternative
+// would pay a per-call translation cost with no user-visible reward
+// (godoc already hides unexported fields).
+//
 // Example:
 //
 //	logger.With(
@@ -25,9 +34,9 @@ type Annotation struct {
 
 // Annotate creates an annotation with the given key and value.
 //
-// For primitive types (string, integers, floats, bool), this function is
-// zero-allocation when inlined by the compiler. Complex types (structs,
-// maps, slices) fall back to interface boxing via [zap.Any].
+// For primitive types (string, integers, floats, bool), the implementation
+// is zero-allocation when inlined by the compiler. Complex types (structs,
+// maps, slices) fall back to interface boxing.
 //
 // Example:
 //

@@ -1,8 +1,8 @@
 // package axio provides a high-performance structured logger for Go applications.
 //
-// Axio is built on top of [go.uber.org/zap] and offers enterprise-grade features
-// such as PII masking, hash chain auditing, and integration with
-// OpenTelemetry for distributed tracing.
+// Axio offers enterprise-grade features such as PII masking, hash chain auditing,
+// and integration with OpenTelemetry for distributed tracing, exposed through a
+// small, stable public API that intentionally hides the underlying engine.
 //
 // # Basic Usage
 //
@@ -287,7 +287,14 @@ type Logger interface {
 	Error(context.Context, error, string, ...any)
 	// With returns a logger with additional annotations attached.
 	With(...Annotation) Logger
-	// Close releases resources associated with the logger (open files, etc).
-	// It should be called when the logger is no longer needed.
+	// Close releases resources owned by the root logger (open files, rotation
+	// goroutines, etc.). It should be called when the logger is no longer
+	// needed, typically via defer in main.
+	//
+	// Only the root Logger (returned by [New]) owns resources. Calling Close
+	// on a logger produced by [Logger.Named] or [Logger.With] returns
+	// [ErrLoggerNotRoot] and leaves all resources untouched. A second Close
+	// on the root returns [ErrLoggerClosed]. After the root is closed, log
+	// calls on the root and on every fork become silent no-ops.
 	Close() error
 }

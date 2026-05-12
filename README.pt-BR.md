@@ -178,11 +178,23 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 
 ### OutputConfig
 
-| Campo    | Tipo         | Obrigatório | Padrão | Valores                     | Validação                                    |
-| -------- | ------------ | ----------- | ------ | --------------------------- | -------------------------------------------- |
-| `Type`   | `OutputType` | Sim         | -      | `console`, `stdout`, `file` | `ErrInvalidOutputType` se inválido           |
-| `Format` | `Format`     | Sim         | -      | `json`, `text`              | `ErrInvalidFormat` se inválido               |
-| `Path`   | `string`     | Condicional | `""`   | caminho de arquivo          | `ErrFileOutputNoPath` se `Type=file` e vazio |
+| Campo      | Tipo             | Obrigatório | Padrão     | Valores                     | Validação                                    |
+| ---------- | ---------------- | ----------- | ---------- | --------------------------- | -------------------------------------------- |
+| `Type`     | `OutputType`     | Sim         | -          | `console`, `stdout`, `file` | `ErrInvalidOutputType` se inválido           |
+| `Format`   | `Format`         | Sim         | -          | `json`, `text`              | `ErrInvalidFormat` se inválido               |
+| `Path`     | `string`         | Condicional | `""`       | caminho de arquivo          | `ErrFileOutputNoPath` se `Type=file` e vazio |
+| `Rotation` | `RotationConfig` | Não         | desativada | ver RotationConfig          | Aplicável apenas quando `Type=file`          |
+
+### RotationConfig
+
+| Campo        | Tipo       | Obrigatório | Padrão  | Valores                            | Validação |
+| ------------ | ---------- | ----------- | ------- | ---------------------------------- | --------- |
+| `MaxSize`    | `int`      | Não         | `0`     | megabytes (0 = sem limite)         | -         |
+| `MaxAge`     | `int`      | Não         | `0`     | dias (0 = sem limite)              | -         |
+| `MaxBackups` | `int`      | Não         | `0`     | quantidade (0 = manter todos)      | -         |
+| `Compress`   | `bool`     | Não         | `false` | `true`, `false`                    | -         |
+| `LocalTime`  | `bool`     | Não         | `false` | `true`, `false`                    | -         |
+| `Interval`   | `Duration` | Não         | `0`     | ex.: `24h`, `1h30m`, `500ms`       | -         |
 
 ### AuditConfig
 
@@ -231,6 +243,12 @@ outputs:
   - type: file
     format: json
     path: /var/log/app.log
+    rotation:
+      maxSize: 100
+      maxAge: 30
+      maxBackups: 10
+      compress: true
+      interval: 24h
 
 piiEnabled: true
 piiPatterns:
@@ -365,9 +383,9 @@ logger.With(axio.Annotate("http", axio.HTTP{
 | `UserAgent`  | `string` | User-Agent do cliente         |
 | `ClientIP`   | `string` | IP do cliente                 |
 
-#### Marshaler (customizado)
+#### Annotable (tipos customizados)
 
-Implemente `Marshaler` para tipos complexos:
+Implemente `Annotable` para tipos que produzem múltiplos campos:
 
 ```go
 type Order struct {
@@ -376,13 +394,14 @@ type Order struct {
     secret string // não será logado
 }
 
-func (o Order) MarshalLog(a axio.Annotator) error {
-    a.Add("order_id", o.ID)
-    a.Add("item_count", len(o.Items))
-    return nil
+func (o Order) Append(target []axio.Annotation) []axio.Annotation {
+    return append(target,
+        axio.Annotate("order_id", o.ID),
+        axio.Annotate("item_count", len(o.Items)),
+    )
 }
 
-// Uso
+// Uso — os campos são expandidos individualmente na saída do log
 logger.With(axio.Annotate("order", order)).Info(ctx, "pedido processado")
 ```
 
@@ -666,6 +685,102 @@ type Metrics interface {
 
 ---
 
+### Wide Events
+
+#### O que são Wide Events?
+
+**Wide events** (também conhecidos como *canonical log lines*) substituem várias linhas de log espalhadas pela execução por uma única entrada ricamente anotada, emitida ao final de uma unidade de trabalho (por exemplo, uma requisição HTTP). Em vez de 5–10 linhas por requisição, um único evento captura todo o contexto do que aconteceu.
+
+Wide events omitem o campo de nível — a severidade é expressa pelos próprios campos do evento (`status_code`, `error`, etc.), não por níveis tradicionais de log.
+
+#### Uso Básico
+
+```go
+event, err := axio.NewEvent("checkout", config)
+if err != nil {
+    return err
+}
+defer event.Close()
+
+event.Add("user_id", userID)
+event.Add("cart_total", 15999)
+event.Add("item_count", 3)
+
+event.Emit(ctx)
+// Saída: {"timestamp":"...","event":"checkout","user_id":"usr_456","cart_total":15999,"item_count":3,"duration_ms":42}
+```
+
+#### API
+
+| Método | Descrição |
+| ------ | --------- |
+| `NewEvent(name, config, ...Option)` | Cria um novo evento usando o mesmo Config/Option de `New` |
+| `Add(key, value)` | Adiciona um campo chave-valor (thread-safe) |
+| `With(...Annotation)` | Adiciona anotações, incluindo tipos `Annotable` como `HTTP` |
+| `SetError(err, ...Annotation)` | Registra um erro com anotações de detalhe opcionais |
+| `Emit(ctx)` | Escreve o evento como uma única entrada (calcula `duration_ms`, executa hooks) |
+| `Close()` | Libera recursos de saída (chame depois de `Emit`) |
+
+#### Propagação via Context (padrão middleware)
+
+Armazene o evento no contexto para que handlers downstream possam enriquecê-lo:
+
+```go
+// Middleware: cria e armazena
+event, _ := axio.NewEvent("http_request", config)
+defer event.Close()
+ctx = axio.WithEvent(ctx, event)
+
+// Handler: enriquece a partir do contexto
+event := axio.EventFromContext(ctx)
+event.Add("user_id", userID)
+event.With(axio.Annotate("http", axio.HTTP{
+    Method:     r.Method,
+    URL:        r.URL.Path,
+    StatusCode: 201,
+    LatencyMS:  latencyMS,
+}))
+
+// Middleware: emite no final da requisição
+event.Emit(ctx)
+```
+
+#### Registro de Erros
+
+```go
+// Erro simples
+event.SetError(err)
+
+// Erro com detalhes estruturados
+event.SetError(err,
+    axio.Annotate("error_code", "card_declined"),
+    axio.Annotate("error_retriable", false),
+)
+```
+
+#### Integração com Recursos
+
+Wide events suportam as mesmas Options do logger padrão:
+
+```go
+// Com mascaramento de PII
+event, _ := axio.NewEvent("user_registration", config,
+    axio.WithPII(nil, nil),
+)
+
+// Com hash chain de auditoria
+event, _ := axio.NewEvent("access_grant", config,
+    axio.WithAudit("/var/lib/axio/chain.json"),
+)
+
+// Com tracing
+event, _ := axio.NewEvent("http_request", config,
+    axio.WithTracer(axio.Otel()),
+)
+```
+
+---
+
 ## Boas Práticas de Logging
 
 ### 1. Estrutura antes de texto
@@ -941,3 +1056,6 @@ logger.With(
 | `ErrCreateAuditHook`     | Falha ao criar hook de auditoria     | Verifique configuração do chain store        |
 | `ErrNilMetricsProvider`  | Provider de métricas é nil           | Passe um MeterProvider válido                |
 | `ErrCreateMetric`        | Falha ao criar instrumento OTel      | Verifique configuração do provider           |
+| `ErrNilTracer`           | Tracer passado a WithTracer é nil    | Passe um Tracer não-nulo ou omita a opção    |
+| `ErrLoggerClosed`        | Logger já foi fechado                | Guarda idempotente; cheque com `errors.Is`   |
+| `ErrLoggerNotRoot`       | Close chamado em um Logger derivado  | Apenas o root retornado por `New` pode fechar|

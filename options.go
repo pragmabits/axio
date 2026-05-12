@@ -152,9 +152,8 @@ func WithAudit(storePath string) Option {
 	}
 }
 
-// WithMetrics configures the logger to emit metrics using the specified MeterProvider.
-//
-// BREAKING CHANGE v2.0: Now receives metric.MeterProvider instead of Metrics.
+// WithMetrics configures the logger to emit metrics using the specified
+// OpenTelemetry MeterProvider.
 //
 // If provider is nil, returns [ErrNilMetricsProvider].
 //

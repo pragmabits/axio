@@ -44,8 +44,6 @@ type Entry struct {
 // modify the log entry in-place. If a hook returns an error,
 // processing is stopped and the entry is not written.
 //
-// BREAKING CHANGE v2.0: Process now receives context.Context as the first parameter.
-//
 // Hooks included in the package:
 //   - [PIIHook]: masks sensitive personal data
 //   - [AuditHook]: adds hash chain for auditing
@@ -66,7 +64,13 @@ type Entry struct {
 type Hook interface {
 	// Name returns the hook identifier, used for metrics and debugging.
 	Name() string
-	// Process modifies the entry in-place. Return error to prevent writing.
+	// Process modifies the entry in-place. Return a non-nil error to abort
+	// the write.
+	//
+	// The *Entry passed in is borrowed from an internal pool and is only
+	// valid for the duration of the call. Implementations must not retain
+	// the pointer, store it for async use, or hand it to another goroutine;
+	// copy any needed values before returning.
 	Process(ctx context.Context, entry *Entry) error
 }
 

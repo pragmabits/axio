@@ -34,8 +34,16 @@ type AuditConfig struct {
 //
 // Implement this interface to store the chain state in different
 // backends (file, database, etc.).
+//
+// Save and Load must be safe to call from multiple goroutines.
 type ChainStore interface {
-	// Save persists the current chain state.
+	// Save persists the current chain state atomically and durably.
+	//
+	// The (sequence, lastHash) pair must be written as a single unit so that
+	// a concurrent reader, or a crash mid-write, can never observe a partial
+	// update — either both fields reflect the new entry, or both still
+	// reflect the previous one. A non-nil error must guarantee that the
+	// stored state was not modified.
 	Save(sequence uint64, lastHash string) error
 	// Load retrieves the persisted chain state.
 	// Returns zero values if no state exists.

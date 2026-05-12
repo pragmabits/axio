@@ -1091,3 +1091,6 @@ logger.With(
 | `ErrCreateAuditHook`     | Failed to create audit hook          | Check chain store configuration              |
 | `ErrNilMetricsProvider`  | Metrics provider is nil              | Pass a valid MeterProvider                   |
 | `ErrCreateMetric`        | Failed to create OTel instrument     | Check provider configuration                 |
+| `ErrNilTracer`           | Tracer passed to WithTracer is nil   | Pass a non-nil Tracer or omit the option     |
+| `ErrLoggerClosed`        | Logger has already been closed       | Idempotent guard; check with `errors.Is`     |
+| `ErrLoggerNotRoot`       | Close called on a forked Logger      | Only the root from `New` can be closed       |

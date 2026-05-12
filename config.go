@@ -107,6 +107,10 @@ type Config struct {
 	metricsProvider metric.MeterProvider
 	tracer          Tracer
 	hooks           []Hook
+	// resolvedOutputs holds outputs supplied directly via WithOutputs.
+	// When non-empty, BuildOutputs returns these and skips the OutputConfig
+	// resolution path entirely (no file is opened twice).
+	resolvedOutputs []Output
 }
 
 // DefaultConfig returns a configuration with sensible default values.

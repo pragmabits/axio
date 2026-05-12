@@ -28,13 +28,13 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			name:     "cnpj_with_punctuation",
 			patterns: []PIIPattern{PatternCNPJ},
 			input:    "CNPJ: 12.345.678/0001-90",
-			want:     "CNPJ: **.***.***/**01-**",
+			want:     "CNPJ: **.***.***/****-**",
 		},
 		{
 			name:     "cnpj_without_punctuation",
 			patterns: []PIIPattern{PatternCNPJ},
 			input:    "CNPJ: 12345678000190",
-			want:     "CNPJ: **.***.***/**01-**",
+			want:     "CNPJ: **.***.***/****-**",
 		},
 		{
 			name:     "credit_card_with_dashes",

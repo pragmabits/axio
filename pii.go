@@ -21,7 +21,7 @@ const (
 	PatternCPF PIIPattern = "cpf"
 	// PatternCNPJ detects Brazilian CNPJ numbers.
 	// Format: 12.345.678/0001-90
-	// Mask: **.***.***/**01-**
+	// Mask: **.***.***/****-**
 	PatternCNPJ PIIPattern = "cnpj"
 	// PatternCreditCard detects credit card numbers.
 	// Formats: 1234-5678-9012-3456 or 1234567890123456
@@ -56,7 +56,7 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 	},
 	PatternCNPJ: {
 		regex: regexp.MustCompile(`\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b`),
-		mask:  "**.***.***/**01-**",
+		mask:  "**.***.***/****-**",
 	},
 	PatternCreditCard: {
 		regex: regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap/zapcore"
@@ -118,13 +119,19 @@ type OutputConfig struct {
 
 // BuildOutputs creates concrete outputs from configuration.
 //
-// Processing order:
+// When outputs were supplied directly via [WithOutputs], they are returned
+// as-is (no file is opened twice). Otherwise the function resolves
+// [Config.Outputs] into concrete [Output] instances:
 //  1. Iterates over [Config.Outputs]
 //  2. Creates concrete output for each configuration
 //  3. For [OutputFile], opens the specified file
 //
 // Returns error if any output cannot be created.
 func BuildOutputs(config Config) ([]Output, error) {
+	if len(config.resolvedOutputs) > 0 {
+		return config.resolvedOutputs, nil
+	}
+
 	outputs := make([]Output, 0, len(config.Outputs))
 
 	for index, outputConfig := range config.Outputs {
@@ -261,16 +268,18 @@ type fileOutput struct {
 	lumberjack *lumberjack.Logger // used for rotating files (nil otherwise)
 	interval   Duration           // time-based rotation interval (zero if disabled)
 	ticker     *time.Ticker       // time-based rotation (nil otherwise)
-	done       chan struct{}       // stops time rotation goroutine (nil otherwise)
+	done       chan struct{}      // stops time rotation goroutine (nil otherwise)
+	rotationWG sync.WaitGroup     // waits for the rotation goroutine to exit on Close
 }
 
 // Close releases resources associated with this file output.
-// For rotating files, stops the time-based rotation goroutine and closes lumberjack.
-// For plain files, closes the os.File.
+// For rotating files, stops the time-based rotation goroutine (waiting for it
+// to exit) and then closes lumberjack. For plain files, closes the os.File.
 func (f *fileOutput) Close() error {
 	if f.ticker != nil {
 		f.ticker.Stop()
 		close(f.done)
+		f.rotationWG.Wait()
 	}
 	if f.lumberjack != nil {
 		if err := f.lumberjack.Close(); err != nil {
@@ -289,8 +298,10 @@ func (f *fileOutput) Close() error {
 func (f *fileOutput) startTimeRotation(interval time.Duration) {
 	f.ticker = time.NewTicker(interval)
 	f.done = make(chan struct{})
+	f.rotationWG.Add(1)
 
 	go func() {
+		defer f.rotationWG.Done()
 		for {
 			select {
 			case <-f.ticker.C:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -29,6 +30,8 @@ type logger struct {
 	metrics     Metrics
 	annotations []Annotation
 	outputs     []Output
+	closed      *atomic.Bool
+	isFork      bool
 }
 
 // New creates a new [Logger] with the specified configuration and options.
@@ -107,6 +110,7 @@ func New(config Config, options ...Option) (Logger, error) {
 		hooks:   NewHookChain(metrics, hooks...),
 		metrics: metrics,
 		outputs: outputs,
+		closed:  new(atomic.Bool),
 	}, nil
 }
 
@@ -164,14 +168,30 @@ func buildEncoder(format Format) zapcore.Encoder {
 
 func (l logger) Named(name string) Logger {
 	l.engine = l.engine.Named(name)
-	l.clear()
+	l.annotations = cloneAnnotations(l.annotations)
+	l.isFork = true
 	return &l
 }
 
 func (l logger) With(annotations ...Annotation) Logger {
-	l.clear()
-	l.annotations = append(l.annotations, annotations...)
+	combined := make([]Annotation, 0, len(l.annotations)+len(annotations))
+	combined = append(combined, l.annotations...)
+	combined = append(combined, annotations...)
+	l.annotations = combined
+	l.isFork = true
 	return &l
+}
+
+// cloneAnnotations returns a fresh slice containing the same annotations.
+// Used when forking a logger to break aliasing with the parent's backing array
+// so subsequent mutations (e.g. by hooks) don't leak across loggers.
+func cloneAnnotations(src []Annotation) []Annotation {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]Annotation, len(src))
+	copy(out, src)
+	return out
 }
 
 func (l logger) Debug(ctx context.Context, message string, args ...any) {
@@ -197,6 +217,10 @@ func (l *logger) log(
 	message string,
 	args ...any,
 ) {
+	if l.closed.Load() {
+		return
+	}
+
 	log := l.engine.Check(toZapLevel(level), l.formatMessage(message, args...))
 	if log == nil {
 		return
@@ -213,7 +237,7 @@ func (l *logger) log(
 	entry.Error = err
 	entry.TraceID = trace
 	entry.SpanID = span
-	entry.Annotations = l.annotations
+	entry.Annotations = cloneAnnotations(l.annotations)
 	entry.Hash = ""
 	entry.PreviousHash = ""
 
@@ -289,10 +313,6 @@ func expandAnnotable(annotations []Annotation) []Annotation {
 	return expanded
 }
 
-func (l *logger) clear() {
-	l.annotations = nil
-}
-
 // formatMessage formats the message with the arguments.
 // When no args are provided, the format string is returned directly
 // without defer overhead.
@@ -321,6 +341,15 @@ func (l *logger) sprintfRecover(format string, args []any) (msg string) {
 // It should be called when the logger is no longer needed,
 // typically with defer in main.
 //
+// Only the root logger (the one returned by [New]) owns its outputs and
+// engine. Loggers produced by [Logger.Named] and [Logger.With] share those
+// resources with the root, so calling Close on them returns [ErrLoggerNotRoot]
+// and leaves all resources untouched.
+//
+// After Close is called on the root, subsequent log calls become no-ops on
+// the root and all of its forks, and a second call to Close returns
+// [ErrLoggerClosed].
+//
 // Example:
 //
 //	logger, err := axio.New(config, axio.WithOutputs(axio.MustFile("/var/log/app.log", axio.FormatJSON)))
@@ -329,6 +358,13 @@ func (l *logger) sprintfRecover(format string, args []any) (msg string) {
 //	}
 //	defer logger.Close()
 func (l *logger) Close() error {
+	if l.isFork {
+		return ErrLoggerNotRoot
+	}
+	if !l.closed.CompareAndSwap(false, true) {
+		return ErrLoggerClosed
+	}
+
 	var errs []error
 
 	if err := l.engine.Sync(); err != nil {

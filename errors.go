@@ -71,4 +71,16 @@ var (
 	ErrNilMetricsProvider = errors.New("metrics provider cannot be nil")
 	// ErrCreateMetric indicates failure to create a metric instrument.
 	ErrCreateMetric = errors.New("failed to create metric instrument")
+	// ErrNilTracer indicates that a nil tracer was passed to WithTracer.
+	ErrNilTracer = errors.New("tracer cannot be nil")
+)
+
+var (
+	// ErrLoggerClosed indicates the logger has already been closed.
+	// Returned by [Logger.Close] on subsequent calls.
+	ErrLoggerClosed = errors.New("logger already closed")
+	// ErrLoggerNotRoot indicates [Logger.Close] was called on a forked logger
+	// (one returned by [Logger.Named] or [Logger.With]). Only the root logger
+	// owns the underlying outputs and engine; forks must not close them.
+	ErrLoggerNotRoot = errors.New("close called on forked logger")
 )

@@ -216,7 +216,7 @@ func (e *Event) Emit(ctx context.Context) {
 	entry.Level = LevelInfo
 	entry.Message = e.name
 	entry.Error = e.err
-	entry.Annotations = append(e.annotations, e.errDetails...)
+	entry.Annotations = append(cloneAnnotations(e.annotations), e.errDetails...)
 	entry.Hash = ""
 	entry.PreviousHash = ""
 

@@ -1,8 +1,6 @@
 package axio
 
 import (
-	"fmt"
-
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -44,28 +42,17 @@ type Option func(*Config) error
 func WithOutputs(outputs ...Output) Option {
 	return func(config *Config) error {
 		for _, output := range outputs {
+			config.resolvedOutputs = append(config.resolvedOutputs, output)
+			// Mirror metadata so Validate() and AgentMode rules — which
+			// iterate config.Outputs — still apply. The file handle stays
+			// owned by the resolved output; no Close/Reopen dance.
 			outputConfig := OutputConfig{
 				Type:   output.Type(),
 				Format: output.Format(),
 			}
-
 			if fileOut, ok := output.(*fileOutput); ok {
 				outputConfig.Path = fileOut.path
-				if fileOut.lumberjack != nil {
-					outputConfig.Rotation = RotationConfig{
-						MaxSize:    fileOut.lumberjack.MaxSize,
-						MaxAge:     fileOut.lumberjack.MaxAge,
-						MaxBackups: fileOut.lumberjack.MaxBackups,
-						Compress:   fileOut.lumberjack.Compress,
-						LocalTime:  fileOut.lumberjack.LocalTime,
-						Interval:   fileOut.interval,
-					}
-				}
-				if err := fileOut.Close(); err != nil {
-					return fmt.Errorf("close intermediate file output %s: %w", fileOut.path, err)
-				}
 			}
-
 			config.Outputs = append(config.Outputs, outputConfig)
 		}
 		return nil
@@ -214,15 +201,16 @@ func WithMetrics(provider metric.MeterProvider) Option {
 //	}
 func WithTracer(t Tracer) Option {
 	return func(config *Config) error {
-		if t != nil {
-			config.tracer = t
-			// Detects tracer type for serialization
-			switch t.(type) {
-			case *otelTraceExtractor:
-				config.TracerType = "otel"
-			default:
-				config.TracerType = "noop"
-			}
+		if t == nil {
+			return ErrNilTracer
+		}
+		config.tracer = t
+		// Detects tracer type for serialization
+		switch t.(type) {
+		case *otelTraceExtractor:
+			config.TracerType = "otel"
+		default:
+			config.TracerType = "noop"
 		}
 		return nil
 	}

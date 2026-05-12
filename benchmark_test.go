@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ func benchLogger(b *testing.B) *logger {
 		hooks:   newHookChain(NoopMetrics{}),
 		metrics: NoopMetrics{},
 		outputs: []Output{out},
+		closed:  new(atomic.Bool),
 	}
 }
 
@@ -179,40 +181,6 @@ func BenchmarkAnnotationsToFields(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Component benchmarks: toField
-// ---------------------------------------------------------------------------
-
-func BenchmarkToField_String(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		toField("key", "some string value")
-	}
-}
-
-func BenchmarkToField_Int(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		toField("key", 42)
-	}
-}
-
-func BenchmarkToField_Map(b *testing.B) {
-	m := map[string]any{
-		"user_id": "usr_123",
-		"count":   42,
-		"active":  true,
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		toField("key", m)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Component benchmarks: hookChain
 // ---------------------------------------------------------------------------
 
@@ -267,6 +235,74 @@ func BenchmarkPIIMasker_NoMatch(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		masker.MaskString(input)
+	}
+}
+
+func BenchmarkPIIMasker_MaskFields_NoMap(b *testing.B) {
+	masker := MustPIIMasker(DefaultPIIConfig())
+
+	annotations := Annotations{
+		Annotate("user_id", "usr_12345"),
+		Annotate("tenant", "acme-corp"),
+		Annotate("route", "/api/v1/orders"),
+		Annotate("method", "POST"),
+		Annotate("status", "ok"),
+		Annotate("region", "us-east-1"),
+		Annotate("service", "checkout"),
+		Annotate("version", "2.1.0"),
+		Annotate("environment", "production"),
+		Annotate("correlation_id", "corr_98765"),
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		masker.MaskFields(annotations)
+	}
+}
+
+func BenchmarkPIIMasker_MaskFields_ShallowMap(b *testing.B) {
+	masker := MustPIIMasker(DefaultPIIConfig())
+
+	annotations := Annotations{
+		Annotate("context", map[string]any{
+			"user_id":     "usr_12345",
+			"tenant":      "acme-corp",
+			"route":       "/api/v1/orders",
+			"method":      "POST",
+			"status":      "ok",
+			"region":      "us-east-1",
+			"service":     "checkout",
+			"correlation": "corr_98765",
+			"password":    "hunter2",
+			"api_key":     "ak_secret",
+		}),
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		masker.MaskFields(annotations)
+	}
+}
+
+func BenchmarkPIIMasker_MaskFields_DeepMap_AtCap(b *testing.B) {
+	masker := MustPIIMasker(DefaultPIIConfig())
+
+	annotations := Annotations{
+		Annotate("payload", map[string]any{
+			"password": "outer-secret",
+			"profile": map[string]any{
+				"name":     "alice",
+				"password": "inner-secret",
+			},
+		}),
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		masker.MaskFields(annotations)
 	}
 }
 

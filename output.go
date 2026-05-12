@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap/zapcore"
@@ -200,6 +201,18 @@ type Output interface {
 	Close() error
 }
 
+// RotationErrorReporter is implemented by outputs that record errors from
+// background rotation. Detect via type assertion on an [Output]:
+//
+//	if reporter, ok := out.(axio.RotationErrorReporter); ok {
+//	    if err := reporter.LastRotationError(); err != nil {
+//	        // ...
+//	    }
+//	}
+type RotationErrorReporter interface {
+	LastRotationError() error
+}
+
 // output is the internal implementation of Output.
 type output struct {
 	zapcore.WriteSyncer
@@ -263,13 +276,14 @@ func Stdout(format Format) Output {
 // otherwise, a plain os.File is used.
 type fileOutput struct {
 	*output
-	path       string
-	file       *os.File           // used for plain files (nil when rotating)
-	lumberjack *lumberjack.Logger // used for rotating files (nil otherwise)
-	interval   Duration           // time-based rotation interval (zero if disabled)
-	ticker     *time.Ticker       // time-based rotation (nil otherwise)
-	done       chan struct{}      // stops time rotation goroutine (nil otherwise)
-	rotationWG sync.WaitGroup     // waits for the rotation goroutine to exit on Close
+	path              string
+	file              *os.File             // used for plain files (nil when rotating)
+	lumberjack        *lumberjack.Logger   // used for rotating files (nil otherwise)
+	interval          Duration             // time-based rotation interval (zero if disabled)
+	ticker            *time.Ticker         // time-based rotation (nil otherwise)
+	done              chan struct{}        // stops time rotation goroutine (nil otherwise)
+	rotationWG        sync.WaitGroup       // waits for the rotation goroutine to exit on Close
+	lastRotationError atomic.Pointer[error] // most recent time-based rotation outcome
 }
 
 // Close releases resources associated with this file output.
@@ -295,6 +309,17 @@ func (f *fileOutput) Close() error {
 	return nil
 }
 
+// LastRotationError returns the error from the most recent time-based rotation
+// attempt, or nil if the most recent attempt succeeded or no rotation has
+// occurred yet. Size-based rotations performed by lumberjack on Write are not
+// observed by this method.
+func (f *fileOutput) LastRotationError() error {
+	if ptr := f.lastRotationError.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
 func (f *fileOutput) startTimeRotation(interval time.Duration) {
 	f.ticker = time.NewTicker(interval)
 	f.done = make(chan struct{})
@@ -305,7 +330,11 @@ func (f *fileOutput) startTimeRotation(interval time.Duration) {
 		for {
 			select {
 			case <-f.ticker.C:
-				_ = f.lumberjack.Rotate()
+				if err := f.lumberjack.Rotate(); err != nil {
+					f.lastRotationError.Store(&err)
+				} else {
+					f.lastRotationError.Store(nil)
+				}
 			case <-f.done:
 				return
 			}

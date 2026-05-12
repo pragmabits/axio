@@ -1,6 +1,7 @@
 package axio
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -246,4 +247,26 @@ outputs:
 	assertEqual(t, rotation.Compress, true)
 	assertEqual(t, rotation.Interval, Duration(24*time.Hour))
 	assertEqual(t, rotation.Enabled(), true)
+}
+
+func TestFileOutput_LastRotationError(t *testing.T) {
+	t.Run("nil_when_unused", func(t *testing.T) {
+		f := &fileOutput{}
+		if got := f.LastRotationError(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("stores_and_clears", func(t *testing.T) {
+		f := &fileOutput{}
+		sentinel := errors.New("rotate failed")
+		f.lastRotationError.Store(&sentinel)
+		if got := f.LastRotationError(); got != sentinel {
+			t.Fatalf("expected %v, got %v", sentinel, got)
+		}
+		f.lastRotationError.Store(nil)
+		if got := f.LastRotationError(); got != nil {
+			t.Fatalf("expected nil after clear, got %v", got)
+		}
+	})
 }

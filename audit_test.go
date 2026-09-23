@@ -320,7 +320,7 @@ func TestHashChain_WithStore(t *testing.T) {
 	})
 }
 
-func TestLogger_Audit(t *testing.T) {
+func TestAuditCore_Write(t *testing.T) {
 	t.Run("json_lines_verify_against_the_chain", func(t *testing.T) {
 		logPath, storePath := tempFile(t, "audited.log"), tempFile(t, "audited-chain.json")
 		logAudited(t, logPath, WithAudit(storePath))
@@ -442,7 +442,7 @@ func TestLogger_Audit(t *testing.T) {
 	})
 }
 
-func TestWithAudit_LoggerAndEventShareChain(t *testing.T) {
+func TestSharedChain_LoggerAndEventExtendOneChain(t *testing.T) {
 	logPath, storePath := tempFile(t, "shared.log"), tempFile(t, "shared-chain.json")
 	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
 
@@ -460,24 +460,6 @@ func TestWithAudit_LoggerAndEventShareChain(t *testing.T) {
 
 	assertEqual(t, len(readLines(t, logPath)), 3)
 	assertNoError(t, verifyFile(t, logPath, storePath))
-}
-
-func TestWithAuditChain(t *testing.T) {
-	t.Run("nil_chain_is_rejected", func(t *testing.T) {
-		config := minimalConfig()
-		err := WithAuditChain(nil)(&config)
-		if !errors.Is(err, ErrNilAuditChain) {
-			t.Errorf("expected ErrNilAuditChain, got %v", err)
-		}
-	})
-
-	t.Run("enables_audit_without_a_store_path", func(t *testing.T) {
-		chain, _ := NewHashChain(nil)
-		config := minimalConfig()
-		assertNoError(t, WithAuditChain(chain)(&config))
-		assertEqual(t, config.Audit.Enabled, true)
-		assertNoError(t, config.Validate())
-	})
 }
 
 // auditedLines adds each body to a fresh in-memory chain and returns the chain
@@ -551,41 +533,6 @@ func TestHashChain_AddWithFailingStore(t *testing.T) {
 
 	// Verify that the sequence was not incremented after failure
 	assertEqual(t, chain.Sequence(), uint64(0))
-}
-
-func TestWithAudit_RequiresJSONOutput(t *testing.T) {
-	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
-
-	t.Run("logger_with_text_outputs_only_fails", func(t *testing.T) {
-		_, err := New(config, WithOutputs(newBufferOutput(FormatText)), WithAudit(tempFile(t, "chain.json")))
-		if !errors.Is(err, ErrAuditWithoutJSON) || !errors.Is(err, ErrValidateConfig) {
-			t.Errorf("expected ErrValidateConfig wrapping ErrAuditWithoutJSON, got %v", err)
-		}
-	})
-
-	t.Run("logger_with_audit_chain_and_text_outputs_only_fails", func(t *testing.T) {
-		chain, err := NewHashChain(nil)
-		assertNoError(t, err)
-		_, err = New(config, WithOutputs(newBufferOutput(FormatText)), WithAuditChain(chain))
-		if !errors.Is(err, ErrAuditWithoutJSON) {
-			t.Errorf("expected ErrAuditWithoutJSON, got %v", err)
-		}
-	})
-
-	t.Run("event_with_text_outputs_only_is_accepted", func(t *testing.T) {
-		output := newBufferOutput(FormatText)
-		event, err := NewEvent("checkout", config, WithOutputs(output), WithAudit(tempFile(t, "chain.json")))
-		assertNoError(t, err)
-		if err != nil {
-			return
-		}
-		event.Emit(context.Background())
-		assertNoError(t, event.Close())
-
-		if _, _, _, ok := logline.SplitTrailer([]byte(output.String())); !ok {
-			t.Errorf("an event writes the audited JSON line to every output, got %q", output.String())
-		}
-	})
 }
 
 // contextRecorder is a Metrics that keeps the context of every AuditRecords call.

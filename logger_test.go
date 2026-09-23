@@ -457,7 +457,7 @@ func TestReportingCore_Write(t *testing.T) {
 	}
 }
 
-func TestAnnotation_ReservedKeyIsRenamed(t *testing.T) {
+func TestAnnotationsToFields_ReservedKeyIsRenamed(t *testing.T) {
 	reserved := []string{
 		"timestamp", "level", "message", "logger", "caller", "stacktrace",
 		"service", "deployment", "trace_id", "span_id",

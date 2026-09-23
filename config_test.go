@@ -1,9 +1,12 @@
 package axio
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/pragmabits/axio/internal/logline"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -179,6 +182,18 @@ level: info
 		config, err := LoadConfigFrom(reader, "json")
 		assertNoError(t, err)
 		assertEqual(t, config.ServiceName, "json-reader")
+	})
+
+	t.Run("removed_disable_sample_key_is_ignored", func(t *testing.T) {
+		for format, content := range map[string]string{
+			"yaml": "serviceName: legacy\ndisableSample: true\n",
+			"json": `{"serviceName": "legacy", "disableSample": true}`,
+			"toml": "serviceName = \"legacy\"\ndisableSample = true\n",
+		} {
+			config, err := LoadConfigFrom(strings.NewReader(content), format)
+			assertNoError(t, err)
+			assertEqual(t, config.ServiceName, "legacy")
+		}
 	})
 
 	t.Run("pii_max_depth", func(t *testing.T) {
@@ -404,58 +419,37 @@ func TestApplyDefaults(t *testing.T) {
 	})
 }
 
-func TestEnvironment_Validate(t *testing.T) {
-	valid := []Environment{EnvironmentProduction, EnvironmentStaging, EnvironmentDevelopment}
-	for _, env := range valid {
-		if err := env.Validate(); err != nil {
-			t.Errorf("environment %s should be valid", env)
+func TestConfig_ValidateAuditOutputs(t *testing.T) {
+	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
+
+	t.Run("logger_with_text_outputs_only_fails", func(t *testing.T) {
+		_, err := New(config, WithOutputs(newBufferOutput(FormatText)), WithAudit(tempFile(t, "chain.json")))
+		if !errors.Is(err, ErrAuditWithoutJSON) || !errors.Is(err, ErrValidateConfig) {
+			t.Errorf("expected ErrValidateConfig wrapping ErrAuditWithoutJSON, got %v", err)
 		}
-	}
+	})
 
-	invalid := Environment("invalid")
-	if err := invalid.Validate(); err == nil {
-		t.Error("invalid environment should return error")
-	}
-}
-
-func TestLevel_Validate(t *testing.T) {
-	valid := []Level{LevelDebug, LevelInfo, LevelWarn, LevelError}
-	for _, level := range valid {
-		if err := level.Validate(); err != nil {
-			t.Errorf("level %s should be valid", level)
+	t.Run("logger_with_audit_chain_and_text_outputs_only_fails", func(t *testing.T) {
+		chain, err := NewHashChain(nil)
+		assertNoError(t, err)
+		_, err = New(config, WithOutputs(newBufferOutput(FormatText)), WithAuditChain(chain))
+		if !errors.Is(err, ErrAuditWithoutJSON) {
+			t.Errorf("expected ErrAuditWithoutJSON, got %v", err)
 		}
-	}
+	})
 
-	invalid := Level("invalid")
-	if err := invalid.Validate(); err == nil {
-		t.Error("invalid level should return error")
-	}
-}
-
-func TestFormat_Validate(t *testing.T) {
-	valid := []Format{FormatJSON, FormatText}
-	for _, format := range valid {
-		if err := format.Validate(); err != nil {
-			t.Errorf("format %s should be valid", format)
+	t.Run("event_with_text_outputs_only_is_accepted", func(t *testing.T) {
+		output := newBufferOutput(FormatText)
+		event, err := NewEvent("checkout", config, WithOutputs(output), WithAudit(tempFile(t, "chain.json")))
+		assertNoError(t, err)
+		if err != nil {
+			return
 		}
-	}
+		event.Emit(context.Background())
+		assertNoError(t, event.Close())
 
-	invalid := Format("invalid")
-	if err := invalid.Validate(); err == nil {
-		t.Error("invalid format should return error")
-	}
-}
-
-func TestOutputType_Validate(t *testing.T) {
-	valid := []OutputType{OutputConsole, OutputStdout, OutputFile}
-	for _, ot := range valid {
-		if err := ot.Validate(); err != nil {
-			t.Errorf("output type %s should be valid", ot)
+		if _, _, _, ok := logline.SplitTrailer([]byte(output.String())); !ok {
+			t.Errorf("an event writes the audited JSON line to every output, got %q", output.String())
 		}
-	}
-
-	invalid := OutputType("invalid")
-	if err := invalid.Validate(); err == nil {
-		t.Error("invalid output type should return error")
-	}
+	})
 }

@@ -3,6 +3,7 @@ package axio
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -279,6 +280,20 @@ func TestBuildOutputs(t *testing.T) {
 	})
 }
 
+func TestOutputType_Validate(t *testing.T) {
+	valid := []OutputType{OutputConsole, OutputStdout, OutputFile}
+	for _, ot := range valid {
+		if err := ot.Validate(); err != nil {
+			t.Errorf("output type %s should be valid", ot)
+		}
+	}
+
+	invalid := OutputType("invalid")
+	if err := invalid.Validate(); err == nil {
+		t.Error("invalid output type should return error")
+	}
+}
+
 func TestOutputType_UnmarshalText(t *testing.T) {
 	t.Run("valid_types", func(t *testing.T) {
 		tests := []struct {
@@ -306,83 +321,267 @@ func TestOutputType_UnmarshalText(t *testing.T) {
 	})
 }
 
-func TestFormat_UnmarshalText(t *testing.T) {
-	t.Run("valid_formats", func(t *testing.T) {
-		tests := []struct {
-			input string
-			want  Format
-		}{
-			{"json", FormatJSON},
-			{"text", FormatText},
-			{" json ", FormatJSON},
-		}
-
-		for _, test := range tests {
-			var format Format
-			err := format.UnmarshalText([]byte(test.input))
-			assertNoError(t, err)
-			assertEqual(t, format, test.want)
-		}
+func TestRotationConfig_Enabled(t *testing.T) {
+	t.Run("empty_config_disabled", func(t *testing.T) {
+		rotation := RotationConfig{}
+		assertEqual(t, rotation.Enabled(), false)
 	})
 
-	t.Run("invalid_format", func(t *testing.T) {
-		var format Format
-		err := format.UnmarshalText([]byte("invalid"))
-		assertError(t, err)
-	})
-}
-
-func TestEnvironment_UnmarshalText(t *testing.T) {
-	t.Run("valid_environments", func(t *testing.T) {
-		tests := []struct {
-			input string
-			want  Environment
-		}{
-			{"production", EnvironmentProduction},
-			{"staging", EnvironmentStaging},
-			{"development", EnvironmentDevelopment},
-			{" production ", EnvironmentProduction},
-		}
-
-		for _, test := range tests {
-			var environment Environment
-			err := environment.UnmarshalText([]byte(test.input))
-			assertNoError(t, err)
-			assertEqual(t, environment, test.want)
-		}
+	t.Run("size_only_enabled", func(t *testing.T) {
+		rotation := RotationConfig{MaxSize: 100}
+		assertEqual(t, rotation.Enabled(), true)
 	})
 
-	t.Run("invalid_environment", func(t *testing.T) {
-		var environment Environment
-		err := environment.UnmarshalText([]byte("invalid"))
-		assertError(t, err)
+	t.Run("interval_only_enabled", func(t *testing.T) {
+		rotation := RotationConfig{Interval: Duration(24 * time.Hour)}
+		assertEqual(t, rotation.Enabled(), true)
+	})
+
+	t.Run("both_enabled", func(t *testing.T) {
+		rotation := RotationConfig{
+			MaxSize:  100,
+			Interval: Duration(24 * time.Hour),
+		}
+		assertEqual(t, rotation.Enabled(), true)
+	})
+
+	t.Run("only_maxage_not_enabled", func(t *testing.T) {
+		rotation := RotationConfig{MaxAge: 30}
+		assertEqual(t, rotation.Enabled(), false)
 	})
 }
 
-func TestLevel_UnmarshalText(t *testing.T) {
-	t.Run("valid_levels", func(t *testing.T) {
-		tests := []struct {
-			input string
-			want  Level
-		}{
-			{"debug", LevelDebug},
-			{"info", LevelInfo},
-			{"warn", LevelWarn},
-			{"error", LevelError},
-			{" info ", LevelInfo},
-		}
+func TestRotatingFile(t *testing.T) {
+	t.Run("creates_with_size_rotation", func(t *testing.T) {
+		path := tempFile(t, "rotating.log")
 
-		for _, test := range tests {
-			var level Level
-			err := level.UnmarshalText([]byte(test.input))
-			assertNoError(t, err)
-			assertEqual(t, level, test.want)
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			MaxSize:    10,
+			MaxBackups: 3,
+		})
+		assertNoError(t, err)
+		defer output.Close()
+
+		assertEqual(t, output.Type(), OutputFile)
+		assertEqual(t, output.Format(), FormatJSON)
+	})
+
+	t.Run("creates_with_time_rotation", func(t *testing.T) {
+		path := tempFile(t, "time-rotating.log")
+
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			Interval: Duration(time.Hour),
+		})
+		assertNoError(t, err)
+		defer output.Close()
+
+		assertEqual(t, output.Type(), OutputFile)
+	})
+
+	t.Run("creates_with_combined_rotation", func(t *testing.T) {
+		path := tempFile(t, "combined-rotating.log")
+
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			MaxSize:  50,
+			Interval: Duration(12 * time.Hour),
+			Compress: true,
+		})
+		assertNoError(t, err)
+		defer output.Close()
+
+		assertEqual(t, output.Type(), OutputFile)
+	})
+
+	t.Run("writes_to_file", func(t *testing.T) {
+		path := tempFile(t, "write-rotating.log")
+
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			MaxSize: 10,
+		})
+		assertNoError(t, err)
+
+		_, err = output.Write([]byte("test log entry\n"))
+		assertNoError(t, err)
+
+		output.Close()
+
+		content := readFile(t, path)
+		if content != "test log entry\n" {
+			t.Errorf("unexpected content: %q", content)
 		}
 	})
 
-	t.Run("invalid_level", func(t *testing.T) {
-		var level Level
-		err := level.UnmarshalText([]byte("invalid"))
-		assertError(t, err)
+	t.Run("close_stops_ticker", func(t *testing.T) {
+		path := tempFile(t, "close-ticker.log")
+
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			Interval: Duration(time.Hour),
+		})
+		assertNoError(t, err)
+
+		// Close should not panic or error
+		err = output.Close()
+		assertNoError(t, err)
+	})
+}
+
+func TestMustRotatingFile(t *testing.T) {
+	t.Run("valid_path", func(t *testing.T) {
+		path := tempFile(t, "must-rotating.log")
+
+		output := MustRotatingFile(path, FormatJSON, RotationConfig{
+			MaxSize: 10,
+		})
+		defer output.Close()
+
+		if output == nil {
+			t.Error("output should not be nil")
+		}
+	})
+}
+
+func TestBuildOutputs_WithRotation(t *testing.T) {
+	t.Run("builds_rotating_file", func(t *testing.T) {
+		path := tempFile(t, "build-rotating.log")
+		config := Config{
+			Outputs: []OutputConfig{
+				{
+					Type:   OutputFile,
+					Format: FormatJSON,
+					Path:   path,
+					Rotation: RotationConfig{
+						MaxSize:    100,
+						MaxBackups: 5,
+						Compress:   true,
+					},
+				},
+			},
+		}
+
+		outputs, err := buildOutputs(config)
+		assertNoError(t, err)
+		defer outputs[0].Close()
+
+		if len(outputs) != 1 {
+			t.Fatalf("expected 1 output, got %d", len(outputs))
+		}
+		assertEqual(t, outputs[0].Type(), OutputFile)
+	})
+
+	t.Run("builds_plain_file_without_rotation", func(t *testing.T) {
+		path := tempFile(t, "plain.log")
+		config := Config{
+			Outputs: []OutputConfig{
+				{
+					Type:   OutputFile,
+					Format: FormatJSON,
+					Path:   path,
+				},
+			},
+		}
+
+		outputs, err := buildOutputs(config)
+		assertNoError(t, err)
+		defer outputs[0].Close()
+
+		if len(outputs) != 1 {
+			t.Fatalf("expected 1 output, got %d", len(outputs))
+		}
+	})
+}
+
+func TestRotatingFile_TimeRotation(t *testing.T) {
+	t.Run("rotates_on_interval", func(t *testing.T) {
+		directory := tempDir(t)
+		path := filepath.Join(directory, "timed.log")
+
+		output, err := RotatingFile(path, FormatJSON, RotationConfig{
+			Interval: Duration(100 * time.Millisecond),
+		})
+		assertNoError(t, err)
+
+		// Write initial content
+		_, err = output.Write([]byte("before rotation\n"))
+		assertNoError(t, err)
+
+		// Wait for at least one rotation tick
+		time.Sleep(250 * time.Millisecond)
+
+		// Write after rotation should have happened
+		_, err = output.Write([]byte("after rotation\n"))
+		assertNoError(t, err)
+
+		output.Close()
+
+		// The current file should contain the post-rotation content
+		content := readFile(t, path)
+		if content == "after rotation\n" {
+			return
+		}
+
+		// Rotation may have created a backup; just verify current file is writable
+		// and the backup exists
+		entries, _ := os.ReadDir(directory)
+		if len(entries) < 2 {
+			t.Errorf("expected rotated backup file, got %d files", len(entries))
+		}
+	})
+}
+
+func TestRotationConfig_YAMLUnmarshal(t *testing.T) {
+	yamlContent := `
+serviceName: "rotation-test"
+serviceVersion: "1.0.0"
+environment: "production"
+level: "info"
+outputs:
+  - type: file
+    format: json
+    path: /var/log/app.log
+    rotation:
+      maxSize: 100
+      maxAge: 30
+      maxBackups: 10
+      compress: true
+      interval: 24h
+`
+	config, err := LoadConfigFrom(
+		stringReader(yamlContent),
+		"yaml",
+	)
+	assertNoError(t, err)
+
+	if len(config.Outputs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(config.Outputs))
+	}
+
+	rotation := config.Outputs[0].Rotation
+	assertEqual(t, rotation.MaxSize, 100)
+	assertEqual(t, rotation.MaxAge, 30)
+	assertEqual(t, rotation.MaxBackups, 10)
+	assertEqual(t, rotation.Compress, true)
+	assertEqual(t, rotation.Interval, Duration(24*time.Hour))
+	assertEqual(t, rotation.Enabled(), true)
+}
+
+func TestFileOutput_LastRotationError(t *testing.T) {
+	t.Run("nil_when_unused", func(t *testing.T) {
+		output := &fileOutput{}
+		if got := output.LastRotationError(); got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("stores_and_clears", func(t *testing.T) {
+		output := &fileOutput{}
+		sentinel := errors.New("rotate failed")
+		output.lastRotationError.Store(&sentinel)
+		if got := output.LastRotationError(); got != sentinel {
+			t.Fatalf("expected %v, got %v", sentinel, got)
+		}
+		output.lastRotationError.Store(nil)
+		if got := output.LastRotationError(); got != nil {
+			t.Fatalf("expected nil after clear, got %v", got)
+		}
 	})
 }

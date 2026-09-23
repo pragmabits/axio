@@ -268,3 +268,21 @@ func TestWithOutputs_OverridesConfigOutputs(t *testing.T) {
 		}
 	})
 }
+
+func TestWithAuditChain(t *testing.T) {
+	t.Run("nil_chain_is_rejected", func(t *testing.T) {
+		config := minimalConfig()
+		err := WithAuditChain(nil)(&config)
+		if !errors.Is(err, ErrNilAuditChain) {
+			t.Errorf("expected ErrNilAuditChain, got %v", err)
+		}
+	})
+
+	t.Run("enables_audit_without_a_store_path", func(t *testing.T) {
+		chain, _ := NewHashChain(nil)
+		config := minimalConfig()
+		assertNoError(t, WithAuditChain(chain)(&config))
+		assertEqual(t, config.Audit.Enabled, true)
+		assertNoError(t, config.Validate())
+	})
+}

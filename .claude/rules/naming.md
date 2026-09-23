@@ -59,6 +59,14 @@ external `_test` package names the exported identifier it goes through:
 A subject that is not an identifier — `Audit`, `PII`, `ReviewFollowup` — names a
 theme or an occasion, and nobody finds the test by the name of what it tests.
 
+The test lives in the `_test.go` of the file that declares its subject —
+`TestEnvironment_Validate` in `axio_test.go`, `TestBuildOutputs` in
+`output_test.go` — so it is found where the code is. A test in an external
+package lives beside the file of the command it runs: `render_test.go` for
+`axio render`. A test that needs a build constraint of its own sits beside the
+constrained file it tests, as `storelock_test.go` does. Benchmarks and examples,
+which `go test` lists by kind, keep `benchmark_test.go` and `example_test.go`.
+
 ## An enum's values carry the type's word
 
 `LevelInfo`, `FormatJSON`, `OutputStdout`, `PatternCPF`, `EnvironmentProduction`:
@@ -71,9 +79,10 @@ completion lists the set together.
 
 Two failures the abbreviation rule does not catch.
 
-**A name that asserts a behaviour has to hold.** `Config.DisableSample` reads
-as a switch for sampling, and axio does not sample: the field is ignored. The
-name passes every linter and still tells the reader something false.
+**A name that asserts a behaviour has to hold.** A field named `DisableSample`
+on a logger that never samples reads as a switch for sampling and switches
+nothing. The name passes every linter and still tells the reader something
+false.
 
 **A name has to name a subject, not the occasion it arrived in.**
 A file named `review_followup_test.go`, after the review that produced it, and

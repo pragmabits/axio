@@ -68,7 +68,8 @@ type Config struct {
 	Level Level `json:"level" yaml:"level" toml:"level" mapstructure:"level"`
 	// CallerSkip adjusts the caller depth for wrapper libraries.
 	CallerSkip int `json:"callerSkip" yaml:"callerSkip" toml:"callerSkip" mapstructure:"callerSkip"`
-	// DisableSample disables sampling of high-frequency logs.
+	// DisableSample is currently ignored: axio does not sample logs, so every
+	// entry at or above Level is written regardless of this value.
 	DisableSample bool `json:"disableSample" yaml:"disableSample" toml:"disableSample" mapstructure:"disableSample"`
 
 	// Outputs defines the log output destinations.
@@ -107,6 +108,7 @@ type Config struct {
 	metricsProvider metric.MeterProvider
 	tracer          Tracer
 	hooks           []Hook
+	auditChain      *HashChain
 	// resolvedOutputs holds outputs supplied directly via WithOutputs.
 	// When non-empty, buildOutputs returns these and skips the OutputConfig
 	// resolution path entirely (no file is opened twice).
@@ -151,108 +153,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// applyDefaults applies default values only to fields that are not set.
-func applyDefaults(config *Config) {
-	if config.Environment == "" {
-		config.Environment = Development
-	}
-
-	if config.Level == "" {
-		config.Level = LevelInfo
-	}
-
-	if config.TracerType == "" {
-		config.TracerType = "noop"
-	}
-
-	if len(config.Outputs) == 0 {
-		if config.Environment == Development {
-			config.Outputs = []OutputConfig{
-				{Type: OutputConsole, Format: FormatText},
-			}
-		} else {
-			config.Outputs = []OutputConfig{
-				{Type: OutputStdout, Format: FormatJSON},
-			}
-		}
-	}
-
-	if config.PIIEnabled && len(config.PIIPatterns) == 0 {
-		config.PIIPatterns = []PIIPattern{PatternCPF, PatternCNPJ, PatternCreditCard}
-	}
-
-	if config.PIIEnabled && len(config.PIIFields) == 0 {
-		config.PIIFields = DefaultSensitiveFields()
-	}
-
-	if config.Metrics.MeterName == "" {
-		config.Metrics.MeterName = "axio"
-	}
-	if config.Metrics.MeterVersion == "" {
-		config.Metrics.MeterVersion = "1.0.0"
-	}
-}
-
-// Validate checks whether the configuration is valid.
-//
-// Validations performed:
-//   - Environment is valid (production, staging, development)
-//   - Level is valid (debug, info, warn, error)
-//   - OutputConfig: Type and Format are valid
-//   - OutputConfig: Type=file requires non-empty Path
-//   - AuditConfig: Enabled=true requires non-empty StorePath
-//   - AgentMode: requires stdout+json outputs
-//   - TracerType is "otel", "noop", or empty
-//
-// Example:
-//
-//	if err := config.Validate(); err != nil {
-//	    return fmt.Errorf("invalid configuration: %w", err)
-//	}
-func (config *Config) Validate() error {
-	if config.Environment != "" {
-		if err := config.Environment.Validate(); err != nil {
-			return err
-		}
-	}
-
-	if config.Level != "" {
-		if err := config.Level.Validate(); err != nil {
-			return err
-		}
-	}
-
-	for index, output := range config.Outputs {
-		if err := output.Type.Validate(); err != nil {
-			return fmt.Errorf("output[%d]: %w", index, err)
-		}
-		if err := output.Format.Validate(); err != nil {
-			return fmt.Errorf("output[%d]: %w", index, err)
-		}
-		if output.Type == OutputFile && output.Path == "" {
-			return fmt.Errorf("%w: output[%d]", ErrFileOutputNoPath, index)
-		}
-	}
-
-	if config.AgentMode && len(config.Outputs) > 0 {
-		for index, output := range config.Outputs {
-			if output.Type != OutputStdout || output.Format != FormatJSON {
-				return fmt.Errorf("%w: output[%d] must be stdout+json", ErrIncompatibleOutputs, index)
-			}
-		}
-	}
-
-	if config.Audit.Enabled && config.Audit.StorePath == "" {
-		return ErrAuditWithoutPath
-	}
-
-	if config.TracerType != "" && config.TracerType != "otel" && config.TracerType != "noop" {
-		return fmt.Errorf("%w: %s (expected 'otel' or 'noop')", ErrInvalidTracer, config.TracerType)
-	}
-
-	return nil
-}
-
 // LoadConfig loads configuration from a file.
 //
 // The format is detected automatically from the extension:
@@ -289,6 +189,22 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	return LoadConfigFrom(bytes.NewReader(data), format)
+}
+
+// MustLoadConfig is like [LoadConfig] but panics on error.
+//
+// Useful for initialization where failure must be fatal.
+//
+// Example:
+//
+//	config := axio.MustLoadConfig("/etc/axio/config.yaml")
+//	logger, _ := axio.New(config)
+func MustLoadConfig(path string) Config {
+	config, err := LoadConfig(path)
+	if err != nil {
+		panic(err)
+	}
+	return config
 }
 
 // LoadConfigFrom loads configuration from an [io.Reader].
@@ -333,18 +249,150 @@ func LoadConfigFrom(reader io.Reader, format string) (Config, error) {
 	return config, nil
 }
 
-// MustLoadConfig is like [LoadConfig] but panics on error.
+// Validate checks whether the configuration is valid.
 //
-// Useful for initialization where failure must be fatal.
+// Validations performed:
+//   - Environment is valid (production, staging, development)
+//   - Level is valid (debug, info, warn, error)
+//   - OutputConfig: Type and Format are valid
+//   - OutputConfig: Type=file requires non-empty Path
+//   - AuditConfig: Enabled=true requires non-empty StorePath
+//   - AgentMode: requires stdout+json outputs
+//   - TracerType is "otel", "noop", or empty
 //
 // Example:
 //
-//	config := axio.MustLoadConfig("/etc/axio/config.yaml")
-//	logger, _ := axio.New(config)
-func MustLoadConfig(path string) Config {
-	config, err := LoadConfig(path)
-	if err != nil {
-		panic(err)
+//	if err := config.Validate(); err != nil {
+//	    return fmt.Errorf("invalid configuration: %w", err)
+//	}
+func (c *Config) Validate() error {
+	if err := c.validateEnums(); err != nil {
+		return err
 	}
-	return config
+
+	if err := c.validateOutputs(); err != nil {
+		return err
+	}
+
+	if err := c.validateAgentMode(); err != nil {
+		return err
+	}
+
+	if c.Audit.Enabled && c.Audit.StorePath == "" && c.auditChain == nil {
+		return ErrAuditWithoutPath
+	}
+
+	if c.TracerType != "" && c.TracerType != "otel" && c.TracerType != "noop" {
+		return fmt.Errorf("%w: %s (expected 'otel' or 'noop')", ErrInvalidTracer, c.TracerType)
+	}
+
+	return nil
+}
+
+// validateEnums checks Environment and Level when they are set.
+func (c *Config) validateEnums() error {
+	if c.Environment != "" {
+		if err := c.Environment.Validate(); err != nil {
+			return err
+		}
+	}
+
+	if c.Level != "" {
+		if err := c.Level.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateOutputs checks the Type and Format of every output and that file
+// outputs carry a Path.
+func (c *Config) validateOutputs() error {
+	for index, output := range c.Outputs {
+		if err := output.Type.Validate(); err != nil {
+			return fmt.Errorf("output[%d]: %w", index, err)
+		}
+		if err := output.Format.Validate(); err != nil {
+			return fmt.Errorf("output[%d]: %w", index, err)
+		}
+		if output.Type == OutputFile && output.Path == "" {
+			return fmt.Errorf("%w: output[%d]", ErrFileOutputNoPath, index)
+		}
+	}
+	return nil
+}
+
+// validateAgentMode checks that, in agent mode, every output is stdout+json.
+func (c *Config) validateAgentMode() error {
+	if !c.AgentMode {
+		return nil
+	}
+
+	for index, output := range c.Outputs {
+		if output.Type != OutputStdout || output.Format != FormatJSON {
+			return fmt.Errorf("%w: output[%d] must be stdout+json", ErrIncompatibleOutputs, index)
+		}
+	}
+	return nil
+}
+
+// applyDefaults applies default values only to fields that are not set.
+func applyDefaults(config *Config) {
+	if config.Environment == "" {
+		config.Environment = Development
+	}
+
+	if config.Level == "" {
+		config.Level = LevelInfo
+	}
+
+	if config.TracerType == "" {
+		config.TracerType = "noop"
+	}
+
+	applyOutputDefaults(config)
+	applyPIIDefaults(config)
+
+	if config.Metrics.MeterName == "" {
+		config.Metrics.MeterName = "axio"
+	}
+	if config.Metrics.MeterVersion == "" {
+		config.Metrics.MeterVersion = "1.0.0"
+	}
+}
+
+// applyOutputDefaults picks the default output for the environment when none
+// was configured: colored console text in development, stdout JSON elsewhere.
+func applyOutputDefaults(config *Config) {
+	if len(config.Outputs) > 0 {
+		return
+	}
+
+	if config.Environment == Development {
+		config.Outputs = []OutputConfig{
+			{Type: OutputConsole, Format: FormatText},
+		}
+		return
+	}
+
+	config.Outputs = []OutputConfig{
+		{Type: OutputStdout, Format: FormatJSON},
+	}
+}
+
+// applyPIIDefaults fills the builtin patterns and sensitive fields when PII
+// masking is enabled without them.
+func applyPIIDefaults(config *Config) {
+	if !config.PIIEnabled {
+		return
+	}
+
+	if len(config.PIIPatterns) == 0 {
+		config.PIIPatterns = []PIIPattern{PatternCPF, PatternCNPJ, PatternCreditCard}
+	}
+
+	if len(config.PIIFields) == 0 {
+		config.PIIFields = DefaultSensitiveFields()
+	}
 }

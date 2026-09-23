@@ -1,10 +1,12 @@
 package axio
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -12,22 +14,22 @@ import (
 // The directory is automatically cleaned up when the test completes.
 func tempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "axio-test-*")
+	directory, err := os.MkdirTemp("", "axio-test-*")
 	if err != nil {
 		t.Fatalf("create temporary directory: %v", err)
 	}
 	t.Cleanup(func() {
-		os.RemoveAll(dir)
+		os.RemoveAll(directory)
 	})
-	return dir
+	return directory
 }
 
 // tempFile creates a temporary file for testing.
 // Returns the file path. The file is automatically cleaned up when the test completes.
 func tempFile(t *testing.T, name string) string {
 	t.Helper()
-	dir := tempDir(t)
-	return filepath.Join(dir, name)
+	directory := tempDir(t)
+	return filepath.Join(directory, name)
 }
 
 // writeFile writes content to a file for testing.
@@ -85,4 +87,77 @@ func assertEqual[T comparable](t *testing.T, got, want T) {
 	if got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
+}
+
+// captureStdout redirects os.Stdout to a pipe. The returned function restores
+// os.Stdout and returns everything written to it in between. Outputs built by
+// Stdout capture os.Stdout when created, so the logger must be built after
+// this call.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	os.Stdout = writer
+	t.Cleanup(func() { os.Stdout = original })
+
+	return func() string {
+		t.Helper()
+		os.Stdout = original
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close pipe writer: %v", err)
+		}
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read pipe: %v", err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatalf("close pipe reader: %v", err)
+		}
+		return string(content)
+	}
+}
+
+// readLines returns the non-empty lines of the file at path.
+func readLines(t *testing.T, path string) []string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(readFile(t, path), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// bufferOutput is an Output that keeps everything written to it in memory.
+type bufferOutput struct {
+	format Format
+	mutex  sync.Mutex
+	buffer bytes.Buffer
+}
+
+// newBufferOutput returns an empty bufferOutput encoding in format.
+func newBufferOutput(format Format) *bufferOutput {
+	return &bufferOutput{format: format}
+}
+
+func (b *bufferOutput) Format() Format   { return b.format }
+func (b *bufferOutput) Type() OutputType { return OutputStdout }
+func (b *bufferOutput) Sync() error      { return nil }
+func (b *bufferOutput) Close() error     { return nil }
+
+func (b *bufferOutput) Write(data []byte) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.Write(data)
+}
+
+// String returns everything written so far.
+func (b *bufferOutput) String() string {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.String()
 }

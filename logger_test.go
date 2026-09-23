@@ -3,6 +3,7 @@ package axio
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -378,5 +379,51 @@ func TestLogger_MessageWithExtraArgs(t *testing.T) {
 	content := readFile(t, path)
 	if !strings.Contains(content, "value: 42 extra: test") {
 		t.Error("message should be formatted correctly")
+	}
+}
+
+func TestLogger_ServiceMetadataOnlyInJSON(t *testing.T) {
+	text, structured := newBufferOutput(FormatText), newBufferOutput(FormatJSON)
+	logger, err := New(
+		Config{ServiceName: "checkout", ServiceVersion: "1.4.2", Environment: Production, Level: LevelInfo},
+		WithOutputs(text, structured),
+	)
+	assertNoError(t, err)
+	logger.Info(context.Background(), "order created")
+	assertNoError(t, logger.Close())
+
+	for _, key := range []string{`"service"`, `"deployment"`} {
+		if strings.Contains(text.String(), key) {
+			t.Errorf("text line should not carry %s: %s", key, text.String())
+		}
+		if !strings.Contains(structured.String(), key) {
+			t.Errorf("JSON line should carry %s: %s", key, structured.String())
+		}
+	}
+}
+
+func TestWithAgentMode_OverridesEarlierOutputs(t *testing.T) {
+	path := tempFile(t, "discarded.log")
+	discarded, err := File(path, FormatText)
+	assertNoError(t, err)
+
+	stdout := captureStdout(t)
+	logger, err := New(
+		Config{ServiceName: "test", Environment: Production, Level: LevelInfo},
+		WithOutputs(discarded),
+		WithAgentMode(),
+	)
+	assertNoError(t, err)
+	defer logger.Close()
+
+	logger.Info(context.Background(), "agent line")
+	written := stdout()
+
+	if !strings.Contains(written, `"message":"agent line"`) {
+		t.Errorf("expected the entry as JSON on stdout, got %q", written)
+	}
+	assertEqual(t, readFile(t, path), "")
+	if _, err := discarded.Write([]byte("late\n")); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("expected the discarded output to be closed, got %v", err)
 	}
 }

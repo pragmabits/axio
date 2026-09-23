@@ -1,34 +1,24 @@
 package axio
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sync"
-	"time"
-)
 
-// AuditConfig represents the audit configuration with hash chain.
-//
-// When enabled, each log entry receives a SHA256 hash that includes
-// the hash of the previous entry, forming a cryptographic chain that detects
-// any tampering.
-//
-// YAML example:
-//
-//	audit:
-//	  enabled: true
-//	  storePath: /var/lib/axio/chain.json
-type AuditConfig struct {
-	// Enabled indicates whether auditing is enabled.
-	Enabled bool `json:"enabled" yaml:"enabled" toml:"enabled" mapstructure:"enabled"`
-	// StorePath is the file path to persist the chain state.
-	// Required when Enabled is true.
-	StorePath string `json:"storePath" yaml:"storePath" toml:"storePath" mapstructure:"storePath"`
-}
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/pragmabits/axio/internal/logline"
+)
 
 // ChainStore defines the interface for hash chain state persistence.
 //
@@ -50,53 +40,34 @@ type ChainStore interface {
 	Load() (sequence uint64, lastHash string, err error)
 }
 
-// ChainEntry represents an individual entry in the hash chain.
-type ChainEntry struct {
-	// Sequence is the entry sequence number.
-	Sequence uint64 `json:"sequence"`
-	// Timestamp is when the entry was created. Hashed as UTC by
-	// [HashChain.Add] and [HashChain.Verify]; the stored value's timezone
-	// is preserved for display.
-	Timestamp time.Time `json:"timestamp"`
-	// Hash is the SHA256 hash of this entry.
-	Hash string `json:"hash"`
-	// PreviousHash is the hash of the previous entry.
-	PreviousHash string `json:"previous_hash"`
-}
-
-// HashChain provides tamper-evident logging through cryptographic chaining.
+// HashChain links audited log lines into a tamper-evident chain.
 //
-// Each log entry receives a SHA256 hash that includes:
-//   - Hash of the previous entry
-//   - Sequence number
-//   - Timestamp
-//   - Entry data
+// Each line's hash is the SHA-256 of the previous line's hash followed by the
+// line's own bytes, so changing, removing or reordering a line breaks the chain
+// from that line on. The chain's state — how many lines it holds and the last
+// hash — lives in a [ChainStore], which is what lets [HashChain.Verify] tell a
+// log that ends early from a complete one.
 //
-// This creates an immutable chain where any modification to an entry
-// invalidates all subsequent hashes, enabling tampering detection.
+// A Logger or Event built with [WithAudit] or [WithAuditChain] writes through a
+// HashChain; the chain is rarely driven by hand.
 //
 // Use case: audit logs for regulatory compliance (LGPD, SOX, PCI-DSS)
 // where record integrity must be provable.
 //
 // Example:
 //
-//	store := axio.NewFileStore("/var/lib/axio/audit-chain.json")
-//	chain, err := axio.NewHashChain(store)
+//	chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/chain.json"))
 //	if err != nil {
-//	    log.Fatal(err)
+//	    return err
 //	}
-//
-//	// Add entry
-//	hash, prevHash, err := chain.Add([]byte("log data"))
+//	file, err := os.Open("/var/log/app.log")
 //	if err != nil {
-//	    log.Fatal(err)
+//	    return err
 //	}
-//
-//	// Verify integrity
-//	err = chain.Verify([]axio.VerifiableEntry{
-//	    {Entry: entries[0], Data: getData(0)},
-//	    {Entry: entries[1], Data: getData(1)},
-//	})
+//	defer file.Close()
+//	if err := chain.Verify(file, ""); err != nil {
+//	    return fmt.Errorf("audit log does not verify: %w", err)
+//	}
 type HashChain struct {
 	sequence uint64
 	lastHash string
@@ -132,79 +103,39 @@ func NewHashChain(store ChainStore) (*HashChain, error) {
 	return chain, nil
 }
 
-// Add appends data to the chain and returns the calculated hash and previous hash.
+// Add appends data to the chain and returns its hash and the hash before it.
 //
-// Returns an error if state persistence fails. This ensures integrity
-// of the audit chain - if the state cannot be persisted, the operation
-// fails to avoid inconsistencies between memory and storage.
+// The hash is the hex SHA-256 of the previous hash followed by data. The new
+// state is persisted before Add returns; if persisting fails, the chain is
+// left as it was and the error is returned.
 func (c *HashChain) Add(data []byte) (hash, previousHash string, err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	previousHash, hash, err = c.add(data)
+	return hash, previousHash, err
+}
 
-	c.sequence++
-	previousHash = c.lastHash
-
-	entry := ChainEntry{
-		Sequence:     c.sequence,
-		Timestamp:    time.Now().UTC(),
-		PreviousHash: previousHash,
+// Verify reads audited JSON lines from reader and checks the chain they form,
+// from previousHash to the chain's [HashChain.LastHash].
+//
+// It checks every line as [VerifyLines] does — previousHash is empty for a log
+// that starts the chain, or the hash before the first line otherwise — and
+// then that the last line ends where the chain ends.
+//
+// Returns [ErrHashMismatch] for a line whose content changed, [ErrChainBroken]
+// for a line that was removed, moved or inserted, or that carries no trailer,
+// and [ErrChainIncomplete] when the log ends before the chain does: its end was
+// removed, or the whole chain was rewritten. The error names the line.
+//
+// Only JSON outputs can be verified. A text output carries a shortened hash,
+// for finding the same entry in the JSON output.
+func (c *HashChain) Verify(reader io.Reader, previousHash string) error {
+	lastHash, err := VerifyLines(reader, previousHash)
+	if err != nil {
+		return err
 	}
-
-	hash = c.computeHash(entry, data)
-	c.lastHash = hash
-
-	if c.store != nil {
-		if err := c.store.Save(c.sequence, c.lastHash); err != nil {
-			c.sequence--
-			c.lastHash = previousHash
-			return "", "", fmt.Errorf("persist chain state: %w", err)
-		}
-	}
-
-	return hash, previousHash, nil
-}
-
-// computeHash generates a SHA256 hash of the entry metadata and data.
-//
-// The entry timestamp is normalized to UTC before hashing so the result is
-// independent of the caller's timezone.
-func (c *HashChain) computeHash(entry ChainEntry, data []byte) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(entry.PreviousHash))
-	_, _ = fmt.Fprintf(h, "%d", entry.Sequence)
-	_, _ = h.Write([]byte(entry.Timestamp.UTC().Format(time.RFC3339Nano)))
-	_, _ = h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// VerifiableEntry pairs a [ChainEntry] with the original data hashed into it.
-// Used by [HashChain.Verify] to recompute hashes without an out-of-band lookup.
-type VerifiableEntry struct {
-	// Entry is the chain entry to validate.
-	Entry ChainEntry
-	// Data is the original payload that was hashed into Entry.
-	Data []byte
-}
-
-// Verify validates that a sequence of entries forms a valid chain.
-//
-// Returns an error if any hash is invalid or the chain is broken.
-//
-// Timestamps inside each [VerifiableEntry] are normalized to UTC for hash
-// recomputation; the caller does not need to convert them beforehand.
-func (c *HashChain) Verify(entries []VerifiableEntry) error {
-	for index, item := range entries {
-		computed := c.computeHash(item.Entry, item.Data)
-
-		if computed != item.Entry.Hash {
-			return fmt.Errorf("%w: sequence %d: expected %s, got %s",
-				ErrHashMismatch, item.Entry.Sequence, item.Entry.Hash, computed)
-		}
-
-		if index > 0 && item.Entry.PreviousHash != entries[index-1].Entry.Hash {
-			return fmt.Errorf("%w: sequence %d",
-				ErrChainBroken, item.Entry.Sequence)
-		}
+	if chainHash := c.LastHash(); lastHash != chainHash {
+		return fmt.Errorf("%w: log ends at %q, chain at %q", ErrChainIncomplete, logline.ShortHash(lastHash), logline.ShortHash(chainHash))
 	}
 	return nil
 }
@@ -223,24 +154,98 @@ func (c *HashChain) LastHash() string {
 	return c.lastHash
 }
 
+// add appends data to the chain; the caller holds the mutex. The state
+// changes only after the store has persisted it.
+func (c *HashChain) add(data []byte) (previousHash, hash string, err error) {
+	previousHash = c.lastHash
+	hash = hashLine(previousHash, data)
+	if c.store != nil {
+		if err := c.store.Save(c.sequence+1, hash); err != nil {
+			return "", "", fmt.Errorf("persist chain state: %w", err)
+		}
+	}
+	c.sequence++
+	c.lastHash = hash
+	return previousHash, hash, nil
+}
+
+// appendAndWrite adds data to the chain and calls write with the new hashes
+// while the chain is still locked, so lines reach the outputs in chain order.
+func (c *HashChain) appendAndWrite(data []byte, write func(previousHash, hash string) error) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	previousHash, hash, err := c.add(data)
+	if err != nil {
+		return err
+	}
+	return write(previousHash, hash)
+}
+
+// VerifyLines reads audited JSON lines from reader and checks each against the
+// one before it, starting from previousHash, and returns the hash of the last
+// line: the previousHash of whatever comes next.
+//
+// Each line must end with the trailer an audited Logger writes, and its hash
+// must match the rest of the line. Blank lines are skipped. VerifyLines does not
+// check where the chain ends, so it verifies one piece of a log — a rotated
+// file — on its own; [HashChain.Verify] checks a whole log against its chain.
+//
+// Returns [ErrHashMismatch] for a line whose content changed and
+// [ErrChainBroken] for a line that was removed, moved or inserted, or that
+// carries no trailer. The error names the line.
+//
+// Example:
+//
+//	previousHash := ""
+//	for _, path := range []string{"app.log.2", "app.log.1", "app.log"} {
+//	    file, err := os.Open(path)
+//	    if err != nil {
+//	        return err
+//	    }
+//	    previousHash, err = axio.VerifyLines(file, previousHash)
+//	    file.Close()
+//	    if err != nil {
+//	        return fmt.Errorf("%s: %w", path, err)
+//	    }
+//	}
+func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err error) {
+	lastHash = previousHash
+	lines := bufio.NewReader(reader)
+	for number := 1; ; number++ {
+		line, readErr := lines.ReadBytes('\n')
+		if trimmed := bytes.TrimRight(line, "\r\n"); len(trimmed) > 0 {
+			if lastHash, err = verifyLine(trimmed, lastHash, number); err != nil {
+				return "", err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return lastHash, nil
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("read line %d: %w", number, readErr)
+		}
+	}
+}
+
 // FileStore persists the hash chain state in a local JSON file.
 //
 // Example:
 //
-//	store := axio.NewFileStore("/var/lib/axio/audit-chain.json")
-//	hook, err := axio.NewAuditHook(store)
+//	chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/audit-chain.json"))
 type FileStore struct {
 	path  string
 	mutex sync.Mutex
 }
 
-// fileStoreState represents the persisted state format.
-type fileStoreState struct {
-	Sequence uint64 `json:"sequence"`
-	LastHash string `json:"last_hash"`
-}
-
 // NewFileStore creates a [FileStore] that persists state at the specified path.
+//
+// Example:
+//
+//	chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/audit-chain.json"))
+//	if err != nil {
+//	    return err
+//	}
+//	logger, err := axio.New(config, axio.WithAuditChain(chain))
 func NewFileStore(path string) *FileStore {
 	return &FileStore{path: path}
 }
@@ -319,118 +324,208 @@ func (s *FileStore) Load() (uint64, string, error) {
 	return state.Sequence, state.LastHash, nil
 }
 
-// AuditHook adds hash chain information to log entries for tampering detection.
-//
-// The hook populates the Hash and PreviousHash fields of [Entry], creating a
-// cryptographic chain that allows log integrity verification.
-//
-// AuditHook implements [MetricsAware] to emit metrics for audit records.
-//
-// Example:
-//
-//	store := axio.NewFileStore("/var/lib/axio/audit.json")
-//	hook, err := axio.NewAuditHook(store)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
-type AuditHook struct {
-	chain   *HashChain
-	metrics Metrics
-	mutex   sync.RWMutex
+// fileStoreState represents the persisted state format.
+type fileStoreState struct {
+	Sequence uint64 `json:"sequence"`
+	LastHash string `json:"last_hash"`
 }
 
-// NewAuditHook creates an [AuditHook] with the specified chain store.
+// auditCore is the zapcore.Core of an audited Logger or Event.
 //
-// Pass nil for an in-memory chain that does not persist across restarts.
-//
-// Returns [ErrCreateAuditHook] if it fails to create the chain.
-//
-// Example:
-//
-//	store := axio.NewFileStore("/var/lib/axio/audit.json")
-//	hook, err := axio.NewAuditHook(store)
-//	if err != nil {
-//	    return err
-//	}
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
-func NewAuditHook(store ChainStore) (*AuditHook, error) {
-	chain, err := NewHashChain(store)
+// It encodes each entry once as JSON, adds those bytes to the chain and writes
+// the audited line to every JSON output, all while the chain is locked: the
+// hash covers exactly what is written, and lines land in chain order. Text
+// outputs get the same entry with the hash shortened, for reference.
+type auditCore struct {
+	zapcore.LevelEnabler
+	chain       *HashChain
+	metrics     Metrics
+	canonical   zapcore.Encoder
+	jsonOutputs []Output
+	textSinks   []textSink
+}
+
+func (a *auditCore) With(fields []zapcore.Field) zapcore.Core {
+	clone := *a
+	clone.canonical = a.canonical.Clone()
+	addFields(clone.canonical, fields)
+	clone.textSinks = make([]textSink, len(a.textSinks))
+	for index, sink := range a.textSinks {
+		encoder := sink.encoder.Clone()
+		addFields(encoder, fields)
+		clone.textSinks[index] = textSink{encoder: encoder, output: sink.output}
+	}
+	return &clone
+}
+
+func (a *auditCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if a.Enabled(entry.Level) {
+		return checked.AddCore(entry, a)
+	}
+	return checked
+}
+
+func (a *auditCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
+	encoded, err := a.canonical.EncodeEntry(entry, fields)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCreateAuditHook, err)
+		return fmt.Errorf("encode audited entry: %w", err)
 	}
-	return &AuditHook{chain: chain}, nil
-}
+	defer encoded.Free()
 
-// MustAuditHook is like [NewAuditHook] but panics on error.
-//
-// Useful for initialization where failure must be fatal.
-//
-// Example:
-//
-//	store := axio.NewFileStore("/var/lib/axio/audit.json")
-//	hook := axio.MustAuditHook(store)
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
-func MustAuditHook(store ChainStore) *AuditHook {
-	hook, err := NewAuditHook(store)
-	if err != nil {
-		panic(err)
+	body, ok := logline.Body(encoded.Bytes())
+	if !ok {
+		return fmt.Errorf("encode audited entry: not a JSON object: %q", encoded.String())
 	}
-	return hook
-}
-
-// Name returns the hook identifier.
-func (hook *AuditHook) Name() string {
-	return "audit"
-}
-
-// SetMetrics implements [MetricsAware].
-//
-// When configured, the hook emits metrics for each created audit record.
-func (hook *AuditHook) SetMetrics(metrics Metrics) {
-	hook.mutex.Lock()
-	defer hook.mutex.Unlock()
-	hook.metrics = metrics
-}
-
-// Process adds hash chain information to the log entry.
-//
-// If metrics is configured via [SetMetrics], emits metrics for
-// each successfully created audit record.
-func (hook *AuditHook) Process(ctx context.Context, entry *Entry) error {
-	fields := make(map[string]any, len(entry.Annotations))
-	for _, annotation := range entry.Annotations {
-		fields[annotation.Name()] = annotation.Data()
-	}
-
-	data, err := json.Marshal(map[string]any{
-		"timestamp": entry.Timestamp,
-		"level":     entry.Level,
-		"message":   entry.Message,
-		"logger":    entry.Logger,
-		"caller":    entry.Caller,
-		"trace_id":  entry.TraceID,
-		"span_id":   entry.SpanID,
-		"fields":    fields,
+	err = a.chain.appendAndWrite(body, func(previousHash, hash string) error {
+		return a.writeLine(entry, fields, logline.AppendTrailer(body, previousHash, hash), hash)
 	})
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrSerializeEntry, err)
+		return err
 	}
-
-	hash, previousHash, err := hook.chain.Add(data)
-	if err != nil {
-		return fmt.Errorf("add entry to chain: %w", err)
-	}
-	entry.Hash = hash
-	entry.PreviousHash = previousHash
-
-	hook.mutex.RLock()
-	metrics := hook.metrics
-	hook.mutex.RUnlock()
-
-	if metrics != nil {
-		metrics.AuditRecords(ctx)
-	}
-
+	a.metrics.AuditRecords(context.Background())
 	return nil
 }
+
+func (a *auditCore) Sync() error {
+	var errs []error
+	for _, output := range a.jsonOutputs {
+		if err := output.Sync(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, sink := range a.textSinks {
+		if err := sink.output.Sync(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// writeLine writes the audited line to every JSON output, and the entry with
+// its short hash to every text output.
+func (a *auditCore) writeLine(entry zapcore.Entry, fields []zapcore.Field, line []byte, hash string) error {
+	var errs []error
+	for _, output := range a.jsonOutputs {
+		if _, err := output.Write(line); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	withHash := append(fields[:len(fields):len(fields)], zap.String(logline.HashKey, logline.ShortHash(hash)))
+	for _, sink := range a.textSinks {
+		if err := sink.write(entry, withHash); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// textSink is a text output with the encoder that writes to it.
+type textSink struct {
+	encoder zapcore.Encoder
+	output  Output
+}
+
+// write encodes the entry as text and writes it to the output.
+func (t textSink) write(entry zapcore.Entry, fields []zapcore.Field) error {
+	encoded, err := t.encoder.EncodeEntry(entry, fields)
+	if err != nil {
+		return fmt.Errorf("encode text entry: %w", err)
+	}
+	defer encoded.Free()
+	_, err = t.output.Write(encoded.Bytes())
+	return err
+}
+
+// AuditConfig represents the audit configuration with hash chain.
+//
+// When enabled, each log entry receives a SHA256 hash that includes
+// the hash of the previous entry, forming a cryptographic chain that detects
+// any tampering.
+//
+// YAML example:
+//
+//	audit:
+//	  enabled: true
+//	  storePath: /var/lib/axio/chain.json
+type AuditConfig struct {
+	// Enabled indicates whether auditing is enabled.
+	Enabled bool `json:"enabled" yaml:"enabled" toml:"enabled" mapstructure:"enabled"`
+	// StorePath is the file path to persist the chain state.
+	// Required when Enabled is true.
+	StorePath string `json:"storePath" yaml:"storePath" toml:"storePath" mapstructure:"storePath"`
+}
+
+// hashLine returns the hex SHA-256 of previousHash followed by body: the hash
+// an audited line carries.
+func hashLine(previousHash string, body []byte) string {
+	hasher := sha256.New()
+	// hash.Hash.Write never returns an error.
+	_, _ = hasher.Write([]byte(previousHash))
+	_, _ = hasher.Write(body)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// verifyLine checks one audited line against the hash it must continue from
+// and returns the line's own hash.
+func verifyLine(line []byte, expected string, number int) (string, error) {
+	body, previousHash, hash, ok := logline.SplitTrailer(line)
+	if !ok {
+		return "", fmt.Errorf("%w: line %d carries no audit trailer", ErrChainBroken, number)
+	}
+	if hashLine(previousHash, body) != hash {
+		return "", fmt.Errorf("%w: line %d", ErrHashMismatch, number)
+	}
+	if previousHash != expected {
+		return "", fmt.Errorf("%w: line %d does not continue the line before it", ErrChainBroken, number)
+	}
+	return hash, nil
+}
+
+// addFields adds fields to encoder the way zapcore.Core.With does.
+func addFields(encoder zapcore.ObjectEncoder, fields []zapcore.Field) {
+	for _, field := range fields {
+		field.AddTo(encoder)
+	}
+}
+
+// buildAuditChain returns the chain an audited Logger or Event writes
+// through, or nil when auditing is off.
+func buildAuditChain(config Config) (*HashChain, error) {
+	switch {
+	case !config.Audit.Enabled:
+		return nil, nil
+	case config.auditChain != nil:
+		return config.auditChain, nil
+	default:
+		return sharedChain(config.Audit.StorePath)
+	}
+}
+
+// sharedChain returns this process's chain for storePath, loading it from the
+// store the first time the path is used.
+func sharedChain(storePath string) (*HashChain, error) {
+	absolute, err := filepath.Abs(storePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve store path %s: %w", storePath, err)
+	}
+
+	chainsByPath.mutex.Lock()
+	defer chainsByPath.mutex.Unlock()
+	if chain, ok := chainsByPath.chains[absolute]; ok {
+		return chain, nil
+	}
+	chain, err := NewHashChain(NewFileStore(absolute))
+	if err != nil {
+		return nil, err
+	}
+	chainsByPath.chains[absolute] = chain
+	return chain, nil
+}
+
+// chainsByPath holds one chain per store path in this process, so every Logger
+// and Event audited with the same [WithAudit] path extends a single chain
+// instead of each loading the store and forking it.
+var chainsByPath = struct {
+	mutex  sync.Mutex
+	chains map[string]*HashChain
+}{chains: make(map[string]*HashChain)}

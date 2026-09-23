@@ -1,6 +1,8 @@
 package axio
 
 import (
+	"errors"
+
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -17,7 +19,8 @@ import (
 //   - [WithAgentMode]: optimizes for collection by external agents
 //   - [WithHooks]: configures custom processing hooks
 //   - [WithPII]: configures PII masking
-//   - [WithAudit]: configures auditing with hash chain
+//   - [WithAudit]: configures auditing with a hash chain stored in a file
+//   - [WithAuditChain]: configures auditing with a hash chain of your own
 //   - [WithMetrics]: configures metrics collection
 //   - [WithTracer]: configures trace extraction
 type Option func(*Config) error
@@ -65,7 +68,8 @@ func WithOutputs(outputs ...Output) Option {
 // This option:
 //   - Sets [Config.AgentMode] to true
 //   - Forces output to stdout with JSON format
-//   - Overwrites any previous output
+//   - Overwrites any previous output, closing the ones passed to an earlier
+//     [WithOutputs]; an error closing them is returned
 //
 // When this option is used, logs are written to stdout in JSON format,
 // allowing external agents to collect and forward them to aggregation
@@ -83,18 +87,28 @@ func WithAgentMode() Option {
 				Format: FormatJSON,
 			},
 		}
-		return nil
+
+		// WithOutputs handed these to the logger, and the logger will no longer
+		// hold them, so nothing else is left to close them.
+		discarded := config.resolvedOutputs
+		config.resolvedOutputs = nil
+		var errs []error
+		for _, output := range discarded {
+			if err := output.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
 	}
 }
 
 // WithHooks configures the logger to process log entries through the specified hooks.
 //
-// Hooks are executed in the order they were registered, before the entry
-// is written to outputs. If a hook returns an error, processing is
-// stopped and the entry is not written.
+// Hooks run in the order they were registered, after PII masking and before
+// the entry is written; with auditing on, the hash covers what they changed.
+// If a hook returns an error, processing stops and the entry is not written.
 //
-// NOTE: For PIIHook and AuditHook, prefer using [WithPII] and [WithAudit] respectively.
-// This function is maintained for compatibility with custom hooks.
+// For PII masking, prefer [WithPII], which runs before every custom hook.
 //
 // Example:
 //
@@ -134,10 +148,16 @@ func WithPII(patterns []PIIPattern, fields []string) Option {
 	}
 }
 
-// WithAudit enables auditing with hash chain persisted at the specified path.
+// WithAudit enables auditing with a hash chain whose state is persisted at
+// storePath.
 //
-// The hash chain creates a tamper-proof audit trail, where each
-// log entry receives a SHA256 hash that includes the previous entry's hash.
+// Every JSON line then ends with previous_hash and hash: the SHA-256 of the
+// previous line's hash followed by the line's own bytes, so the hash covers
+// exactly what was written. Verify the log with [HashChain.Verify]. Text
+// outputs show a shortened hash for reference only.
+//
+// Every Logger and Event audited with the same storePath in this process
+// extends one chain, whichever was created first.
 //
 // Example:
 //
@@ -148,6 +168,30 @@ func WithAudit(storePath string) Option {
 	return func(config *Config) error {
 		config.Audit.Enabled = true
 		config.Audit.StorePath = storePath
+		return nil
+	}
+}
+
+// WithAuditChain enables auditing through chain, for chain state kept in a
+// [ChainStore] other than a local file. Loggers and Events given the same
+// chain extend one chain.
+//
+// Returns [ErrNilAuditChain] if chain is nil.
+//
+// Example:
+//
+//	chain, err := axio.NewHashChain(redisStore)
+//	if err != nil {
+//	    return err
+//	}
+//	logger, err := axio.New(config, axio.WithAuditChain(chain))
+func WithAuditChain(chain *HashChain) Option {
+	return func(config *Config) error {
+		if chain == nil {
+			return ErrNilAuditChain
+		}
+		config.Audit.Enabled = true
+		config.auditChain = chain
 		return nil
 	}
 }
@@ -198,14 +242,14 @@ func WithMetrics(provider metric.MeterProvider) Option {
 //	    logger.Info(ctx, "request received")
 //	    // Log will include: {"trace_id": "abc123...", "span_id": "def456..."}
 //	}
-func WithTracer(t Tracer) Option {
+func WithTracer(tracer Tracer) Option {
 	return func(config *Config) error {
-		if t == nil {
+		if tracer == nil {
 			return ErrNilTracer
 		}
-		config.tracer = t
+		config.tracer = tracer
 		// Detects tracer type for serialization
-		switch t.(type) {
+		switch tracer.(type) {
 		case *otelTraceExtractor:
 			config.TracerType = "otel"
 		default:

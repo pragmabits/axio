@@ -38,6 +38,8 @@ var (
 	ErrBuildHooks = errors.New("failed to build hooks")
 	// ErrBuildMetrics indicates failure to build metrics.
 	ErrBuildMetrics = errors.New("failed to build metrics")
+	// ErrBuildAudit indicates failure to build the audit chain.
+	ErrBuildAudit = errors.New("failed to build audit chain")
 	// ErrBuildEngine indicates failure to build the logging engine.
 	ErrBuildEngine = errors.New("failed to build engine")
 )
@@ -60,10 +62,11 @@ var (
 	ErrHashMismatch = errors.New("hash mismatch")
 	// ErrChainBroken indicates that the chain integrity has been compromised.
 	ErrChainBroken = errors.New("chain integrity compromised")
-	// ErrSerializeEntry indicates failure to serialize an entry for hashing.
-	ErrSerializeEntry = errors.New("failed to serialize audit entry")
-	// ErrCreateAuditHook indicates failure to create the audit hook.
-	ErrCreateAuditHook = errors.New("failed to create audit hook")
+	// ErrChainIncomplete indicates that an audited log does not reach the
+	// chain's last hash: its end was removed or the chain was rewritten.
+	ErrChainIncomplete = errors.New("log does not reach the chain's last hash")
+	// ErrNilAuditChain indicates that a nil chain was passed to WithAuditChain.
+	ErrNilAuditChain = errors.New("audit chain cannot be nil")
 )
 
 var (

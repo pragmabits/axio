@@ -63,12 +63,14 @@
 //
 // For logs that require integrity proof (LGPD, SOX, PCI-DSS compliance):
 //
-//	store := axio.NewFileStore("/var/lib/axio/chain.json")
-//	hook, _ := axio.NewAuditHook(store)
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
+//	logger, _ := axio.New(config,
+//	    axio.WithOutputs(axio.MustFile("/var/log/app.log", axio.FormatJSON)),
+//	    axio.WithAudit("/var/lib/axio/chain.json"),
+//	)
 //
-// Each log entry receives a SHA256 hash that includes the hash of the previous entry,
-// forming a cryptographic hash chain that detects any tampering.
+// Each JSON line ends with previous_hash and hash, the SHA-256 of the previous
+// hash followed by the line's own bytes: a chain that detects any change,
+// removal or reordering. [HashChain.Verify] checks a log against the chain.
 //
 // # OpenTelemetry Integration
 //
@@ -115,7 +117,7 @@
 //
 //   - [Development]: Colored console, no stack traces
 //   - [Staging]: JSON, with stack traces on errors
-//   - [Production]: JSON, with stack traces and sampling
+//   - [Production]: JSON, with stack traces on errors
 package axio
 
 import (
@@ -123,6 +125,60 @@ import (
 	"fmt"
 	"strings"
 )
+
+// Logger defines the main interface for structured logging.
+//
+// The interface provides methods for different severity levels
+// (Debug, Info, Warn, Error) and supports contextualization through
+// structured annotations.
+//
+// Logging methods accept a [context.Context] as the first parameter,
+// allowing automatic integration with distributed tracing when a
+// [Tracer] is configured.
+//
+// Example:
+//
+//	logger, _ := axio.New(settings)
+//
+//	// Simple log
+//	logger.Info(ctx, "user authenticated")
+//
+//	// Formatted log
+//	logger.Info(ctx, "processed %d items in %v", count, duration)
+//
+//	// Log with structured annotations
+//	logger.With(
+//	    axio.Annotate("user_id", userID),
+//	    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders"}),
+//	).Info(ctx, "order created")
+//
+//	// Error log
+//	logger.Error(ctx, err, "failed to process payment")
+type Logger interface {
+	// Named creates a sub-logger with an additional name.
+	// Names are concatenated with dots (e.g., "app.http.handler").
+	Named(string) Logger
+	// Debug logs a debug message.
+	Debug(context.Context, string, ...any)
+	// Info logs an informational message.
+	Info(context.Context, string, ...any)
+	// Warn logs a warning with the associated error.
+	Warn(context.Context, error, string, ...any)
+	// Error logs an error with the associated error.
+	Error(context.Context, error, string, ...any)
+	// With returns a logger with additional annotations attached.
+	With(...Annotation) Logger
+	// Close releases resources owned by the root logger (open files, rotation
+	// goroutines, etc.). It should be called when the logger is no longer
+	// needed, typically via defer in main.
+	//
+	// Only the root Logger (returned by [New]) owns resources. Calling Close
+	// on a logger produced by [Logger.Named] or [Logger.With] returns
+	// [ErrLoggerNotRoot] and leaves all resources untouched. A second Close
+	// on the root returns [ErrLoggerClosed]. After the root is closed, log
+	// calls on the root and on every fork become silent no-ops.
+	Close() error
+}
 
 // Environment represents the execution environment of the application.
 //
@@ -243,58 +299,4 @@ func (f *Format) UnmarshalText(text []byte) error {
 	}
 	*f = value
 	return nil
-}
-
-// Logger defines the main interface for structured logging.
-//
-// The interface provides methods for different severity levels
-// (Debug, Info, Warn, Error) and supports contextualization through
-// structured annotations.
-//
-// Logging methods accept a [context.Context] as the first parameter,
-// allowing automatic integration with distributed tracing when a
-// [Tracer] is configured.
-//
-// Example:
-//
-//	logger, _ := axio.New(settings)
-//
-//	// Simple log
-//	logger.Info(ctx, "user authenticated")
-//
-//	// Formatted log
-//	logger.Info(ctx, "processed %d items in %v", count, duration)
-//
-//	// Log with structured annotations
-//	logger.With(
-//	    axio.Annotate("user_id", userID),
-//	    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders"}),
-//	).Info(ctx, "order created")
-//
-//	// Error log
-//	logger.Error(ctx, err, "failed to process payment")
-type Logger interface {
-	// Named creates a sub-logger with an additional name.
-	// Names are concatenated with dots (e.g., "app.http.handler").
-	Named(string) Logger
-	// Debug logs a debug message.
-	Debug(context.Context, string, ...any)
-	// Info logs an informational message.
-	Info(context.Context, string, ...any)
-	// Warn logs a warning with the associated error.
-	Warn(context.Context, error, string, ...any)
-	// Error logs an error with the associated error.
-	Error(context.Context, error, string, ...any)
-	// With returns a logger with additional annotations attached.
-	With(...Annotation) Logger
-	// Close releases resources owned by the root logger (open files, rotation
-	// goroutines, etc.). It should be called when the logger is no longer
-	// needed, typically via defer in main.
-	//
-	// Only the root Logger (returned by [New]) owns resources. Calling Close
-	// on a logger produced by [Logger.Named] or [Logger.With] returns
-	// [ErrLoggerNotRoot] and leaves all resources untouched. A second Close
-	// on the root returns [ErrLoggerClosed]. After the root is closed, log
-	// calls on the root and on every fork become silent no-ops.
-	Close() error
 }

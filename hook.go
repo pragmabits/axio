@@ -10,8 +10,9 @@ import (
 // Entry represents a log entry passed to hooks for processing.
 //
 // Hooks can modify fields in-place before the entry is written to outputs.
-// All fields are populated by the logger before calling hooks, except
-// Hash and PreviousHash which are populated by [AuditHook].
+// All fields are populated by the logger before calling hooks. With auditing
+// on, the hash is computed when the entry is written, after every hook, so it
+// covers whatever the hooks changed.
 type Entry struct {
 	// Timestamp is the moment when the log was created.
 	Timestamp time.Time
@@ -31,11 +32,6 @@ type Entry struct {
 	SpanID string
 	// Annotations contains the structured log fields.
 	Annotations Annotations
-
-	// Hash is the SHA256 hash of this entry (populated by AuditHook).
-	Hash string
-	// PreviousHash is the hash of the previous entry (populated by AuditHook).
-	PreviousHash string
 }
 
 // Hook processes log entries before they are written to outputs.
@@ -46,7 +42,6 @@ type Entry struct {
 //
 // Hooks included in the package:
 //   - [PIIHook]: masks sensitive personal data
-//   - [AuditHook]: adds hash chain for auditing
 //
 // Example of custom hook:
 //
@@ -92,14 +87,12 @@ type MetricsAware interface {
 // Hooks are executed in the following fixed order:
 //
 //  1. PIIHook (sensitive data masking)
-//  2. AuditHook (hash chain for integrity)
-//  3. Custom hooks (in the order passed to WithHooks)
+//  2. Custom hooks (in the order passed to WithHooks)
 //
-// This order is intentional and not configurable:
-//   - PII must mask BEFORE audit calculates hash, ensuring that
-//     sensitive data never appears in the audit chain
-//   - Custom hooks execute last to have access to the already
-//     processed entry (with masked PII and calculated hash)
+// This order is intentional and not configurable: custom hooks see the entry
+// with PII already masked. Auditing is not a hook: the hash is computed when
+// the entry is written, after the whole chain, so it covers what every hook
+// changed and sensitive data never reaches the audit chain.
 type hookChain struct {
 	hooks   []Hook
 	metrics Metrics
@@ -175,25 +168,28 @@ func (c *hookChain) length() int {
 // noopHook is a hook that does nothing.
 type noopHook struct{}
 
-func (noopHook) Name() string                                    { return "noop" }
-func (noopHook) Process(ctx context.Context, entry *Entry) error { return nil }
-
 // NoopHook returns a hook that does nothing.
 //
 // Useful for tests or as a placeholder.
+//
+// Example:
+//
+//	logger, err := axio.New(config, axio.WithHooks(axio.NoopHook()))
 func NoopHook() Hook {
 	return noopHook{}
 }
+
+func (noopHook) Name() string { return "noop" }
+
+func (noopHook) Process(ctx context.Context, entry *Entry) error { return nil }
 
 // buildHooks creates hooks from configuration.
 //
 // Creation order follows the fixed execution order:
 //  1. PIIHook (if PIIEnabled)
-//  2. AuditHook (if Audit.Enabled)
-//  3. Custom hooks (from WithHooks)
+//  2. Custom hooks (from WithHooks)
 //
-// PII must mask before audit calculates the hash; custom hooks run
-// last and observe the already-masked and already-hashed entry.
+// Custom hooks run after PII masking and observe the masked entry.
 func buildHooks(config Config) ([]Hook, error) {
 	var hooks []Hook
 
@@ -208,15 +204,6 @@ func buildHooks(config Config) ([]Hook, error) {
 			return nil, fmt.Errorf("create PII hook: %w", err)
 		}
 		hooks = append(hooks, piiHook)
-	}
-
-	if config.Audit.Enabled {
-		store := NewFileStore(config.Audit.StorePath)
-		auditHook, err := NewAuditHook(store)
-		if err != nil {
-			return nil, fmt.Errorf("create audit hook: %w", err)
-		}
-		hooks = append(hooks, auditHook)
 	}
 
 	if len(config.hooks) > 0 {

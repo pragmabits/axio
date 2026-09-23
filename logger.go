@@ -10,17 +10,14 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-)
 
-var entryPool = sync.Pool{
-	New: func() any { return &Entry{} },
-}
+	"github.com/pragmabits/axio/internal/logline"
+)
 
 const minimumCallerSkip = 2
 
-func toZapLevel[T ~string | ~[]byte](level T) zapcore.Level {
-	parsed, _ := zapcore.ParseLevel(string(level))
-	return parsed
+var entryPool = sync.Pool{
+	New: func() any { return &Entry{} },
 }
 
 type logger struct {
@@ -97,73 +94,24 @@ func New(config Config, options ...Option) (Logger, error) {
 		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
 	}
 
-	tracer := buildTracer(config)
+	chain, err := buildAuditChain(config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrBuildAudit, err)
+	}
 
-	engine, err := buildEngine(config, outputs)
+	engine, err := buildEngine(config, outputs, chain, metrics)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildEngine, err)
 	}
 
 	return &logger{
 		engine:  engine,
-		trace:   tracer,
+		trace:   buildTracer(config),
 		hooks:   newHookChain(metrics, hooks...),
 		metrics: metrics,
 		outputs: outputs,
 		closed:  new(atomic.Bool),
 	}, nil
-}
-
-func buildEngine(config Config, outputs []Output) (*zap.Logger, error) {
-	level := toZapLevel(config.Level)
-
-	cores := make([]zapcore.Core, 0, len(outputs))
-	for _, out := range outputs {
-		encoder := buildEncoder(out.Format())
-		core := zapcore.NewCore(encoder, out, zap.NewAtomicLevelAt(level))
-		cores = append(cores, core)
-	}
-
-	options := []zap.Option{
-		zap.AddCaller(),
-		zap.AddCallerSkip(config.CallerSkip + minimumCallerSkip),
-	}
-
-	if config.Environment != Development {
-		options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))
-	}
-
-	core := zapcore.NewTee(cores...)
-	engine := zap.New(core, options...)
-
-	if config.Environment != Development {
-		engine = engine.With(
-			zap.Any("service", map[string]any{
-				"name":    config.ServiceName,
-				"version": config.ServiceVersion,
-				"instance": map[string]any{
-					"id": config.InstanceID,
-				},
-			}),
-			zap.Any("deployment", map[string]any{
-				"environment": map[string]any{
-					"name": config.Environment,
-				},
-			}),
-		)
-	}
-
-	return engine, nil
-}
-
-// buildEncoder creates the appropriate encoder for the specified format.
-func buildEncoder(format Format) zapcore.Encoder {
-	switch format {
-	case FormatText:
-		return zapcore.NewConsoleEncoder(consoleEncoderConfig)
-	default:
-		return zapcore.NewJSONEncoder(jsonEncoderConfig)
-	}
 }
 
 func (l logger) Named(name string) Logger {
@@ -182,157 +130,20 @@ func (l logger) With(annotations ...Annotation) Logger {
 	return &l
 }
 
-// cloneAnnotations returns a fresh slice containing the same annotations.
-// Used when forking a logger to break aliasing with the parent's backing array
-// so subsequent mutations (e.g. by hooks) don't leak across loggers.
-func cloneAnnotations(src []Annotation) []Annotation {
-	if len(src) == 0 {
-		return nil
-	}
-	out := make([]Annotation, len(src))
-	copy(out, src)
-	return out
+func (l logger) Debug(ctx context.Context, message string, arguments ...any) {
+	l.log(ctx, LevelDebug, nil, message, arguments...)
 }
 
-func (l logger) Debug(ctx context.Context, message string, args ...any) {
-	l.log(ctx, LevelDebug, nil, message, args...)
+func (l logger) Info(ctx context.Context, message string, arguments ...any) {
+	l.log(ctx, LevelInfo, nil, message, arguments...)
 }
 
-func (l logger) Info(ctx context.Context, message string, args ...any) {
-	l.log(ctx, LevelInfo, nil, message, args...)
+func (l logger) Warn(ctx context.Context, err error, message string, arguments ...any) {
+	l.log(ctx, LevelWarn, err, message, arguments...)
 }
 
-func (l logger) Warn(ctx context.Context, err error, message string, args ...any) {
-	l.log(ctx, LevelWarn, err, message, args...)
-}
-
-func (l logger) Error(ctx context.Context, err error, message string, args ...any) {
-	l.log(ctx, LevelError, err, message, args...)
-}
-
-func (l *logger) log(
-	ctx context.Context,
-	level Level,
-	err error,
-	message string,
-	args ...any,
-) {
-	if l.closed.Load() {
-		return
-	}
-
-	log := l.engine.Check(toZapLevel(level), l.formatMessage(message, args...))
-	if log == nil {
-		return
-	}
-
-	trace, span, _ := l.trace.Extract(ctx)
-
-	entry := entryPool.Get().(*Entry)
-	entry.Timestamp = log.Time
-	entry.Logger = log.LoggerName
-	entry.Caller = log.Caller.String()
-	entry.Level = level
-	entry.Message = log.Message
-	entry.Error = err
-	entry.TraceID = trace
-	entry.SpanID = span
-	entry.Annotations = cloneAnnotations(l.annotations)
-	entry.Hash = ""
-	entry.PreviousHash = ""
-
-	defer func() {
-		*entry = Entry{}
-		entryPool.Put(entry)
-	}()
-
-	if err := l.hooks.process(ctx, entry); err != nil {
-		fmt.Fprintf(os.Stderr, "axio: hook error: %v\n", err)
-		return
-	}
-
-	l.metrics.LogsTotal(ctx, level)
-	log.Message = entry.Message
-	log.Write(l.fieldsFromEntry(entry)...)
-}
-
-func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
-	var buf [5]zap.Field
-	fields := buf[:0]
-
-	if entry.TraceID != "" {
-		fields = append(fields, zap.String("trace_id", entry.TraceID))
-	}
-	if entry.SpanID != "" {
-		fields = append(fields, zap.String("span_id", entry.SpanID))
-	}
-	if entry.Error != nil {
-		fields = append(fields, zap.Error(entry.Error))
-	}
-	if annotationFields := annotationsToFields(entry.Annotations); annotationFields != nil {
-		fields = append(fields, annotationFields...)
-	}
-
-	return fields
-}
-
-func annotationsToFields(annotations []Annotation) []zap.Field {
-	if len(annotations) == 0 {
-		return nil
-	}
-
-	expanded := expandAnnotable(annotations)
-	fields := make([]zap.Field, len(expanded))
-	for index := range expanded {
-		fields[index] = expanded[index].field
-	}
-	return fields
-}
-
-// expandAnnotable replaces Annotable annotations with their expanded fields.
-func expandAnnotable(annotations []Annotation) []Annotation {
-	hasAnnotable := false
-	for _, annotation := range annotations {
-		if _, ok := annotation.field.Interface.(Annotable); ok {
-			hasAnnotable = true
-			break
-		}
-	}
-	if !hasAnnotable {
-		return annotations
-	}
-
-	expanded := make([]Annotation, 0, len(annotations))
-	for _, annotation := range annotations {
-		if provider, ok := annotation.field.Interface.(Annotable); ok {
-			expanded = provider.Append(expanded)
-		} else {
-			expanded = append(expanded, annotation)
-		}
-	}
-	return expanded
-}
-
-// formatMessage formats the message with the arguments.
-// When no args are provided, the format string is returned directly
-// without defer overhead.
-func (l *logger) formatMessage(format string, args ...any) string {
-	if len(args) == 0 {
-		return format
-	}
-	return l.sprintfRecover(format, args)
-}
-
-// sprintfRecover calls fmt.Sprintf recovering from panics caused by
-// incompatible format/args combinations.
-func (l *logger) sprintfRecover(format string, args []any) (msg string) {
-	defer func() {
-		if r := recover(); r != nil {
-			msg = fmt.Sprintf("[INVALID FORMAT] format=%q args=%v panic=%v", format, args, r)
-			fmt.Fprintf(os.Stderr, "axio: panic in message formatting: %v\n", r)
-		}
-	}()
-	return fmt.Sprintf(format, args...)
+func (l logger) Error(ctx context.Context, err error, message string, arguments ...any) {
+	l.log(ctx, LevelError, err, message, arguments...)
 }
 
 // Close releases all resources associated with the logger.
@@ -381,4 +192,235 @@ func (l *logger) Close() error {
 		return fmt.Errorf("close logger: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+func (l *logger) log(
+	ctx context.Context,
+	level Level,
+	err error,
+	message string,
+	arguments ...any,
+) {
+	if l.closed.Load() {
+		return
+	}
+
+	log := l.engine.Check(toZapLevel(level), l.formatMessage(message, arguments...))
+	if log == nil {
+		return
+	}
+
+	trace, span, _ := l.trace.Extract(ctx)
+
+	entry := entryPool.Get().(*Entry)
+	entry.Timestamp = log.Time
+	entry.Logger = log.LoggerName
+	entry.Caller = log.Caller.String()
+	entry.Level = level
+	entry.Message = log.Message
+	entry.Error = err
+	entry.TraceID = trace
+	entry.SpanID = span
+	entry.Annotations = cloneAnnotations(l.annotations)
+
+	defer func() {
+		*entry = Entry{}
+		entryPool.Put(entry)
+	}()
+
+	if err := l.hooks.process(ctx, entry); err != nil {
+		fmt.Fprintf(os.Stderr, "axio: hook error: %v\n", err)
+		return
+	}
+
+	l.metrics.LogsTotal(ctx, level)
+	log.Message = entry.Message
+	log.Write(l.fieldsFromEntry(entry)...)
+}
+
+func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
+	var backing [5]zap.Field
+	fields := backing[:0]
+
+	if entry.TraceID != "" {
+		fields = append(fields, zap.String("trace_id", entry.TraceID))
+	}
+	if entry.SpanID != "" {
+		fields = append(fields, zap.String("span_id", entry.SpanID))
+	}
+	if entry.Error != nil {
+		fields = append(fields, zap.Error(entry.Error))
+	}
+	if annotationFields := annotationsToFields(entry.Annotations); annotationFields != nil {
+		fields = append(fields, annotationFields...)
+	}
+
+	return fields
+}
+
+// formatMessage formats the message with the arguments.
+// When no arguments are provided, the format string is returned directly
+// without defer overhead.
+func (l *logger) formatMessage(format string, arguments ...any) string {
+	if len(arguments) == 0 {
+		return format
+	}
+	return l.sprintfRecover(format, arguments)
+}
+
+// sprintfRecover calls fmt.Sprintf recovering from panics caused by
+// incompatible format/arguments combinations.
+func (l *logger) sprintfRecover(format string, arguments []any) (formatted string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			formatted = fmt.Sprintf("[INVALID FORMAT] format=%q args=%v panic=%v", format, arguments, recovered)
+			fmt.Fprintf(os.Stderr, "axio: panic in message formatting: %v\n", recovered)
+		}
+	}()
+	return fmt.Sprintf(format, arguments...)
+}
+
+// buildEngine builds the zap logger behind a Logger: an audited core when
+// chain is set, one plain core per output otherwise.
+func buildEngine(config Config, outputs []Output, chain *HashChain, metrics Metrics) (*zap.Logger, error) {
+	level := zap.NewAtomicLevelAt(toZapLevel(config.Level))
+	metadata := serviceMetadata(config)
+
+	var core zapcore.Core
+	if chain != nil {
+		core = newAuditedCore(level, outputs, metadata, chain, metrics)
+	} else {
+		core = newPlainCore(level, outputs, metadata)
+	}
+
+	options := []zap.Option{
+		zap.AddCaller(),
+		zap.AddCallerSkip(config.CallerSkip + minimumCallerSkip),
+	}
+	if config.Environment != Development {
+		options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))
+	}
+
+	return zap.New(core, options...), nil
+}
+
+// newPlainCore writes each output in its own format. Only JSON outputs carry
+// the service metadata: in text it would repeat the same fields on every line.
+func newPlainCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field) zapcore.Core {
+	cores := make([]zapcore.Core, 0, len(outputs))
+	for _, output := range outputs {
+		core := zapcore.NewCore(buildEncoder(output.Format()), output, level)
+		if output.Format() == FormatJSON {
+			core = core.With(metadata)
+		}
+		cores = append(cores, core)
+	}
+	return zapcore.NewTee(cores...)
+}
+
+// newAuditedCore writes every output through the audit chain. The hash covers
+// the JSON encoding, service metadata included; text outputs get the entry
+// without metadata and with the hash shortened.
+func newAuditedCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field, chain *HashChain, metrics Metrics) zapcore.Core {
+	core := &auditCore{
+		LevelEnabler: level,
+		chain:        chain,
+		metrics:      metrics,
+		canonical:    zapcore.NewJSONEncoder(logline.JSONEncoderConfig()),
+	}
+	addFields(core.canonical, metadata)
+	for _, output := range outputs {
+		if output.Format() == FormatJSON {
+			core.jsonOutputs = append(core.jsonOutputs, output)
+			continue
+		}
+		core.textSinks = append(core.textSinks, textSink{encoder: buildEncoder(output.Format()), output: output})
+	}
+	return core
+}
+
+// serviceMetadata returns the service and deployment fields a JSON line
+// carries outside Development.
+func serviceMetadata(config Config) []zapcore.Field {
+	if config.Environment == Development {
+		return nil
+	}
+	return []zapcore.Field{
+		zap.Any(logline.ServiceKey, map[string]any{
+			"name":    config.ServiceName,
+			"version": config.ServiceVersion,
+			"instance": map[string]any{
+				"id": config.InstanceID,
+			},
+		}),
+		zap.Any(logline.DeploymentKey, map[string]any{
+			"environment": map[string]any{
+				"name": config.Environment,
+			},
+		}),
+	}
+}
+
+// buildEncoder creates the appropriate encoder for the specified format.
+func buildEncoder(format Format) zapcore.Encoder {
+	switch format {
+	case FormatText:
+		return zapcore.NewConsoleEncoder(logline.ConsoleEncoderConfig())
+	default:
+		return zapcore.NewJSONEncoder(logline.JSONEncoderConfig())
+	}
+}
+
+func toZapLevel[T ~string | ~[]byte](level T) zapcore.Level {
+	parsed, _ := zapcore.ParseLevel(string(level))
+	return parsed
+}
+
+// cloneAnnotations returns a fresh slice containing the same annotations.
+// Used when forking a logger to break aliasing with the parent's backing array
+// so subsequent mutations (e.g. by hooks) don't leak across loggers.
+func cloneAnnotations(source []Annotation) []Annotation {
+	if len(source) == 0 {
+		return nil
+	}
+	out := make([]Annotation, len(source))
+	copy(out, source)
+	return out
+}
+
+func annotationsToFields(annotations []Annotation) []zap.Field {
+	if len(annotations) == 0 {
+		return nil
+	}
+
+	expanded := expandAnnotable(annotations)
+	fields := make([]zap.Field, len(expanded))
+	for index := range expanded {
+		fields[index] = expanded[index].field
+	}
+	return fields
+}
+
+// expandAnnotable replaces Annotable annotations with their expanded fields.
+func expandAnnotable(annotations []Annotation) []Annotation {
+	hasAnnotable := false
+	for _, annotation := range annotations {
+		if _, ok := annotation.field.Interface.(Annotable); ok {
+			hasAnnotable = true
+			break
+		}
+	}
+	if !hasAnnotable {
+		return annotations
+	}
+
+	expanded := make([]Annotation, 0, len(annotations))
+	for _, annotation := range annotations {
+		if provider, ok := annotation.field.Interface.(Annotable); ok {
+			expanded = provider.Append(expanded)
+		} else {
+			expanded = append(expanded, annotation)
+		}
+	}
+	return expanded
 }

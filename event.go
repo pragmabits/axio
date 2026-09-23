@@ -11,6 +11,8 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/pragmabits/axio/internal/logline"
 )
 
 // Event represents a wide event that accumulates annotations throughout a
@@ -55,8 +57,6 @@ type Event struct {
 	emitted     atomic.Bool
 }
 
-type eventContextKey struct{}
-
 // NewEvent creates a new wide event with the specified name and configuration.
 //
 // The event builds its own internal logger using the provided configuration,
@@ -97,9 +97,12 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
 	}
 
-	tracer := buildTracer(config)
+	chain, err := buildAuditChain(config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrBuildAudit, err)
+	}
 
-	engine, err := buildEventEngine(outputs)
+	engine, err := buildEventEngine(outputs, chain, metrics)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBuildEngine, err)
 	}
@@ -108,54 +111,11 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 		name:      name,
 		engine:    engine,
 		hooks:     newHookChain(metrics, hooks...),
-		trace:     tracer,
+		trace:     buildTracer(config),
 		metrics:   metrics,
 		startTime: time.Now(),
 		outputs:   outputs,
 	}, nil
-}
-
-// buildEventEngine creates a zap logger for wide events.
-//
-// Uses eventEncoderConfig which omits level, caller, logger name,
-// and stacktrace fields. The message key is "event".
-func buildEventEngine(outputs []Output) (*zap.Logger, error) {
-	cores := make([]zapcore.Core, 0, len(outputs))
-	for _, output := range outputs {
-		encoder := zapcore.NewJSONEncoder(eventEncoderConfig)
-		core := zapcore.NewCore(encoder, output, zap.NewAtomicLevelAt(zapcore.InfoLevel))
-		cores = append(cores, core)
-	}
-
-	core := zapcore.NewTee(cores...)
-	return zap.New(core), nil
-}
-
-// WithEvent stores the event in the context for retrieval by downstream handlers.
-//
-// Typically called in middleware to make the event available to the entire
-// request chain. Retrieve the event later with [EventFromContext].
-//
-// Example:
-//
-//	event, _ := axio.NewEvent("http_request", config)
-//	ctx = axio.WithEvent(ctx, event)
-func WithEvent(ctx context.Context, event *Event) context.Context {
-	return context.WithValue(ctx, eventContextKey{}, event)
-}
-
-// EventFromContext retrieves the event from the context.
-// Returns nil if no event is stored in the context.
-//
-// Example:
-//
-//	event := axio.EventFromContext(ctx)
-//	if event != nil {
-//	    event.Add("user_id", userID)
-//	}
-func EventFromContext(ctx context.Context) *Event {
-	event, _ := ctx.Value(eventContextKey{}).(*Event)
-	return event
 }
 
 // Add adds a key-value annotation to the event.
@@ -204,7 +164,8 @@ func (e *Event) SetError(err error, details ...Annotation) {
 // This method:
 //   - Computes duration_ms from the event creation time
 //   - Adds all accumulated annotations, error, and duration
-//   - Runs hooks (PII masking, audit chain, custom)
+//   - Runs hooks (PII masking, custom)
+//   - With auditing on, hashes the line as it is written
 //   - Writes the entry through the internal logger
 //
 // Emit should be called once, typically via defer in middleware.
@@ -224,8 +185,6 @@ func (e *Event) Emit(ctx context.Context) {
 	entry.Message = e.name
 	entry.Error = e.err
 	entry.Annotations = append(cloneAnnotations(e.annotations), e.errDetails...)
-	entry.Hash = ""
-	entry.PreviousHash = ""
 
 	trace, span, _ := e.trace.Extract(ctx)
 	entry.TraceID = trace
@@ -241,33 +200,12 @@ func (e *Event) Emit(ctx context.Context) {
 		return
 	}
 
-	fields := annotationsToFields(entry.Annotations)
-	fields = append(fields, zap.Int64("duration_ms", durationMS))
-
-	if entry.Error != nil {
-		fields = append(fields, zap.Error(entry.Error))
-	}
-
-	if entry.TraceID != "" {
-		fields = append(fields, zap.String("trace_id", entry.TraceID))
-	}
-	if entry.SpanID != "" {
-		fields = append(fields, zap.String("span_id", entry.SpanID))
-	}
-
-	if entry.Hash != "" {
-		fields = append(fields, zap.String("hash", entry.Hash))
-	}
-	if entry.PreviousHash != "" {
-		fields = append(fields, zap.String("previous_hash", entry.PreviousHash))
-	}
-
 	log := e.engine.Check(zap.InfoLevel, e.name)
 	if log == nil {
 		return
 	}
 	log.Time = e.startTime
-	log.Write(fields...)
+	log.Write(eventFields(entry, durationMS)...)
 }
 
 // Close releases resources associated with the event's outputs.
@@ -293,4 +231,79 @@ func (e *Event) Close() error {
 		return fmt.Errorf("close event: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+type eventContextKey struct{}
+
+// WithEvent stores the event in the context for retrieval by downstream handlers.
+//
+// Typically called in middleware to make the event available to the entire
+// request chain. Retrieve the event later with [EventFromContext].
+//
+// Example:
+//
+//	event, _ := axio.NewEvent("http_request", config)
+//	ctx = axio.WithEvent(ctx, event)
+func WithEvent(ctx context.Context, event *Event) context.Context {
+	return context.WithValue(ctx, eventContextKey{}, event)
+}
+
+// EventFromContext retrieves the event from the context.
+// Returns nil if no event is stored in the context.
+//
+// Example:
+//
+//	event := axio.EventFromContext(ctx)
+//	if event != nil {
+//	    event.Add("user_id", userID)
+//	}
+func EventFromContext(ctx context.Context) *Event {
+	event, _ := ctx.Value(eventContextKey{}).(*Event)
+	return event
+}
+
+// buildEventEngine creates a zap logger for wide events.
+//
+// Uses [logline.EventEncoderConfig], which omits level, caller, logger name,
+// and stacktrace fields. The message key is "event". Events are always JSON,
+// whatever the output's format; with auditing on, every output receives the
+// audited line.
+func buildEventEngine(outputs []Output, chain *HashChain, metrics Metrics) (*zap.Logger, error) {
+	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	if chain != nil {
+		return zap.New(&auditCore{
+			LevelEnabler: level,
+			chain:        chain,
+			metrics:      metrics,
+			canonical:    zapcore.NewJSONEncoder(logline.EventEncoderConfig()),
+			jsonOutputs:  outputs,
+		}), nil
+	}
+
+	cores := make([]zapcore.Core, 0, len(outputs))
+	for _, output := range outputs {
+		encoder := zapcore.NewJSONEncoder(logline.EventEncoderConfig())
+		cores = append(cores, zapcore.NewCore(encoder, output, level))
+	}
+	return zap.New(zapcore.NewTee(cores...)), nil
+}
+
+// eventFields converts a processed event entry into the fields written by
+// [Event.Emit]: annotations first, then duration, error and trace.
+func eventFields(entry *Entry, durationMS int64) []zap.Field {
+	fields := annotationsToFields(entry.Annotations)
+	fields = append(fields, zap.Int64("duration_ms", durationMS))
+
+	if entry.Error != nil {
+		fields = append(fields, zap.Error(entry.Error))
+	}
+
+	if entry.TraceID != "" {
+		fields = append(fields, zap.String("trace_id", entry.TraceID))
+	}
+	if entry.SpanID != "" {
+		fields = append(fields, zap.String("span_id", entry.SpanID))
+	}
+
+	return fields
 }

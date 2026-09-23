@@ -48,7 +48,7 @@ func basicEvent(ctx context.Context) {
 	config := axio.Config{
 		ServiceName:    "checkout-service",
 		ServiceVersion: "2.4.1",
-		Environment:    axio.Development,
+		Environment:    axio.EnvironmentDevelopment,
 		Level:          axio.LevelInfo,
 	}
 
@@ -75,7 +75,7 @@ func contextPropagation(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "api-gateway",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -119,7 +119,7 @@ func eventWithAnnotable(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "api-gateway",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -152,7 +152,7 @@ func eventWithNestedData(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "checkout-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -190,7 +190,7 @@ func eventWithSimpleError(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "payment-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -216,7 +216,7 @@ func eventWithDetailedError(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "payment-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -248,7 +248,7 @@ func eventWithPII(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "user-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -288,7 +288,7 @@ func eventWithAudit(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "compliance-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 
@@ -339,7 +339,7 @@ func eventWithFileOutput(ctx context.Context) {
 
 	config := axio.Config{
 		ServiceName: "checkout-service",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	}
 

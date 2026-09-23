@@ -2,6 +2,7 @@ package axio
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -55,7 +56,7 @@ func minimalConfig() Config {
 	return Config{
 		ServiceName:    "test-service",
 		ServiceVersion: "1.0.0",
-		Environment:    Development,
+		Environment:    EnvironmentDevelopment,
 		Level:          LevelInfo,
 	}
 }
@@ -95,17 +96,31 @@ func assertEqual[T comparable](t *testing.T, got, want T) {
 // this call.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
-	original := os.Stdout
+	return captureStream(t, &os.Stdout)
+}
+
+// captureStderr is [captureStdout] for os.Stderr, where the log path reports
+// the failures it cannot return.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	return captureStream(t, &os.Stderr)
+}
+
+// captureStream redirects *stream to a pipe until the returned function is
+// called, and returns everything written to it in between.
+func captureStream(t *testing.T, stream **os.File) func() string {
+	t.Helper()
+	original := *stream
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("create pipe: %v", err)
 	}
-	os.Stdout = writer
-	t.Cleanup(func() { os.Stdout = original })
+	*stream = writer
+	t.Cleanup(func() { *stream = original })
 
 	return func() string {
 		t.Helper()
-		os.Stdout = original
+		*stream = original
 		if err := writer.Close(); err != nil {
 			t.Fatalf("close pipe writer: %v", err)
 		}
@@ -160,4 +175,18 @@ func (b *bufferOutput) String() string {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	return b.buffer.String()
+}
+
+// failingOutput is an Output whose every write fails.
+type failingOutput struct {
+	format Format
+}
+
+func (f failingOutput) Format() Format   { return f.format }
+func (f failingOutput) Type() OutputType { return OutputStdout }
+func (f failingOutput) Sync() error      { return nil }
+func (f failingOutput) Close() error     { return nil }
+
+func (f failingOutput) Write([]byte) (int, error) {
+	return 0, errors.New("disk full")
 }

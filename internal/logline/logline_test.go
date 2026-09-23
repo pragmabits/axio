@@ -27,6 +27,24 @@ func TestShortHash(t *testing.T) {
 	}
 }
 
+func TestFieldKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"order_id", "order_id"},
+		{"message", "_message"},
+		{"hash", "_hash"},
+		{"errorVerbose", "_errorVerbose"},
+		{"_message", "_message"},
+		{"Message", "Message"},
+	}
+
+	for _, test := range tests {
+		assertEqual(t, logline.FieldKey(test.input), test.want)
+	}
+}
+
 func TestAppendTrailer(t *testing.T) {
 	t.Run("closes_body_with_both_hashes_and_newline", func(t *testing.T) {
 		line := logline.AppendTrailer([]byte(`{"level":"info"`), firstHash, secondHash)

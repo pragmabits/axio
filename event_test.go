@@ -457,6 +457,56 @@ func TestEvent_Emit_Idempotent(t *testing.T) {
 	assertEqual(t, result["event"].(string), "once")
 }
 
+func TestEvent_Emit_HookChangesName(t *testing.T) {
+	output := newBufferOutput(FormatJSON)
+	rename := &testHook{name: "rename", process: func(_ context.Context, entry *Entry) error {
+		entry.Message = "checkout_v2"
+		return nil
+	}}
+	event, err := NewEvent("checkout", minimalConfig(), WithOutputs(output), WithHooks(rename))
+	assertNoError(t, err)
+
+	event.Emit(context.Background())
+
+	result := parseEventJSON(t, output.String())
+	assertEqual(t, result["event"].(string), "checkout_v2")
+}
+
+func TestEvent_Close(t *testing.T) {
+	t.Run("second_close_returns_sentinel", func(t *testing.T) {
+		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(newBufferOutput(FormatJSON)))
+		assertNoError(t, err)
+
+		assertNoError(t, event.Close())
+		if err := event.Close(); !errors.Is(err, ErrEventClosed) {
+			t.Errorf("expected ErrEventClosed, got %v", err)
+		}
+	})
+
+	t.Run("second_close_with_time_rotation_does_not_panic", func(t *testing.T) {
+		rotating, err := RotatingFile(tempFile(t, "event.log"), FormatJSON, RotationConfig{Interval: Duration(time.Hour)})
+		assertNoError(t, err)
+		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(rotating))
+		assertNoError(t, err)
+
+		assertNoError(t, event.Close())
+		if err := event.Close(); !errors.Is(err, ErrEventClosed) {
+			t.Errorf("expected ErrEventClosed, got %v", err)
+		}
+	})
+
+	t.Run("emit_after_close_writes_nothing", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+
+		assertNoError(t, event.Close())
+		event.Emit(context.Background())
+
+		assertEqual(t, output.String(), "")
+	})
+}
+
 // parseEventJSON parses a single JSON line from event output.
 func parseEventJSON(t *testing.T, content string) map[string]any {
 	t.Helper()

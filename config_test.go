@@ -21,7 +21,7 @@ level: info
 
 		assertEqual(t, config.ServiceName, "my-service")
 		assertEqual(t, config.ServiceVersion, "1.0.0")
-		assertEqual(t, config.Environment, Production)
+		assertEqual(t, config.Environment, EnvironmentProduction)
 		assertEqual(t, config.Level, LevelInfo)
 	})
 
@@ -38,7 +38,7 @@ level: info
 		assertNoError(t, err)
 
 		assertEqual(t, config.ServiceName, "json-service")
-		assertEqual(t, config.Environment, Staging)
+		assertEqual(t, config.Environment, EnvironmentStaging)
 		assertEqual(t, config.Level, LevelDebug)
 	})
 
@@ -55,7 +55,7 @@ level = "warn"
 		assertNoError(t, err)
 
 		assertEqual(t, config.ServiceName, "toml-service")
-		assertEqual(t, config.Environment, Development)
+		assertEqual(t, config.Environment, EnvironmentDevelopment)
 		assertEqual(t, config.Level, LevelWarn)
 	})
 
@@ -181,6 +181,14 @@ level: info
 		assertEqual(t, config.ServiceName, "json-reader")
 	})
 
+	t.Run("pii_max_depth", func(t *testing.T) {
+		reader := strings.NewReader("piiEnabled: true\npiiMaxDepth: 4\n")
+
+		config, err := LoadConfigFrom(reader, "yaml")
+		assertNoError(t, err)
+		assertEqual(t, config.PIIMaxDepth, 4)
+	})
+
 	t.Run("unknown_format", func(t *testing.T) {
 		reader := strings.NewReader("content")
 
@@ -254,6 +262,15 @@ func TestConfig_Validate(t *testing.T) {
 		}
 	})
 
+	t.Run("negative_pii_max_depth", func(t *testing.T) {
+		config := minimalConfig()
+		config.PIIMaxDepth = -1
+
+		if err := config.Validate(); !errors.Is(err, ErrInvalidPIIMaxDepth) {
+			t.Errorf("expected ErrInvalidPIIMaxDepth, got %v", err)
+		}
+	})
+
 	t.Run("audit_enabled_without_path", func(t *testing.T) {
 		config := minimalConfig()
 		config.Audit.Enabled = true
@@ -306,7 +323,7 @@ func TestConfig_Validate(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	assertEqual(t, config.Environment, Development)
+	assertEqual(t, config.Environment, EnvironmentDevelopment)
 	assertEqual(t, config.Level, LevelInfo)
 	assertEqual(t, config.TracerType, "noop")
 	if config.PIIEnabled {
@@ -324,7 +341,7 @@ func TestApplyDefaults(t *testing.T) {
 	t.Run("sets_missing_environment", func(t *testing.T) {
 		config := Config{}
 		applyDefaults(&config)
-		assertEqual(t, config.Environment, Development)
+		assertEqual(t, config.Environment, EnvironmentDevelopment)
 	})
 
 	t.Run("sets_missing_level", func(t *testing.T) {
@@ -340,7 +357,7 @@ func TestApplyDefaults(t *testing.T) {
 	})
 
 	t.Run("development_gets_console_output", func(t *testing.T) {
-		config := Config{Environment: Development}
+		config := Config{Environment: EnvironmentDevelopment}
 		applyDefaults(&config)
 
 		if len(config.Outputs) != 1 {
@@ -351,7 +368,7 @@ func TestApplyDefaults(t *testing.T) {
 	})
 
 	t.Run("production_gets_stdout_json", func(t *testing.T) {
-		config := Config{Environment: Production}
+		config := Config{Environment: EnvironmentProduction}
 		applyDefaults(&config)
 
 		if len(config.Outputs) != 1 {
@@ -375,20 +392,20 @@ func TestApplyDefaults(t *testing.T) {
 
 	t.Run("does_not_override_existing_values", func(t *testing.T) {
 		config := Config{
-			Environment: Staging,
+			Environment: EnvironmentStaging,
 			Level:       LevelError,
 			TracerType:  "otel",
 		}
 		applyDefaults(&config)
 
-		assertEqual(t, config.Environment, Staging)
+		assertEqual(t, config.Environment, EnvironmentStaging)
 		assertEqual(t, config.Level, LevelError)
 		assertEqual(t, config.TracerType, "otel")
 	})
 }
 
 func TestEnvironment_Validate(t *testing.T) {
-	valid := []Environment{Production, Staging, Development}
+	valid := []Environment{EnvironmentProduction, EnvironmentStaging, EnvironmentDevelopment}
 	for _, env := range valid {
 		if err := env.Validate(); err != nil {
 			t.Errorf("environment %s should be valid", env)

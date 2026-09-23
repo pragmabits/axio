@@ -198,6 +198,7 @@ func buildHooks(config Config) ([]Hook, error) {
 			Patterns:       config.PIIPatterns,
 			CustomPatterns: config.PIICustomPatterns,
 			Fields:         config.PIIFields,
+			MaxDepth:       config.PIIMaxDepth,
 		}
 		piiHook, err := NewPIIHook(piiConfig)
 		if err != nil {

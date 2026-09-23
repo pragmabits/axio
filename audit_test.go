@@ -388,7 +388,7 @@ func TestLogger_Audit(t *testing.T) {
 		chain, err := NewHashChain(nil)
 		assertNoError(t, err)
 		logger, err := New(
-			Config{ServiceName: "checkout", Environment: Production, Level: LevelInfo},
+			Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo},
 			WithOutputs(MustFile(logPath, FormatJSON)),
 			WithAuditChain(chain),
 		)
@@ -418,7 +418,7 @@ func TestLogger_Audit(t *testing.T) {
 		logPath, storePath := tempFile(t, "audited.log"), tempFile(t, "audited-chain.json")
 		text := newBufferOutput(FormatText)
 		logger, err := New(
-			Config{ServiceName: "checkout", Environment: Production, Level: LevelInfo},
+			Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo},
 			WithOutputs(text, MustFile(logPath, FormatJSON)),
 			WithAudit(storePath),
 		)
@@ -442,9 +442,9 @@ func TestLogger_Audit(t *testing.T) {
 	})
 }
 
-func TestAudit_LoggerAndEventShareChainOnSamePath(t *testing.T) {
+func TestWithAudit_LoggerAndEventShareChain(t *testing.T) {
 	logPath, storePath := tempFile(t, "shared.log"), tempFile(t, "shared-chain.json")
-	config := Config{ServiceName: "checkout", Environment: Production, Level: LevelInfo}
+	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
 
 	logger, err := New(config, WithOutputs(MustFile(logPath, FormatJSON)), WithAudit(storePath))
 	assertNoError(t, err)
@@ -500,7 +500,7 @@ func auditedLines(t *testing.T, bodies []string) (*HashChain, []string) {
 func logAudited(t *testing.T, path string, options ...Option) {
 	t.Helper()
 	all := append([]Option{WithOutputs(MustFile(path, FormatJSON))}, options...)
-	logger, err := New(Config{ServiceName: "checkout", ServiceVersion: "1.4.2", Environment: Production, Level: LevelInfo}, all...)
+	logger, err := New(Config{ServiceName: "checkout", ServiceVersion: "1.4.2", Environment: EnvironmentProduction, Level: LevelInfo}, all...)
 	assertNoError(t, err)
 	orders := logger.Named("orders").With(Annotate("order_id", "ord_8812"))
 	orders.Info(context.Background(), "order created")
@@ -551,4 +551,79 @@ func TestHashChain_AddWithFailingStore(t *testing.T) {
 
 	// Verify that the sequence was not incremented after failure
 	assertEqual(t, chain.Sequence(), uint64(0))
+}
+
+func TestWithAudit_RequiresJSONOutput(t *testing.T) {
+	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
+
+	t.Run("logger_with_text_outputs_only_fails", func(t *testing.T) {
+		_, err := New(config, WithOutputs(newBufferOutput(FormatText)), WithAudit(tempFile(t, "chain.json")))
+		if !errors.Is(err, ErrAuditWithoutJSON) || !errors.Is(err, ErrValidateConfig) {
+			t.Errorf("expected ErrValidateConfig wrapping ErrAuditWithoutJSON, got %v", err)
+		}
+	})
+
+	t.Run("logger_with_audit_chain_and_text_outputs_only_fails", func(t *testing.T) {
+		chain, err := NewHashChain(nil)
+		assertNoError(t, err)
+		_, err = New(config, WithOutputs(newBufferOutput(FormatText)), WithAuditChain(chain))
+		if !errors.Is(err, ErrAuditWithoutJSON) {
+			t.Errorf("expected ErrAuditWithoutJSON, got %v", err)
+		}
+	})
+
+	t.Run("event_with_text_outputs_only_is_accepted", func(t *testing.T) {
+		output := newBufferOutput(FormatText)
+		event, err := NewEvent("checkout", config, WithOutputs(output), WithAudit(tempFile(t, "chain.json")))
+		assertNoError(t, err)
+		if err != nil {
+			return
+		}
+		event.Emit(context.Background())
+		assertNoError(t, event.Close())
+
+		if _, _, _, ok := logline.SplitTrailer([]byte(output.String())); !ok {
+			t.Errorf("an event writes the audited JSON line to every output, got %q", output.String())
+		}
+	})
+}
+
+// contextRecorder is a Metrics that keeps the context of every AuditRecords call.
+type contextRecorder struct {
+	NoopMetrics
+	mutex    sync.Mutex
+	contexts []context.Context
+}
+
+func (c *contextRecorder) AuditRecords(ctx context.Context) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.contexts = append(c.contexts, ctx)
+}
+
+func TestAuditCore_RecordsMetricWithCallerContext(t *testing.T) {
+	type requestKey struct{}
+	ctx := context.WithValue(context.Background(), requestKey{}, "request-7")
+	recorder := &contextRecorder{}
+	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
+	config.metrics = recorder
+	chain, err := NewHashChain(nil)
+	assertNoError(t, err)
+
+	logger, err := New(config, WithOutputs(newBufferOutput(FormatJSON)), WithAuditChain(chain))
+	assertNoError(t, err)
+	logger.Info(ctx, "order created")
+	assertNoError(t, logger.Close())
+
+	event, err := NewEvent("checkout", config, WithOutputs(newBufferOutput(FormatJSON)), WithAuditChain(chain))
+	assertNoError(t, err)
+	event.Emit(ctx)
+	assertNoError(t, event.Close())
+
+	assertEqual(t, len(recorder.contexts), 2)
+	for _, recorded := range recorder.contexts {
+		if recorded.Value(requestKey{}) != "request-7" {
+			t.Errorf("expected the caller's context in AuditRecords, got %v", recorded)
+		}
+	}
 }

@@ -11,7 +11,7 @@
 //	config := axio.Config{
 //	    ServiceName:    "my-service",
 //	    ServiceVersion: "1.0.0",
-//	    Environment:    axio.Development,
+//	    Environment:    axio.EnvironmentDevelopment,
 //	    Level:          axio.LevelInfo,
 //	}
 //	logger, err := axio.New(config)
@@ -59,6 +59,9 @@
 //	logger.Info(ctx, "Customer CPF: 123.456.789-01")
 //	// Output: "Customer CPF: ***.***.***-**"
 //
+// Masking covers every value a line carries — the message, the error and each
+// annotation, structs and maps included; see [PIIMasker.MaskFields].
+//
 // # Hash Chain Auditing
 //
 // For logs that require integrity proof (LGPD, SOX, PCI-DSS compliance):
@@ -71,6 +74,8 @@
 // Each JSON line ends with previous_hash and hash, the SHA-256 of the previous
 // hash followed by the line's own bytes: a chain that detects any change,
 // removal or reordering. [HashChain.Verify] checks a log against the chain.
+// An audited Logger needs a JSON output, and a [FileStore] is held by one
+// process at a time.
 //
 // # OpenTelemetry Integration
 //
@@ -115,9 +120,9 @@
 //
 // The logger behavior varies according to the execution environment:
 //
-//   - [Development]: Colored console, no stack traces
-//   - [Staging]: JSON, with stack traces on errors
-//   - [Production]: JSON, with stack traces on errors
+//   - [EnvironmentDevelopment]: Colored console, no stack traces
+//   - [EnvironmentStaging]: JSON, with stack traces on errors
+//   - [EnvironmentProduction]: JSON, with stack traces on errors
 package axio
 
 import (
@@ -189,15 +194,15 @@ type Logger interface {
 type Environment string
 
 const (
-	// Production indicates production environment.
+	// EnvironmentProduction indicates production environment.
 	// JSON logs with stack traces on errors and service metadata.
-	Production Environment = "production"
-	// Staging indicates staging environment.
+	EnvironmentProduction Environment = "production"
+	// EnvironmentStaging indicates staging environment.
 	// Behavior similar to production for realistic testing.
-	Staging Environment = "staging"
-	// Development indicates development environment.
+	EnvironmentStaging Environment = "staging"
+	// EnvironmentDevelopment indicates development environment.
 	// Colored text logs for better readability during development.
-	Development Environment = "development"
+	EnvironmentDevelopment Environment = "development"
 )
 
 // Validate checks whether the environment is a valid value.
@@ -205,7 +210,7 @@ const (
 // Returns [ErrInvalidEnvironment] if the value is not one of the defined environments.
 func (e Environment) Validate() error {
 	switch e {
-	case Production, Staging, Development:
+	case EnvironmentProduction, EnvironmentStaging, EnvironmentDevelopment:
 		return nil
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidEnvironment, e)

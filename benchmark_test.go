@@ -128,6 +128,137 @@ func BenchmarkLogger_Info_Formatted(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
+// End-to-end logging benchmarks with PII masking
+// ---------------------------------------------------------------------------
+
+// benchCustomer is a struct annotation carrying a sensitive field and a CPF.
+type benchCustomer struct {
+	Name     string `json:"name"`
+	Document string `json:"document"`
+	Password string `json:"password"`
+}
+
+// benchPIILogger is benchLogger with the PII hook [WithPII] installs.
+func benchPIILogger(b *testing.B) *logger {
+	b.Helper()
+	loggerUnderTest := benchLogger(b)
+	loggerUnderTest.hooks = newHookChain(NoopMetrics{}, MustPIIHook(DefaultPIIConfig()))
+	return loggerUnderTest
+}
+
+func BenchmarkLogger_PII_Strings(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(
+			Annotate("user_id", "usr_12345"),
+			Annotate("document", "123.456.789-01"),
+		).Info(ctx, "customer registered")
+	}
+}
+
+func BenchmarkLogger_PII_Words(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(
+			Annotate("status", "done"),
+			Annotate("tenant", "acme"),
+			Annotate("plan", "premium1"),
+			Annotate("region", "saopaulo"),
+		).Info(ctx, "order settled")
+	}
+}
+
+func BenchmarkLogger_PII_Map(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	customer := map[string]any{"name": "alice", "document": "123.456.789-01", "password": "hunter2"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(Annotate("customer", customer)).Info(ctx, "customer registered")
+	}
+}
+
+func BenchmarkLogger_PII_Struct(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	customer := benchCustomer{Name: "alice", Document: "123.456.789-01", Password: "hunter2"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(Annotate("customer", customer)).Info(ctx, "customer registered")
+	}
+}
+
+func BenchmarkLogger_PII_Bytes(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	body := []byte(`{"name":"alice","document":"123.456.789-01"}`)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(Annotate("body", body)).Info(ctx, "request received")
+	}
+}
+
+func BenchmarkLogger_PII_StructWithBytes(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	request := struct {
+		Route string `json:"route"`
+		Body  []byte `json:"body"`
+	}{Route: "/api/v1/customers", Body: []byte(`{"name":"alice","document":"123.456.789-01"}`)}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(Annotate("request", request)).Info(ctx, "request received")
+	}
+}
+
+func BenchmarkLogger_PII_HTTP(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	httpData := HTTP{
+		Method:     "GET",
+		URL:        "/api/v1/customers?cpf=123.456.789-01",
+		StatusCode: 200,
+		LatencyMS:  45,
+		UserAgent:  "Mozilla/5.0",
+		ClientIP:   "192.168.1.100",
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.With(Annotate("http", httpData)).Info(ctx, "request processed")
+	}
+}
+
+func BenchmarkLogger_PII_Error(b *testing.B) {
+	loggerUnderTest := benchPIILogger(b)
+	ctx := context.Background()
+	err := errors.New("customer 123.456.789-01 rejected")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.Error(ctx, err, "registration failed")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Component benchmarks: fieldsFromEntry
 // ---------------------------------------------------------------------------
 

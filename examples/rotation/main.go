@@ -36,7 +36,7 @@ func sizeRotation(ctx context.Context) {
 
 	logger, err := axio.New(axio.Config{
 		ServiceName: "size-rotation",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	},
 		axio.WithOutputs(
@@ -76,7 +76,7 @@ func timeRotation(ctx context.Context) {
 
 	logger, err := axio.New(axio.Config{
 		ServiceName: "time-rotation",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	},
 		axio.WithOutputs(

@@ -229,12 +229,22 @@ func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err er
 
 // FileStore persists the hash chain state in a local JSON file.
 //
+// The first [FileStore.Save] takes an exclusive lock on a file beside the
+// store, the path with ".lock" appended, and holds it for the life of the
+// process: two processes saving to one store would each extend the chain from
+// the same last hash and fork it, so the second fails with
+// [ErrChainStoreLocked]. [FileStore.Load] takes no lock, so a store in use can
+// still be read and verified. The lock file stays on disk; the lock ends with
+// the process. The lock uses flock: on Windows, Solaris and AIX nothing is
+// locked, and a second process is not detected.
+//
 // Example:
 //
 //	chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/audit-chain.json"))
 type FileStore struct {
-	path  string
-	mutex sync.Mutex
+	path     string
+	mutex    sync.Mutex
+	lockFile *os.File
 }
 
 // NewFileStore creates a [FileStore] that persists state at the specified path.
@@ -256,7 +266,14 @@ func NewFileStore(path string) *FileStore {
 // over the destination so that a concurrent reader (or a crash mid-write) can
 // never observe a partial update — either the previous state remains intact
 // or the new state is fully visible.
+//
+// Returns [ErrSaveChainState] wrapping [ErrChainStoreLocked] when another
+// process holds the store.
 func (s *FileStore) Save(sequence uint64, lastHash string) error {
+	if err := s.claim(); err != nil {
+		return fmt.Errorf("%w: %w", ErrSaveChainState, err)
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -324,6 +341,27 @@ func (s *FileStore) Load() (uint64, string, error) {
 	return state.Sequence, state.LastHash, nil
 }
 
+// claim takes the store's lock the first time it is called and keeps it.
+func (s *FileStore) claim() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.lockFile != nil {
+		return nil
+	}
+
+	file, err := os.OpenFile(s.path+".lock", os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return fmt.Errorf("open lock file of %s: %w", s.path, err)
+	}
+	if err := lockExclusive(file); err != nil {
+		// The lock failed, so the file holds nothing worth reporting a close error for.
+		_ = file.Close()
+		return fmt.Errorf("%s: %w", s.path, err)
+	}
+	s.lockFile = file
+	return nil
+}
+
 // fileStoreState represents the persisted state format.
 type fileStoreState struct {
 	Sequence uint64 `json:"sequence"`
@@ -382,7 +420,7 @@ func (a *auditCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
 	if err != nil {
 		return err
 	}
-	a.metrics.AuditRecords(context.Background())
+	a.metrics.AuditRecords(callerContext(fields))
 	return nil
 }
 
@@ -488,6 +526,27 @@ func addFields(encoder zapcore.ObjectEncoder, fields []zapcore.Field) {
 	}
 }
 
+// contextField carries the caller's context to the audited core, which counts
+// the record against it: a zapcore.Core is handed fields, never a context. It
+// is a Skip field, for which every encoder writes nothing.
+func contextField(ctx context.Context) zapcore.Field {
+	return zapcore.Field{Type: zapcore.SkipType, Interface: ctx}
+}
+
+// callerContext returns the context a [contextField] among fields carries, or
+// context.Background when none does.
+func callerContext(fields []zapcore.Field) context.Context {
+	for index := len(fields) - 1; index >= 0; index-- {
+		if fields[index].Type != zapcore.SkipType {
+			continue
+		}
+		if ctx, ok := fields[index].Interface.(context.Context); ok {
+			return ctx
+		}
+	}
+	return context.Background()
+}
+
 // buildAuditChain returns the chain an audited Logger or Event writes
 // through, or nil when auditing is off.
 func buildAuditChain(config Config) (*HashChain, error) {
@@ -501,8 +560,9 @@ func buildAuditChain(config Config) (*HashChain, error) {
 	}
 }
 
-// sharedChain returns this process's chain for storePath, loading it from the
-// store the first time the path is used.
+// sharedChain returns this process's chain for storePath, claiming the store
+// and loading the chain from it the first time the path is used, so a store
+// another process holds fails here, in New, rather than at the first write.
 func sharedChain(storePath string) (*HashChain, error) {
 	absolute, err := filepath.Abs(storePath)
 	if err != nil {
@@ -514,7 +574,11 @@ func sharedChain(storePath string) (*HashChain, error) {
 	if chain, ok := chainsByPath.chains[absolute]; ok {
 		return chain, nil
 	}
-	chain, err := NewHashChain(NewFileStore(absolute))
+	store := NewFileStore(absolute)
+	if err := store.claim(); err != nil {
+		return nil, err
+	}
+	chain, err := NewHashChain(store)
 	if err != nil {
 		return nil, err
 	}

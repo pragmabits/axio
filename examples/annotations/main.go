@@ -15,7 +15,7 @@ func main() {
 
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "sales-api",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	})
 	defer logger.Close()

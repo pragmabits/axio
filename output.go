@@ -164,6 +164,7 @@ type fileOutput struct {
 	done              chan struct{}         // stops time rotation goroutine (nil otherwise)
 	rotationWG        sync.WaitGroup        // waits for the rotation goroutine to exit on Close
 	lastRotationError atomic.Pointer[error] // most recent time-based rotation outcome
+	closed            atomic.Bool           // set by the first Close
 }
 
 // File creates an output that writes to a file at the specified path.
@@ -282,7 +283,11 @@ func MustRotatingFile(path string, format Format, rotation RotationConfig) Outpu
 // Close releases resources associated with this file output.
 // For rotating files, stops the time-based rotation goroutine (waiting for it
 // to exit) and then closes lumberjack. For plain files, closes the os.File.
+// A second call returns [ErrOutputClosed].
 func (f *fileOutput) Close() error {
+	if !f.closed.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: %s", ErrOutputClosed, f.path)
+	}
 	if f.ticker != nil {
 		f.ticker.Stop()
 		close(f.done)

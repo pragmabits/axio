@@ -40,7 +40,8 @@ type Metrics interface {
 	LogsTotal(ctx context.Context, level Level)
 	// PIIMasked increments the counter when PII of the specified type is masked.
 	PIIMasked(ctx context.Context, pattern PIIPattern)
-	// AuditRecords increments the counter of created audit records.
+	// AuditRecords increments the counter of created audit records. ctx is the
+	// context of the log call or [Event.Emit] that wrote the record.
 	AuditRecords(ctx context.Context)
 	// HookDuration records the execution duration of a hook along with
 	// whether the hook returned an error.

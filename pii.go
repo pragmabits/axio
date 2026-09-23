@@ -1,19 +1,29 @@
 package axio
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
+
+	"go.uber.org/zap/zapcore"
 )
 
 // DefaultPIIMaxDepth is the depth used when [PIIConfig.MaxDepth] is zero.
 //
-// At MaxDepth = 2, masking enters a top-level map[string]any annotation
-// value and one level of nested map[string]any inside it. Deeper nesting
-// is logged as-is.
-const DefaultPIIMaxDepth = 2
+// Masking cost follows the size of a value, not its depth, so the limit only
+// contains pathological nesting.
+const DefaultPIIMaxDepth = 32
+
+// redacted replaces a value whose name is sensitive, or that sits deeper than
+// [PIIConfig.MaxDepth].
+const redacted = "[REDACTED]"
 
 // PIIPattern identifies a type of personally identifiable information.
 //
@@ -81,10 +91,10 @@ type PIIConfig struct {
 	// Fields specifies field names whose values should be redacted.
 	// Matching is case-insensitive and uses partial matching.
 	Fields []string
-	// MaxDepth caps recursion into nested map[string]any annotation values.
-	// A value of zero falls back to [DefaultPIIMaxDepth] (2).
-	// Set to 1 to mask only top-level map keys; nested maps at deeper levels
-	// are logged as-is.
+	// MaxDepth caps how deep masking walks into a structured annotation value —
+	// a map, slice or struct — the annotation's own value being depth 1. A
+	// container nested deeper is replaced by "[REDACTED]" whole, never written
+	// unmasked. A value of zero falls back to [DefaultPIIMaxDepth] (32).
 	MaxDepth int `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty" toml:"maxDepth,omitempty" mapstructure:"maxDepth,omitempty"`
 }
 
@@ -168,7 +178,8 @@ type PIIMasker struct {
 
 // NewPIIMasker creates a new masker with the specified configuration.
 //
-// Returns an error if any CustomPattern has an invalid regex.
+// Returns an error if any CustomPattern has an invalid regex, and
+// [ErrInvalidPIIMaxDepth] for a negative MaxDepth.
 //
 // Example:
 //
@@ -184,6 +195,9 @@ type PIIMasker struct {
 //	masked := masker.MaskString("contato: ana@example.com, MAT-123456")
 //	// masked: "contato: ***@***.***, MAT-******"
 func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
+	if config.MaxDepth < 0 {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, config.MaxDepth)
+	}
 	maxDepth := config.MaxDepth
 	if maxDepth == 0 {
 		maxDepth = DefaultPIIMaxDepth
@@ -262,39 +276,34 @@ func (m *PIIMasker) MaskString(input string) string {
 // MaskFields masks sensitive values in an annotations slice in place.
 //
 // Sensitivity is matched two ways:
-//   - Annotation names are checked case-insensitively against [PIIConfig.Fields].
-//     A match replaces the entire annotation value with "[REDACTED]".
-//   - String values are scanned for PII patterns via [PIIMasker.MaskString].
+//   - Names are checked case-insensitively against [PIIConfig.Fields]; a match
+//     replaces the whole value with "[REDACTED]". Inside a structured value,
+//     every key is checked the same way.
+//   - Text is scanned for PII patterns via [PIIMasker.MaskString].
 //
-// Values of type map[string]any are recursively masked up to
-// [PIIConfig.MaxDepth] levels (default 2). At each level, keys are checked
-// against [PIIConfig.Fields] and string values against patterns. Values at
-// or beyond the depth cap are passed through unchanged.
+// Every value is covered as it will be written: a string; an error, by its
+// message; a fmt.Stringer, by its text; a []byte, which is written as base64,
+// by the text it holds — bytes that are not UTF-8 text cannot be inspected and
+// become "[REDACTED]"; and a structured value — map, slice, struct or pointer —
+// walked as its JSON encoding.
 //
-// Struct-typed annotation values are NOT recursively scanned. To make a
-// struct's fields visible to masking, implement [Annotable] on the type —
-// Annotable values are flattened to top-level annotations before this hook
-// runs, so each resulting field is subject to the same name/value checks.
+// A string with the shape of standard base64 is also decoded, and masked when
+// the text it decodes to carries PII: that is how a struct's []byte field
+// arrives in its JSON encoding, and how a caller may have encoded bytes itself.
+// A string that decodes to something other than text passes as it is, since
+// nothing tells the base64 of binary data from any other string of that shape. A structured value that
+// needed masking is replaced by its masked JSON tree, objects as
+// map[string]any, so its keys are then written in alphabetical order; one that
+// did not keeps its original type. A container nested deeper than
+// [PIIConfig.MaxDepth] is replaced by "[REDACTED]" whole.
+//
+// A masked error is written by its masked message only, and still unwraps to
+// the original, so errors.Is and errors.As keep working for later hooks.
+//
+// A logger expands [Annotable] values into their fields before any hook runs,
+// so each field is masked on its own.
 func (m *PIIMasker) MaskFields(fields Annotations) {
-	if fields == nil {
-		return
-	}
-
-	for index := range fields {
-		if m.isSensitiveField(fields[index].Name()) {
-			fields[index] = Annotate(fields[index].Name(), "[REDACTED]")
-			continue
-		}
-
-		switch value := fields[index].Data().(type) {
-		case string:
-			fields[index] = Annotate(fields[index].Name(), m.MaskString(value))
-		case map[string]any:
-			fields[index] = Annotate(fields[index].Name(), m.maskMap(value, 1))
-		default:
-			continue
-		}
-	}
+	m.maskAnnotations(fields, nil)
 }
 
 // MaskStringWithCounts replaces PII patterns and returns match counts.
@@ -326,97 +335,222 @@ func (m *PIIMasker) MaskStringWithCounts(input string) PIIMaskResult {
 
 // MaskFieldsWithCounts masks sensitive values and returns match counts.
 //
-// Coverage is identical to [PIIMasker.MaskFields]: string values are
-// pattern-scanned, sensitive-named annotations are redacted, and
-// map[string]any values are recursively masked up to [PIIConfig.MaxDepth]
-// levels. Struct annotations are not recursed — see [Annotable] for the
-// flattening contract.
+// Coverage is identical to [PIIMasker.MaskFields].
 //
 // Returns a map with the count of each pattern detected across all
-// processed fields, including matches found inside nested maps.
+// processed fields, including matches found inside structured values.
 func (m *PIIMasker) MaskFieldsWithCounts(fields Annotations) map[PIIPattern]int {
 	matches := make(map[PIIPattern]int)
-
-	if fields == nil {
-		return matches
-	}
-
-	for index := range fields {
-		if m.isSensitiveField(fields[index].Name()) {
-			fields[index] = Annotate(fields[index].Name(), "[REDACTED]")
-			continue
-		}
-
-		switch value := fields[index].Data().(type) {
-		case string:
-			result := m.MaskStringWithCounts(value)
-			fields[index] = Annotate(fields[index].Name(), result.Masked)
-			for pattern, count := range result.Matches {
-				matches[pattern] += count
-			}
-		case map[string]any:
-			fields[index] = Annotate(fields[index].Name(), m.maskMapWithCounts(value, 1, matches))
-		}
-	}
-
+	m.maskAnnotations(fields, matches)
 	return matches
 }
 
-// maskMap returns a copy of input with sensitive entries masked.
-//
-// Recurses into nested map[string]any values up to m.maxDepth levels.
-// The input map is not mutated; callers receive a fresh map and may
-// safely retain references to the original.
-func (m *PIIMasker) maskMap(input map[string]any, depth int) map[string]any {
-	output := make(map[string]any, len(input))
-	for key, value := range input {
-		if m.isSensitiveField(key) {
-			output[key] = "[REDACTED]"
-			continue
-		}
-		switch typed := value.(type) {
-		case string:
-			output[key] = m.MaskString(typed)
-		case map[string]any:
-			if depth < m.maxDepth {
-				output[key] = m.maskMap(typed, depth+1)
-			} else {
-				output[key] = typed
-			}
-		default:
-			output[key] = typed
+// maskAnnotations masks every annotation in place, adding the pattern matches
+// to counts when counts is not nil.
+func (m *PIIMasker) maskAnnotations(fields Annotations, counts map[PIIPattern]int) {
+	for index := range fields {
+		if masked, changed := m.maskAnnotation(fields[index], counts); changed {
+			fields[index] = masked
 		}
 	}
-	return output
 }
 
-// maskMapWithCounts mirrors [PIIMasker.maskMap] and accumulates per-pattern
-// match counts into the supplied counts map. The counts map must be non-nil.
-func (m *PIIMasker) maskMapWithCounts(input map[string]any, depth int, counts map[PIIPattern]int) map[string]any {
-	output := make(map[string]any, len(input))
-	for key, value := range input {
+// maskAnnotation returns the annotation with its value masked, and whether
+// anything changed; when nothing did, the caller keeps the annotation it has.
+func (m *PIIMasker) maskAnnotation(annotation Annotation, counts map[PIIPattern]int) (Annotation, bool) {
+	name := annotation.Name()
+	if m.isSensitiveField(name) {
+		return Annotate(name, redacted), true
+	}
+
+	field := annotation.field
+	switch field.Type {
+	case zapcore.StringType:
+		masked, changed := m.maskString(field.String, counts)
+		return Annotate(name, masked), changed
+	case zapcore.StringerType:
+		masked, changed := m.maskString(fmt.Sprint(field.Interface), counts)
+		return Annotate(name, masked), changed
+	case zapcore.ErrorType:
+		err, _ := field.Interface.(error)
+		masked := m.maskError(err, counts)
+		if masked == nil {
+			return annotation, false
+		}
+		return Annotate(name, masked), true
+	case zapcore.BinaryType:
+		data, _ := field.Interface.([]byte)
+		masked, changed := m.maskBytes(data, counts)
+		return Annotate(name, masked), changed
+	case zapcore.ReflectType, zapcore.ObjectMarshalerType, zapcore.ArrayMarshalerType:
+		value, ok := encodedValue(field)
+		if !ok {
+			return annotation, false
+		}
+		masked, changed := m.maskValue(value, 1, counts)
+		return Annotate(name, masked), changed
+	default:
+		return annotation, false
+	}
+}
+
+// maskValue returns value with its sensitive entries masked, and whether
+// anything changed. depth is how deep value sits in the annotation, the
+// annotation's own value being 1.
+func (m *PIIMasker) maskValue(value any, depth int, counts map[PIIPattern]int) (any, bool) {
+	switch typed := value.(type) {
+	case nil, bool, json.Number, time.Time, time.Duration,
+		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr,
+		float32, float64, complex64, complex128:
+		return value, false
+	case string:
+		return m.maskString(typed, counts)
+	case []byte:
+		return m.maskBytes(typed, counts)
+	case map[string]any:
+		if depth > m.maxDepth {
+			return redacted, true
+		}
+		return m.maskObject(typed, depth, counts)
+	case []any:
+		if depth > m.maxDepth {
+			return redacted, true
+		}
+		return m.maskArray(typed, depth, counts)
+	default:
+		return m.maskEncoded(value, depth, counts)
+	}
+}
+
+// maskEncoded masks value as its JSON encoding, and keeps value itself when the
+// encoding had nothing to mask.
+func (m *PIIMasker) maskEncoded(value any, depth int, counts map[PIIPattern]int) (any, bool) {
+	tree, ok := jsonTree(value)
+	if !ok {
+		return value, false
+	}
+	masked, changed := m.maskValue(tree, depth, counts)
+	if !changed {
+		return value, false
+	}
+	return masked, true
+}
+
+// maskObject returns a copy of object with its sensitive entries masked. The
+// object itself is never modified: it may be the caller's own map.
+func (m *PIIMasker) maskObject(object map[string]any, depth int, counts map[PIIPattern]int) (map[string]any, bool) {
+	masked := make(map[string]any, len(object))
+	changed := false
+	for key, value := range object {
 		if m.isSensitiveField(key) {
-			output[key] = "[REDACTED]"
+			masked[key] = redacted
+			changed = true
 			continue
 		}
-		switch typed := value.(type) {
-		case string:
-			result := m.MaskStringWithCounts(typed)
-			output[key] = result.Masked
-			for pattern, count := range result.Matches {
-				counts[pattern] += count
-			}
-		case map[string]any:
-			if depth < m.maxDepth {
-				output[key] = m.maskMapWithCounts(typed, depth+1, counts)
-			} else {
-				output[key] = typed
-			}
-		default:
-			output[key] = typed
+		maskedValue, valueChanged := m.maskValue(value, depth+1, counts)
+		masked[key] = maskedValue
+		changed = changed || valueChanged
+	}
+	return masked, changed
+}
+
+// maskArray returns a copy of array with each element masked.
+func (m *PIIMasker) maskArray(array []any, depth int, counts map[PIIPattern]int) ([]any, bool) {
+	masked := make([]any, len(array))
+	changed := false
+	for index, value := range array {
+		maskedValue, valueChanged := m.maskValue(value, depth+1, counts)
+		masked[index] = maskedValue
+		changed = changed || valueChanged
+	}
+	return masked, changed
+}
+
+// maskString masks text, first as the base64 it may be — how a struct's []byte
+// field arrives, and how a caller may have encoded bytes — and then as text.
+func (m *PIIMasker) maskString(text string, counts map[PIIPattern]int) (string, bool) {
+	if masked, ok := m.maskBase64(text, counts); ok {
+		return masked, true
+	}
+	masked := m.maskText(text, counts)
+	return masked, masked != text
+}
+
+// maskBytes masks bytes that zap and encoding/json write as base64: text is
+// masked as a string would be and stays bytes; bytes that are not UTF-8 text
+// cannot be inspected and become redacted.
+func (m *PIIMasker) maskBytes(data []byte, counts map[PIIPattern]int) (any, bool) {
+	if !utf8.Valid(data) {
+		return redacted, true
+	}
+	text := string(data)
+	masked := m.maskText(text, counts)
+	if masked == text {
+		return data, false
+	}
+	return []byte(masked), true
+}
+
+// maskBase64 returns the base64 of the masked text when text has the shape of
+// standard base64 and decodes to UTF-8 text carrying PII, and false otherwise:
+// decoded bytes that are not text are left alone, since nothing tells the base64
+// of binary data from any other string of that shape.
+func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, bool) {
+	if !looksLikeBase64(text) {
+		return "", false
+	}
+	// Short strings, which most values are, decode on the stack.
+	var buffer [128]byte
+	decoded, err := base64.StdEncoding.AppendDecode(buffer[:0], []byte(text))
+	if err != nil || !utf8.Valid(decoded) {
+		return "", false
+	}
+	plain := string(decoded)
+	masked := m.maskText(plain, counts)
+	if masked == plain {
+		return "", false
+	}
+	return base64.StdEncoding.EncodeToString([]byte(masked)), true
+}
+
+// maskError returns err with the PII in its message masked, or nil when there
+// is none. An error whose verbose form — the %+v zap writes beside the message
+// of an error that formats itself — carries PII is masked too, and loses that
+// verbose form.
+func (m *PIIMasker) maskError(err error, counts map[PIIPattern]int) *maskedError {
+	if err == nil {
+		return nil
+	}
+	masked, changed := m.maskString(fmt.Sprint(err), counts)
+	if !changed && !m.verboseCarriesPII(err) {
+		return nil
+	}
+	return &maskedError{message: masked, cause: err}
+}
+
+// verboseCarriesPII reports whether the %+v of an error that formats itself
+// has PII to mask.
+func (m *PIIMasker) verboseCarriesPII(err error) bool {
+	if _, ok := err.(fmt.Formatter); !ok {
+		return false
+	}
+	verbose := fmt.Sprintf("%+v", err)
+	return m.MaskString(verbose) != verbose
+}
+
+// maskText masks the PII patterns in text, adding the matches to counts when
+// counts is not nil.
+func (m *PIIMasker) maskText(text string, counts map[PIIPattern]int) string {
+	if counts == nil {
+		return m.MaskString(text)
+	}
+	for _, info := range m.patterns {
+		if matches := info.regex.FindAllStringIndex(text, -1); len(matches) > 0 {
+			counts[info.name] += len(matches)
+			text = info.regex.ReplaceAllString(text, info.mask)
 		}
 	}
-	return output
+	return text
 }
 
 // isSensitiveField checks whether the field name matches any sensitive pattern.
@@ -431,7 +565,7 @@ func (m *PIIMasker) isSensitiveField(fieldName string) bool {
 
 // PIIHook is a hook that masks PII in log entries before they are written.
 //
-// The hook processes both the message and the structured fields,
+// The hook processes the message, the error and the structured fields,
 // detecting and masking PII patterns and sensitive fields.
 //
 // PIIHook implements [MetricsAware] to emit metrics for masked PII.
@@ -504,15 +638,18 @@ func (p *PIIHook) SetMetrics(metrics Metrics) {
 
 // Process masks PII in the log entry.
 //
-// Modifies the message and fields in-place, replacing PII patterns
-// with masks and sensitive fields with "[REDACTED]".
+// Modifies the message, the error and the fields in-place, replacing PII
+// patterns with masks and sensitive fields with "[REDACTED]", as
+// [PIIMasker.MaskFields] describes.
 //
 // If metrics is configured via [SetMetrics], emits metrics for
 // each detected PII occurrence.
 func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
-	fieldMatches := p.masker.MaskFieldsWithCounts(entry.Annotations)
-	messageResult := p.masker.MaskStringWithCounts(entry.Message)
-	entry.Message = messageResult.Masked
+	matches := p.masker.MaskFieldsWithCounts(entry.Annotations)
+	if masked := p.masker.maskError(entry.Error, matches); masked != nil {
+		entry.Error = masked
+	}
+	entry.Message, _ = p.masker.maskString(entry.Message, matches)
 
 	p.mutex.RLock()
 	metrics := p.metrics
@@ -522,13 +659,7 @@ func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
 		return nil
 	}
 
-	for pattern, count := range messageResult.Matches {
-		for range count {
-			metrics.PIIMasked(ctx, pattern)
-		}
-	}
-
-	for pattern, count := range fieldMatches {
+	for pattern, count := range matches {
 		for range count {
 			metrics.PIIMasked(ctx, pattern)
 		}
@@ -536,6 +667,17 @@ func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
 
 	return nil
 }
+
+// maskedError is an error whose message had PII masked. zap writes only its
+// message; it unwraps to the original error for the hooks that run after PII.
+type maskedError struct {
+	message string
+	cause   error
+}
+
+func (m maskedError) Error() string { return m.message }
+
+func (m maskedError) Unwrap() error { return m.cause }
 
 // containsFold reports whether value contains target, case-insensitively, without allocating.
 // It iterates by byte offset, which is correct for ASCII substrings but may miss
@@ -553,6 +695,52 @@ func containsFold(value, target string) bool {
 		}
 	}
 	return false
+}
+
+// encodedValue returns the value zap encodes for field: an ObjectMarshaler or
+// ArrayMarshaler as the map or slice it marshals to — only what it chooses to
+// write — and anything else as the value itself.
+func encodedValue(field zapcore.Field) (any, bool) {
+	if field.Type == zapcore.ReflectType {
+		return field.Interface, true
+	}
+	encoder := zapcore.NewMapObjectEncoder()
+	field.AddTo(encoder)
+	value, ok := encoder.Fields[field.Key]
+	return value, ok
+}
+
+// looksLikeBase64 reports whether text has the shape of standard base64: a
+// length that is a multiple of four, the alphabet, and at most two padding
+// characters at the end. It spares a decode attempt to most strings.
+func looksLikeBase64(text string) bool {
+	body := strings.TrimRight(text, "=")
+	if len(text) == 0 || len(text)%4 != 0 || len(text)-len(body) > 2 {
+		return false
+	}
+	return strings.IndexFunc(body, outsideBase64) < 0
+}
+
+// outsideBase64 reports whether char is outside the standard base64 alphabet.
+func outsideBase64(char rune) bool {
+	inside := char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '+' || char == '/'
+	return !inside
+}
+
+// jsonTree returns value as the JSON tree it encodes to — map[string]any,
+// []any, string, json.Number, bool or nil — the encoding zap writes for it.
+func jsonTree(value any) (any, bool) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var tree any
+	if err := decoder.Decode(&tree); err != nil {
+		return nil, false
+	}
+	return tree, true
 }
 
 // piiPatternInfo holds the regex and mask for a PII pattern.

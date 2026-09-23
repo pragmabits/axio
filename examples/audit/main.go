@@ -52,7 +52,7 @@ func main() {
 // writeAuditedLog logs three entries as audited JSON, chained through storePath.
 func writeAuditedLog(logPath, storePath string) error {
 	logger, err := axio.New(
-		axio.Config{ServiceName: "payments", Environment: axio.Production, Level: axio.LevelInfo},
+		axio.Config{ServiceName: "payments", Environment: axio.EnvironmentProduction, Level: axio.LevelInfo},
 		axio.WithOutputs(axio.MustFile(logPath, axio.FormatJSON)),
 		axio.WithAudit(storePath),
 	)

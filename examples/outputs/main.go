@@ -27,7 +27,7 @@ func multipleOutputs(ctx context.Context) {
 	logger, err := axio.New(axio.Config{
 		ServiceName:    "multi-output",
 		ServiceVersion: "1.0.0",
-		Environment:    axio.Development,
+		Environment:    axio.EnvironmentDevelopment,
 		Level:          axio.LevelInfo,
 	},
 		axio.WithOutputs(
@@ -58,7 +58,7 @@ func agentMode(ctx context.Context) {
 
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "agent-mode-demo",
-		Environment: axio.Production,
+		Environment: axio.EnvironmentProduction,
 		Level:       axio.LevelInfo,
 	},
 		axio.WithAgentMode(),
@@ -75,7 +75,7 @@ func productionEnvironment(ctx context.Context) {
 	logger, _ := axio.New(axio.Config{
 		ServiceName:    "production-api",
 		ServiceVersion: "2.5.1",
-		Environment:    axio.Production,
+		Environment:    axio.EnvironmentProduction,
 		InstanceID:     "pod-abc123",
 		Level:          axio.LevelInfo,
 	})

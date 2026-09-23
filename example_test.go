@@ -12,7 +12,7 @@ import (
 func ExampleLogger_With_http() {
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "example",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	})
 	defer logger.Close()

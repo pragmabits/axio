@@ -117,8 +117,9 @@ func (a *Annotations) Add(key string, value any) Annotations {
 // Annotable allows complex types to produce annotations for log entries.
 //
 // Types that implement this interface can be passed to [Logger.With]
-// via [Annotate]. The logger detects the [Annotable] implementation
-// and expands the annotations during field serialization.
+// via [Annotate]. The logger detects the [Annotable] implementation and
+// expands the annotations before the hooks run, so PII masking and custom
+// hooks see each field on its own.
 //
 // Append appends the type's annotations to the provided slice and
 // returns the extended slice.

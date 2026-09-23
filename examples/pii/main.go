@@ -45,7 +45,7 @@ func piiHook(ctx context.Context) {
 
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "pii-demo",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	},
 		axio.WithOutputs(

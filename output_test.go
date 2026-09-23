@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestConsole(t *testing.T) {
@@ -104,6 +105,38 @@ func TestFile(t *testing.T) {
 		_, err = out.Write([]byte("after close"))
 		assertError(t, err)
 	})
+
+	t.Run("second_close_returns_sentinel", func(t *testing.T) {
+		out, err := File(tempFile(t, "twice.log"), FormatJSON)
+		assertNoError(t, err)
+
+		assertNoError(t, out.Close())
+		if err := out.Close(); !errors.Is(err, ErrOutputClosed) {
+			t.Errorf("expected ErrOutputClosed, got %v", err)
+		}
+	})
+}
+
+func TestRotatingFile_Close(t *testing.T) {
+	t.Run("second_close_with_time_rotation_returns_sentinel", func(t *testing.T) {
+		out, err := RotatingFile(tempFile(t, "twice.log"), FormatJSON, RotationConfig{Interval: Duration(time.Hour)})
+		assertNoError(t, err)
+
+		assertNoError(t, out.Close())
+		if err := out.Close(); !errors.Is(err, ErrOutputClosed) {
+			t.Errorf("expected ErrOutputClosed, got %v", err)
+		}
+	})
+
+	t.Run("second_close_with_size_rotation_returns_sentinel", func(t *testing.T) {
+		out, err := RotatingFile(tempFile(t, "twice.log"), FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+
+		assertNoError(t, out.Close())
+		if err := out.Close(); !errors.Is(err, ErrOutputClosed) {
+			t.Errorf("expected ErrOutputClosed, got %v", err)
+		}
+	})
 }
 
 func TestMustFile(t *testing.T) {
@@ -129,7 +162,7 @@ func TestMustFile(t *testing.T) {
 	})
 }
 
-func Test_buildOutputs(t *testing.T) {
+func TestBuildOutputs(t *testing.T) {
 	t.Run("builds_console", func(t *testing.T) {
 		config := Config{
 			Outputs: []OutputConfig{
@@ -305,10 +338,10 @@ func TestEnvironment_UnmarshalText(t *testing.T) {
 			input string
 			want  Environment
 		}{
-			{"production", Production},
-			{"staging", Staging},
-			{"development", Development},
-			{" production ", Production},
+			{"production", EnvironmentProduction},
+			{"staging", EnvironmentStaging},
+			{"development", EnvironmentDevelopment},
+			{" production ", EnvironmentProduction},
 		}
 
 		for _, test := range tests {

@@ -55,6 +55,8 @@ type Event struct {
 	outputs     []Output
 	mutex       sync.Mutex
 	emitted     atomic.Bool
+	closed      atomic.Bool
+	audited     bool
 }
 
 // NewEvent creates a new wide event with the specified name and configuration.
@@ -115,6 +117,7 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 		metrics:   metrics,
 		startTime: time.Now(),
 		outputs:   outputs,
+		audited:   chain != nil,
 	}, nil
 }
 
@@ -169,13 +172,20 @@ func (e *Event) SetError(err error, details ...Annotation) {
 //   - Writes the entry through the internal logger
 //
 // Emit should be called once, typically via defer in middleware.
-// Subsequent calls are no-ops; only the first call produces output.
+// Subsequent calls are no-ops; only the first call produces output. After
+// [Event.Close], Emit writes nothing.
+//
+// Hooks see the event name as [Entry.Message]; a name they change is the
+// name written.
 func (e *Event) Emit(ctx context.Context) {
 	if !e.emitted.CompareAndSwap(false, true) {
 		return
 	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
+	if e.closed.Load() {
+		return
+	}
 
 	durationMS := time.Since(e.startTime).Milliseconds()
 
@@ -184,7 +194,7 @@ func (e *Event) Emit(ctx context.Context) {
 	entry.Level = LevelInfo
 	entry.Message = e.name
 	entry.Error = e.err
-	entry.Annotations = append(cloneAnnotations(e.annotations), e.errDetails...)
+	entry.Annotations = expandAnnotable(append(cloneAnnotations(e.annotations), e.errDetails...))
 
 	trace, span, _ := e.trace.Extract(ctx)
 	entry.TraceID = trace
@@ -200,19 +210,24 @@ func (e *Event) Emit(ctx context.Context) {
 		return
 	}
 
-	log := e.engine.Check(zap.InfoLevel, e.name)
+	log := e.engine.Check(zap.InfoLevel, entry.Message)
 	if log == nil {
 		return
 	}
 	log.Time = e.startTime
-	log.Write(eventFields(entry, durationMS)...)
+	fields := eventFields(entry, durationMS)
+	if e.audited {
+		fields = append(fields, contextField(ctx))
+	}
+	log.Write(fields...)
 }
 
 // Close releases resources associated with the event's outputs.
 //
 // Call Close after [Event.Emit] to release file handles and other resources.
 // For events without file outputs, Close is a no-op but should still be called
-// for correctness.
+// for correctness. An Emit already writing finishes first; an Emit after Close
+// writes nothing. A second call returns [ErrEventClosed].
 //
 // Example:
 //
@@ -221,6 +236,12 @@ func (e *Event) Emit(ctx context.Context) {
 //	// ... enrich event ...
 //	event.Emit(ctx)
 func (e *Event) Close() error {
+	if !e.closed.CompareAndSwap(false, true) {
+		return ErrEventClosed
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
 	var errs []error
 	for _, output := range e.outputs {
 		if err := output.Close(); err != nil {
@@ -271,13 +292,13 @@ func EventFromContext(ctx context.Context) *Event {
 func buildEventEngine(outputs []Output, chain *HashChain, metrics Metrics) (*zap.Logger, error) {
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
 	if chain != nil {
-		return zap.New(&auditCore{
+		return zap.New(&reportingCore{Core: &auditCore{
 			LevelEnabler: level,
 			chain:        chain,
 			metrics:      metrics,
 			canonical:    zapcore.NewJSONEncoder(logline.EventEncoderConfig()),
 			jsonOutputs:  outputs,
-		}), nil
+		}}), nil
 	}
 
 	cores := make([]zapcore.Core, 0, len(outputs))
@@ -285,24 +306,24 @@ func buildEventEngine(outputs []Output, chain *HashChain, metrics Metrics) (*zap
 		encoder := zapcore.NewJSONEncoder(logline.EventEncoderConfig())
 		cores = append(cores, zapcore.NewCore(encoder, output, level))
 	}
-	return zap.New(zapcore.NewTee(cores...)), nil
+	return zap.New(&reportingCore{Core: zapcore.NewTee(cores...)}), nil
 }
 
 // eventFields converts a processed event entry into the fields written by
 // [Event.Emit]: annotations first, then duration, error and trace.
 func eventFields(entry *Entry, durationMS int64) []zap.Field {
 	fields := annotationsToFields(entry.Annotations)
-	fields = append(fields, zap.Int64("duration_ms", durationMS))
+	fields = append(fields, zap.Int64(logline.DurationKey, durationMS))
 
 	if entry.Error != nil {
-		fields = append(fields, zap.Error(entry.Error))
+		fields = append(fields, zap.NamedError(logline.ErrorKey, entry.Error))
 	}
 
 	if entry.TraceID != "" {
-		fields = append(fields, zap.String("trace_id", entry.TraceID))
+		fields = append(fields, zap.String(logline.TraceIDKey, entry.TraceID))
 	}
 	if entry.SpanID != "" {
-		fields = append(fields, zap.String("span_id", entry.SpanID))
+		fields = append(fields, zap.String(logline.SpanIDKey, entry.SpanID))
 	}
 
 	return fields

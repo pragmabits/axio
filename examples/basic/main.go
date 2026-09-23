@@ -27,7 +27,7 @@ func basicLogger(ctx context.Context) {
 	logger, err := axio.New(axio.Config{
 		ServiceName:    "basic-example",
 		ServiceVersion: "1.0.0",
-		Environment:    axio.Development,
+		Environment:    axio.EnvironmentDevelopment,
 		Level:          axio.LevelDebug,
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func levelFiltering(ctx context.Context) {
 
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "level-filter",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelWarn,
 	})
 	defer logger.Close()
@@ -66,7 +66,7 @@ func namedLoggers(ctx context.Context) {
 
 	baseLogger, _ := axio.New(axio.Config{
 		ServiceName: "microservice",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	})
 	defer baseLogger.Close()

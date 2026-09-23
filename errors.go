@@ -25,6 +25,11 @@ var (
 	ErrAuditWithoutPath = errors.New("audit enabled requires storePath")
 	// ErrFileOutputNoPath indicates file output without path.
 	ErrFileOutputNoPath = errors.New("output type 'file' requires 'path'")
+	// ErrAuditWithoutJSON indicates an audited Logger with no JSON output: only
+	// JSON lines carry the hashes a log is verified against.
+	ErrAuditWithoutJSON = errors.New("audit requires a JSON output")
+	// ErrInvalidPIIMaxDepth indicates a negative PII masking depth.
+	ErrInvalidPIIMaxDepth = errors.New("PII max depth cannot be negative")
 )
 
 var (
@@ -47,6 +52,9 @@ var (
 var (
 	// ErrOpenFile indicates failure to open the log file.
 	ErrOpenFile = errors.New("failed to open file")
+	// ErrOutputClosed indicates a file output has already been closed.
+	// Returned by Close on subsequent calls.
+	ErrOutputClosed = errors.New("output already closed")
 )
 
 var (
@@ -67,6 +75,9 @@ var (
 	ErrChainIncomplete = errors.New("log does not reach the chain's last hash")
 	// ErrNilAuditChain indicates that a nil chain was passed to WithAuditChain.
 	ErrNilAuditChain = errors.New("audit chain cannot be nil")
+	// ErrChainStoreLocked indicates that another process holds the lock of a
+	// [FileStore]: two writers on one store would fork its chain.
+	ErrChainStoreLocked = errors.New("chain store is in use by another process")
 )
 
 var (
@@ -86,4 +97,7 @@ var (
 	// (one returned by [Logger.Named] or [Logger.With]). Only the root logger
 	// owns the underlying outputs and engine; forks must not close them.
 	ErrLoggerNotRoot = errors.New("close called on forked logger")
+	// ErrEventClosed indicates the event has already been closed.
+	// Returned by [Event.Close] on subsequent calls.
+	ErrEventClosed = errors.New("event already closed")
 )

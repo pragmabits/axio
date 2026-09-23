@@ -27,15 +27,15 @@ func TestRenderer_MatchesConsole(t *testing.T) {
 	}{
 		{
 			name:   "development",
-			config: axio.Config{ServiceName: "checkout", Environment: axio.Development, Level: axio.LevelDebug},
+			config: axio.Config{ServiceName: "checkout", Environment: axio.EnvironmentDevelopment, Level: axio.LevelDebug},
 		},
 		{
 			name:   "production_with_stacktrace",
-			config: axio.Config{ServiceName: "checkout", ServiceVersion: "1.4.2", InstanceID: "pod-7f9c", Environment: axio.Production, Level: axio.LevelDebug},
+			config: axio.Config{ServiceName: "checkout", ServiceVersion: "1.4.2", InstanceID: "pod-7f9c", Environment: axio.EnvironmentProduction, Level: axio.LevelDebug},
 		},
 		{
 			name:    "production_audited",
-			config:  axio.Config{ServiceName: "checkout", ServiceVersion: "1.4.2", InstanceID: "pod-7f9c", Environment: axio.Production, Level: axio.LevelDebug},
+			config:  axio.Config{ServiceName: "checkout", ServiceVersion: "1.4.2", InstanceID: "pod-7f9c", Environment: axio.EnvironmentProduction, Level: axio.LevelDebug},
 			audited: true,
 		},
 	}
@@ -157,6 +157,12 @@ func writeSamples(logger axio.Logger) {
 	).Debug(ctx, "tricky values")
 	orders.Warn(ctx, errors.New("gateway timeout"), "payment retry %d of %d", 2, 3)
 	orders.Error(ctx, errors.New("card declined\nsecond line"), "payment failed")
+	orders.With(
+		axio.Annotate("message", "user message"),
+		axio.Annotate("service", "user service"),
+		axio.Annotate("hash", "user hash"),
+		axio.Annotate("stacktrace", "user stacktrace"),
+	).Info(ctx, "annotations named like reserved keys")
 }
 
 var errWriteFailed = errors.New("write failed")

@@ -43,7 +43,7 @@ type MetricsConfig struct {
 //	config := axio.Config{
 //	    ServiceName:    "payments-api",
 //	    ServiceVersion: "2.1.0",
-//	    Environment:    axio.Production,
+//	    Environment:    axio.EnvironmentProduction,
 //	    Level:          axio.LevelInfo,
 //	}
 //	logger, err := axio.New(config)
@@ -74,7 +74,7 @@ type Config struct {
 
 	// Outputs defines the log output destinations.
 	// If empty and no output is specified via Options, the default is:
-	// - Development: Console with FormatText
+	// - [EnvironmentDevelopment]: Console with FormatText
 	// - Others: Stdout with FormatJSON
 	Outputs []OutputConfig `json:"outputs,omitempty" yaml:"outputs,omitempty" toml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
 
@@ -90,6 +90,11 @@ type Config struct {
 	PIICustomPatterns []CustomPII `json:"piiCustomPatterns,omitempty" yaml:"piiCustomPatterns,omitempty" toml:"piiCustomPatterns,omitempty" mapstructure:"piiCustomPatterns,omitempty"`
 	// PIIFields defines fields whose values should be redacted.
 	PIIFields []string `json:"piiFields,omitempty" yaml:"piiFields,omitempty" toml:"piiFields,omitempty" mapstructure:"piiFields,omitempty"`
+	// PIIMaxDepth caps how deep masking walks into a structured annotation
+	// value; a container nested deeper is replaced by "[REDACTED]" whole. Zero
+	// means [DefaultPIIMaxDepth]; a negative value is rejected. See
+	// [PIIConfig.MaxDepth].
+	PIIMaxDepth int `json:"piiMaxDepth,omitempty" yaml:"piiMaxDepth,omitempty" toml:"piiMaxDepth,omitempty" mapstructure:"piiMaxDepth,omitempty"`
 
 	// Audit configures auditing with hash chain.
 	Audit AuditConfig `json:"audit" yaml:"audit" toml:"audit" mapstructure:"audit"`
@@ -118,7 +123,7 @@ type Config struct {
 // DefaultConfig returns a configuration with sensible default values.
 //
 // Defaults applied:
-//   - Environment: Development
+//   - Environment: EnvironmentDevelopment
 //   - Level: LevelInfo
 //   - CallerSkip: 0
 //   - TracerType: "noop"
@@ -131,11 +136,11 @@ type Config struct {
 //
 //	config := axio.DefaultConfig()
 //	config.ServiceName = "my-service"
-//	config.Environment = axio.Production
+//	config.Environment = axio.EnvironmentProduction
 //	logger, err := axio.New(config)
 func DefaultConfig() Config {
 	return Config{
-		Environment:   Development,
+		Environment:   EnvironmentDevelopment,
 		Level:         LevelInfo,
 		CallerSkip:    0,
 		DisableSample: false,
@@ -257,6 +262,7 @@ func LoadConfigFrom(reader io.Reader, format string) (Config, error) {
 //   - OutputConfig: Type and Format are valid
 //   - OutputConfig: Type=file requires non-empty Path
 //   - AuditConfig: Enabled=true requires non-empty StorePath
+//   - PIIMaxDepth is not negative
 //   - AgentMode: requires stdout+json outputs
 //   - TracerType is "otel", "noop", or empty
 //
@@ -278,8 +284,12 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if c.Audit.Enabled && c.Audit.StorePath == "" && c.auditChain == nil {
-		return ErrAuditWithoutPath
+	if err := c.validateAudit(); err != nil {
+		return err
+	}
+
+	if c.PIIMaxDepth < 0 {
+		return fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, c.PIIMaxDepth)
 	}
 
 	if c.TracerType != "" && c.TracerType != "otel" && c.TracerType != "noop" {
@@ -337,10 +347,34 @@ func (c *Config) validateAgentMode() error {
 	return nil
 }
 
+// validateAudit checks that auditing has somewhere to keep its chain: a
+// StorePath, or a chain of its own from [WithAuditChain].
+func (c *Config) validateAudit() error {
+	if c.Audit.Enabled && c.Audit.StorePath == "" && c.auditChain == nil {
+		return ErrAuditWithoutPath
+	}
+	return nil
+}
+
+// validateAuditOutputs checks that an audited Logger has a JSON output. It is
+// not part of [Config.Validate]: an Event writes JSON to every output, so the
+// same Config is valid for an audited Event.
+func (c *Config) validateAuditOutputs() error {
+	if !c.Audit.Enabled {
+		return nil
+	}
+	for _, output := range c.Outputs {
+		if output.Format == FormatJSON {
+			return nil
+		}
+	}
+	return ErrAuditWithoutJSON
+}
+
 // applyDefaults applies default values only to fields that are not set.
 func applyDefaults(config *Config) {
 	if config.Environment == "" {
-		config.Environment = Development
+		config.Environment = EnvironmentDevelopment
 	}
 
 	if config.Level == "" {
@@ -369,7 +403,7 @@ func applyOutputDefaults(config *Config) {
 		return
 	}
 
-	if config.Environment == Development {
+	if config.Environment == EnvironmentDevelopment {
 		config.Outputs = []OutputConfig{
 			{Type: OutputConsole, Format: FormatText},
 		}

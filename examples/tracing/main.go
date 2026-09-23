@@ -17,7 +17,7 @@ func main() {
 
 	logger, _ := axio.New(axio.Config{
 		ServiceName: "tracing-demo",
-		Environment: axio.Development,
+		Environment: axio.EnvironmentDevelopment,
 		Level:       axio.LevelInfo,
 	},
 		axio.WithTracer(axio.Otel()),

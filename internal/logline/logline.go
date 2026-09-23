@@ -20,12 +20,31 @@ const (
 	EventKey        = "event"
 	ServiceKey      = "service"
 	DeploymentKey   = "deployment"
+	TraceIDKey      = "trace_id"
+	SpanIDKey       = "span_id"
+	ErrorKey        = "error"
+	DurationKey     = "duration_ms"
 	PreviousHashKey = "previous_hash"
 	HashKey         = "hash"
 )
 
 // ShortHashLength is how many leading characters of a hash the text format shows.
 const ShortHashLength = 6
+
+// FieldKey returns the key a caller's field is written under: key itself, or
+// key behind an underscore when axio writes that key, so a caller's field never
+// repeats a key of the line. zap writes an error's verbose form and its causes
+// under the error key with Verbose and Causes appended.
+func FieldKey(key string) string {
+	switch key {
+	case TimeKey, LevelKey, MessageKey, LoggerKey, CallerKey, StacktraceKey, EventKey,
+		ServiceKey, DeploymentKey, TraceIDKey, SpanIDKey,
+		ErrorKey, ErrorKey + "Verbose", ErrorKey + "Causes",
+		DurationKey, PreviousHashKey, HashKey:
+		return "_" + key
+	}
+	return key
+}
 
 // ShortHash returns the leading characters of hash that the text format shows.
 // The text format cannot be verified, so a hash there only has to be long

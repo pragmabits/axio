@@ -29,6 +29,7 @@ type logger struct {
 	outputs     []Output
 	closed      *atomic.Bool
 	isFork      bool
+	audited     bool
 }
 
 // New creates a new [Logger] with the specified configuration and options.
@@ -44,14 +45,16 @@ type logger struct {
 //   - Other environments: Stdout with [FormatJSON] (structured)
 //
 // The function returns [ErrApplyOption] if any option fails to be applied
-// or [ErrValidateConfig] if the resulting configuration is invalid.
+// or [ErrValidateConfig] if the resulting configuration is invalid — an
+// audited Logger with no JSON output included, wrapping [ErrAuditWithoutJSON],
+// since only JSON lines can be verified.
 //
 // Basic example:
 //
 //	config := axio.Config{
 //	    ServiceName:    "sales-api",
 //	    ServiceVersion: "2.1.0",
-//	    Environment:    axio.Production,
+//	    Environment:    axio.EnvironmentProduction,
 //	    Level:          axio.LevelInfo,
 //	}
 //	logger, err := axio.New(config)
@@ -76,6 +79,9 @@ func New(config Config, options ...Option) (Logger, error) {
 	applyDefaults(&config)
 
 	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
+	}
+	if err := config.validateAuditOutputs(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
 	}
 
@@ -111,6 +117,7 @@ func New(config Config, options ...Option) (Logger, error) {
 		metrics: metrics,
 		outputs: outputs,
 		closed:  new(atomic.Bool),
+		audited: chain != nil,
 	}, nil
 }
 
@@ -221,7 +228,7 @@ func (l *logger) log(
 	entry.Error = err
 	entry.TraceID = trace
 	entry.SpanID = span
-	entry.Annotations = cloneAnnotations(l.annotations)
+	entry.Annotations = expandAnnotable(cloneAnnotations(l.annotations))
 
 	defer func() {
 		*entry = Entry{}
@@ -235,7 +242,11 @@ func (l *logger) log(
 
 	l.metrics.LogsTotal(ctx, level)
 	log.Message = entry.Message
-	log.Write(l.fieldsFromEntry(entry)...)
+	fields := l.fieldsFromEntry(entry)
+	if l.audited {
+		fields = append(fields, contextField(ctx))
+	}
+	log.Write(fields...)
 }
 
 func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
@@ -243,13 +254,13 @@ func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
 	fields := backing[:0]
 
 	if entry.TraceID != "" {
-		fields = append(fields, zap.String("trace_id", entry.TraceID))
+		fields = append(fields, zap.String(logline.TraceIDKey, entry.TraceID))
 	}
 	if entry.SpanID != "" {
-		fields = append(fields, zap.String("span_id", entry.SpanID))
+		fields = append(fields, zap.String(logline.SpanIDKey, entry.SpanID))
 	}
 	if entry.Error != nil {
-		fields = append(fields, zap.Error(entry.Error))
+		fields = append(fields, zap.NamedError(logline.ErrorKey, entry.Error))
 	}
 	if annotationFields := annotationsToFields(entry.Annotations); annotationFields != nil {
 		fields = append(fields, annotationFields...)
@@ -292,12 +303,13 @@ func buildEngine(config Config, outputs []Output, chain *HashChain, metrics Metr
 	} else {
 		core = newPlainCore(level, outputs, metadata)
 	}
+	core = &reportingCore{Core: core}
 
 	options := []zap.Option{
 		zap.AddCaller(),
 		zap.AddCallerSkip(config.CallerSkip + minimumCallerSkip),
 	}
-	if config.Environment != Development {
+	if config.Environment != EnvironmentDevelopment {
 		options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))
 	}
 
@@ -339,10 +351,35 @@ func newAuditedCore(level zapcore.LevelEnabler, outputs []Output, metadata []zap
 	return core
 }
 
+// reportingCore reports a failed write on stderr as one line prefixed axio:,
+// as the rest of the log path reports what it cannot return, and keeps the
+// error from zap, which would print it again in its own format.
+type reportingCore struct {
+	zapcore.Core
+}
+
+func (r *reportingCore) With(fields []zapcore.Field) zapcore.Core {
+	return &reportingCore{Core: r.Core.With(fields)}
+}
+
+func (r *reportingCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if r.Enabled(entry.Level) {
+		return checked.AddCore(entry, r)
+	}
+	return checked
+}
+
+func (r *reportingCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
+	if err := r.Core.Write(entry, fields); err != nil {
+		fmt.Fprintf(os.Stderr, "axio: write error: %v\n", err)
+	}
+	return nil
+}
+
 // serviceMetadata returns the service and deployment fields a JSON line
-// carries outside Development.
+// carries outside [EnvironmentDevelopment].
 func serviceMetadata(config Config) []zapcore.Field {
-	if config.Environment == Development {
+	if config.Environment == EnvironmentDevelopment {
 		return nil
 	}
 	return []zapcore.Field{
@@ -388,6 +425,8 @@ func cloneAnnotations(source []Annotation) []Annotation {
 	return out
 }
 
+// annotationsToFields returns the fields the annotations are written as, each
+// under [logline.FieldKey] of its name.
 func annotationsToFields(annotations []Annotation) []zap.Field {
 	if len(annotations) == 0 {
 		return nil
@@ -397,11 +436,14 @@ func annotationsToFields(annotations []Annotation) []zap.Field {
 	fields := make([]zap.Field, len(expanded))
 	for index := range expanded {
 		fields[index] = expanded[index].field
+		fields[index].Key = logline.FieldKey(fields[index].Key)
 	}
 	return fields
 }
 
-// expandAnnotable replaces Annotable annotations with their expanded fields.
+// expandAnnotable replaces Annotable annotations with their expanded fields. A
+// logger expands them before the hooks run, so PII masking sees each field;
+// serialization expands what a hook added after that.
 func expandAnnotable(annotations []Annotation) []Annotation {
 	hasAnnotable := false
 	for _, annotation := range annotations {

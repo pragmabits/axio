@@ -2,6 +2,7 @@ package axio
 
 import (
 	"errors"
+	"fmt"
 
 	"go.opentelemetry.io/otel/metric"
 )
@@ -19,6 +20,7 @@ import (
 //   - [WithAgentMode]: optimizes for collection by external agents
 //   - [WithHooks]: configures custom processing hooks
 //   - [WithPII]: configures PII masking
+//   - [WithPIIMaxDepth]: sets how deep PII masking walks into structured values
 //   - [WithAudit]: configures auditing with a hash chain stored in a file
 //   - [WithAuditChain]: configures auditing with a hash chain of your own
 //   - [WithMetrics]: configures metrics collection
@@ -33,6 +35,10 @@ type Option func(*Config) error
 // This function accepts [Output] objects and converts them internally to [OutputConfig].
 // For file-based configuration, use the [Config.Outputs] field directly.
 //
+// Options override the Config: the first WithOutputs replaces the outputs in
+// [Config.Outputs], which are then neither opened nor validated, and later
+// calls add to it.
+//
 // Example:
 //
 //	logger, _ := axio.New(config,
@@ -44,6 +50,9 @@ type Option func(*Config) error
 //	)
 func WithOutputs(outputs ...Output) Option {
 	return func(config *Config) error {
+		if len(outputs) > 0 && len(config.resolvedOutputs) == 0 {
+			config.Outputs = nil
+		}
 		for _, output := range outputs {
 			config.resolvedOutputs = append(config.resolvedOutputs, output)
 			// Mirror metadata so Validate() and AgentMode rules — which
@@ -127,6 +136,9 @@ func WithHooks(hooks ...Hook) Option {
 // If patterns is nil or empty, uses default patterns (CPF, CNPJ, CreditCard).
 // If fields is nil or empty, uses [DefaultSensitiveFields].
 //
+// Masking covers the message, the error and every annotation, as
+// [PIIMasker.MaskFields] describes, before any custom hook runs.
+//
 // Example:
 //
 //	logger, _ := axio.New(config,
@@ -148,6 +160,30 @@ func WithPII(patterns []PIIPattern, fields []string) Option {
 	}
 }
 
+// WithPIIMaxDepth sets how deep PII masking walks into a structured
+// annotation value, as [Config.PIIMaxDepth] does from a file. A container
+// nested deeper is replaced by "[REDACTED]" whole; zero means
+// [DefaultPIIMaxDepth]. It takes effect with masking on, through [WithPII] or
+// [Config.PIIEnabled].
+//
+// Returns [ErrInvalidPIIMaxDepth] for a negative depth.
+//
+// Example:
+//
+//	logger, err := axio.New(config,
+//	    axio.WithPII(nil, nil),
+//	    axio.WithPIIMaxDepth(8),
+//	)
+func WithPIIMaxDepth(depth int) Option {
+	return func(config *Config) error {
+		if depth < 0 {
+			return fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, depth)
+		}
+		config.PIIMaxDepth = depth
+		return nil
+	}
+}
+
 // WithAudit enables auditing with a hash chain whose state is persisted at
 // storePath.
 //
@@ -157,7 +193,10 @@ func WithPII(patterns []PIIPattern, fields []string) Option {
 // outputs show a shortened hash for reference only.
 //
 // Every Logger and Event audited with the same storePath in this process
-// extends one chain, whichever was created first.
+// extends one chain, whichever was created first. Another process holding the
+// same store makes [New] fail with [ErrBuildAudit] wrapping
+// [ErrChainStoreLocked]; see [FileStore]. An audited Logger needs a JSON
+// output, or [New] returns [ErrAuditWithoutJSON].
 //
 // Example:
 //

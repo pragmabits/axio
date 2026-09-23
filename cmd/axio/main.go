@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pragmabits/axio/internal/cli"
+	"github.com/pragmabits/axio/cmd/axio/internal/cli"
 )
 
 func main() {

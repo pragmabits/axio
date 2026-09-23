@@ -11,7 +11,7 @@ import (
 	"github.com/pragmabits/axio"
 )
 
-func TestVerify(t *testing.T) {
+func TestNewRootCommand_Verify(t *testing.T) {
 	t.Run("intact_log_verifies", func(t *testing.T) {
 		logPath, storePath := auditedLog(t)
 		output, err := execute(t, "", "verify", "--store", storePath, logPath)
@@ -118,7 +118,7 @@ func rotatedLogs(t *testing.T) (string, string, string) {
 func writeEntries(t *testing.T, logPath, storePath, message string) {
 	t.Helper()
 	logger, err := axio.New(
-		axio.Config{ServiceName: "payments", Environment: axio.Production, Level: axio.LevelInfo},
+		axio.Config{ServiceName: "payments", Environment: axio.EnvironmentProduction, Level: axio.LevelInfo},
 		axio.WithOutputs(axio.MustFile(logPath, axio.FormatJSON)),
 		axio.WithAudit(storePath),
 	)

@@ -162,7 +162,7 @@ linters:
       # named args written by hand is still reported, there and everywhere.
       - linters:
           - forbidigo
-        path: "^internal/cli/"
+        path: "^cmd/axio/internal/cli/"
         source: "^\\s*Args:\\s"
 
 issues:

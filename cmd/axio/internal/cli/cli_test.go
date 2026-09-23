@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pragmabits/axio/internal/cli"
+	"github.com/pragmabits/axio/cmd/axio/internal/cli"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 	warnRendered = "2026-09-23T14:02:56.100Z\tWARN\tpayment retry\n"
 )
 
-func TestRender(t *testing.T) {
+func TestNewRootCommand_Render(t *testing.T) {
 	t.Run("reads_standard_input", func(t *testing.T) {
 		output, err := execute(t, infoLine, "render", "--utc")
 		assertNoError(t, err)
@@ -58,7 +58,7 @@ func TestRender(t *testing.T) {
 	})
 }
 
-func TestColorFlag(t *testing.T) {
+func TestNewRootCommand_ColorFlag(t *testing.T) {
 	const coloredInfo = "\x1b[34mINFO\x1b[0m"
 
 	t.Run("auto_does_not_color_a_pipe", func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestColorFlag(t *testing.T) {
 	})
 }
 
-func TestRootCommand(t *testing.T) {
+func TestNewRootCommand(t *testing.T) {
 	t.Run("version_flag", func(t *testing.T) {
 		output, err := execute(t, "", "--version")
 		assertNoError(t, err)

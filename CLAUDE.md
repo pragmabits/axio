@@ -71,12 +71,12 @@ cd cmd/axio && GOWORK=off go get github.com/pragmabits/axio@<commit> && GOWORK=o
 - `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig
 - `options.go` — Functional options (WithOutputs, WithPII, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
-- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as JSON
+- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary `[]byte` redacted inside them
 - `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written
 - `storelock_flock.go`, `storelock_other.go` — the `FileStore` lock: flock where it exists, nothing elsewhere
 - `tracing.go` — OpenTelemetry trace extraction
 - `metrics.go` — OTel metrics
 - `duration.go` — duration parsing for config
 - `errors.go` — Sentinel errors
-- `internal/logline/` — the shape of a log line, shared by the logger and the `axio` command: keys, the reserved-key rename (`FieldKey`), audit trailer, short hash, encoder configs, and the `Renderer` that turns JSON back into the Console's text
+- `internal/logline/` — the shape of a log line, shared by the logger and the `axio` command: keys, the reserved-key rename (`FieldKey`), audit trailer, short hash, encoder configs, the value encoding (`ValueOptions`, `encoding/json/v2`) that the encoder configs and PII masking share, and the `Renderer` that turns JSON back into the Console's text
 - `cmd/axio/` — the `axio` command, a module of its own: `main`, and `internal/cli/` with the command tree (Cobra): root, `render`, `verify`, flag types

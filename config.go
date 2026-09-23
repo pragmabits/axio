@@ -68,9 +68,6 @@ type Config struct {
 	Level Level `json:"level" yaml:"level" toml:"level" mapstructure:"level"`
 	// CallerSkip adjusts the caller depth for wrapper libraries.
 	CallerSkip int `json:"callerSkip" yaml:"callerSkip" toml:"callerSkip" mapstructure:"callerSkip"`
-	// DisableSample is currently ignored: axio does not sample logs, so every
-	// entry at or above Level is written regardless of this value.
-	DisableSample bool `json:"disableSample" yaml:"disableSample" toml:"disableSample" mapstructure:"disableSample"`
 
 	// Outputs defines the log output destinations.
 	// If empty and no output is specified via Options, the default is:
@@ -140,13 +137,12 @@ type Config struct {
 //	logger, err := axio.New(config)
 func DefaultConfig() Config {
 	return Config{
-		Environment:   EnvironmentDevelopment,
-		Level:         LevelInfo,
-		CallerSkip:    0,
-		DisableSample: false,
-		TracerType:    "noop",
-		PIIEnabled:    false,
-		AgentMode:     false,
+		Environment: EnvironmentDevelopment,
+		Level:       LevelInfo,
+		CallerSkip:  0,
+		TracerType:  "noop",
+		PIIEnabled:  false,
+		AgentMode:   false,
 		Audit: AuditConfig{
 			Enabled: false,
 		},

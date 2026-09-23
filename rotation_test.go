@@ -127,7 +127,7 @@ func TestMustRotatingFile(t *testing.T) {
 	})
 }
 
-func Test_buildOutputs_WithRotation(t *testing.T) {
+func TestBuildOutputs_WithRotation(t *testing.T) {
 	t.Run("builds_rotating_file", func(t *testing.T) {
 		path := tempFile(t, "build-rotating.log")
 		config := Config{

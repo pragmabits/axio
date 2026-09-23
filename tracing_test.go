@@ -28,7 +28,7 @@ func TestNoopTracing(t *testing.T) {
 	}
 }
 
-func TestOtel_no_span(t *testing.T) {
+func TestOtel_NoSpan(t *testing.T) {
 	tracer := Otel()
 	traceID, spanID, ok := tracer.Extract(context.Background())
 
@@ -39,7 +39,7 @@ func TestOtel_no_span(t *testing.T) {
 	}
 }
 
-func Test_buildTracer(t *testing.T) {
+func TestBuildTracer(t *testing.T) {
 	t.Run("custom_tracer_takes_precedence", func(t *testing.T) {
 		custom := NoopTracer{}
 		config := Config{tracer: custom}

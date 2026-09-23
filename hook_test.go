@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func Test_newHookChain(t *testing.T) {
+func TestNewHookChain(t *testing.T) {
 	t.Run("empty_chain", func(t *testing.T) {
 		chain := newHookChain(NoopMetrics{})
 		assertEqual(t, chain.length(), 0)
@@ -53,7 +53,7 @@ func TestHookChain_Process(t *testing.T) {
 	assertEqual(t, order[1], "b")
 }
 
-func TestHookChain_Process_error_stops_chain(t *testing.T) {
+func TestHookChain_Process_ErrorStopsChain(t *testing.T) {
 	called := false
 	hookA := &testHook{name: "failing", process: func(ctx context.Context, entry *Entry) error {
 		return errors.New("hook error")

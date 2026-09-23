@@ -20,42 +20,44 @@ func TestNoopMetrics(t *testing.T) {
 	metrics.HookDuration(ctx, "test", time.Millisecond, true)
 }
 
-func Test_buildMetrics_noop_when_disabled(t *testing.T) {
-	config := minimalConfig()
-	config.Metrics.Enabled = false
+func TestBuildMetrics(t *testing.T) {
+	t.Run("noop_when_disabled", func(t *testing.T) {
+		config := minimalConfig()
+		config.Metrics.Enabled = false
 
-	metrics, err := buildMetrics(config)
-	assertNoError(t, err)
+		metrics, err := buildMetrics(config)
+		assertNoError(t, err)
 
-	_, ok := metrics.(NoopMetrics)
-	if !ok {
-		t.Error("should return NoopMetrics when disabled")
-	}
-}
+		_, ok := metrics.(NoopMetrics)
+		if !ok {
+			t.Error("should return NoopMetrics when disabled")
+		}
+	})
 
-func Test_buildMetrics_custom_metrics(t *testing.T) {
-	config := minimalConfig()
-	config.metrics = NoopMetrics{}
+	t.Run("custom_metrics", func(t *testing.T) {
+		config := minimalConfig()
+		config.metrics = NoopMetrics{}
 
-	metrics, err := buildMetrics(config)
-	assertNoError(t, err)
+		metrics, err := buildMetrics(config)
+		assertNoError(t, err)
 
-	_, ok := metrics.(NoopMetrics)
-	if !ok {
-		t.Error("should return custom metrics implementation")
-	}
-}
+		_, ok := metrics.(NoopMetrics)
+		if !ok {
+			t.Error("should return custom metrics implementation")
+		}
+	})
 
-func Test_buildMetrics_with_provider(t *testing.T) {
-	config := minimalConfig()
-	config.Metrics.Enabled = true
-	config.metricsProvider = noop.NewMeterProvider()
+	t.Run("with_provider", func(t *testing.T) {
+		config := minimalConfig()
+		config.Metrics.Enabled = true
+		config.metricsProvider = noop.NewMeterProvider()
 
-	metrics, err := buildMetrics(config)
-	assertNoError(t, err)
+		metrics, err := buildMetrics(config)
+		assertNoError(t, err)
 
-	_, ok := metrics.(*otelMetrics)
-	if !ok {
-		t.Error("should return otelMetrics when provider is set")
-	}
+		_, ok := metrics.(*otelMetrics)
+		if !ok {
+			t.Error("should return otelMetrics when provider is set")
+		}
+	})
 }

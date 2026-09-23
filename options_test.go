@@ -8,13 +8,13 @@ import (
 
 func TestWithOutputs(t *testing.T) {
 	config := minimalConfig()
-	opt := WithOutputs(Stdout(FormatJSON))
-	err := opt(&config)
+	option := WithOutputs(Stdout(FormatJSON))
+	err := option(&config)
 	assertNoError(t, err)
 
 	found := false
-	for _, o := range config.Outputs {
-		if o.Type == OutputStdout && o.Format == FormatJSON {
+	for _, output := range config.Outputs {
+		if output.Type == OutputStdout && output.Format == FormatJSON {
 			found = true
 		}
 	}
@@ -25,8 +25,8 @@ func TestWithOutputs(t *testing.T) {
 
 func TestWithAgentMode(t *testing.T) {
 	config := minimalConfig()
-	opt := WithAgentMode()
-	err := opt(&config)
+	option := WithAgentMode()
+	err := option(&config)
 	assertNoError(t, err)
 
 	if !config.AgentMode {
@@ -40,8 +40,8 @@ func TestWithAgentMode(t *testing.T) {
 func TestWithHooks(t *testing.T) {
 	config := minimalConfig()
 	hook := NoopHook()
-	opt := WithHooks(hook)
-	err := opt(&config)
+	option := WithHooks(hook)
+	err := option(&config)
 	assertNoError(t, err)
 
 	assertEqual(t, len(config.hooks), 1)
@@ -51,8 +51,8 @@ func TestWithPII(t *testing.T) {
 	config := minimalConfig()
 	patterns := []PIIPattern{PatternCPF, PatternEmail}
 	fields := []string{"password", "token"}
-	opt := WithPII(patterns, fields)
-	err := opt(&config)
+	option := WithPII(patterns, fields)
+	err := option(&config)
 	assertNoError(t, err)
 
 	if !config.PIIEnabled {
@@ -64,8 +64,8 @@ func TestWithPII(t *testing.T) {
 
 func TestWithPII_defaults(t *testing.T) {
 	config := minimalConfig()
-	opt := WithPII(nil, nil)
-	err := opt(&config)
+	option := WithPII(nil, nil)
+	err := option(&config)
 	assertNoError(t, err)
 
 	if !config.PIIEnabled {
@@ -78,8 +78,8 @@ func TestWithPII_defaults(t *testing.T) {
 
 func TestWithAudit(t *testing.T) {
 	config := minimalConfig()
-	opt := WithAudit("/tmp/audit.json")
-	err := opt(&config)
+	option := WithAudit("/tmp/audit.json")
+	err := option(&config)
 	assertNoError(t, err)
 
 	if !config.Audit.Enabled {
@@ -92,8 +92,8 @@ func TestWithMetrics(t *testing.T) {
 	t.Run("with_provider", func(t *testing.T) {
 		config := minimalConfig()
 		provider := noop.NewMeterProvider()
-		opt := WithMetrics(provider)
-		err := opt(&config)
+		option := WithMetrics(provider)
+		err := option(&config)
 		assertNoError(t, err)
 
 		if !config.Metrics.Enabled {
@@ -103,8 +103,8 @@ func TestWithMetrics(t *testing.T) {
 
 	t.Run("nil_provider_returns_error", func(t *testing.T) {
 		config := minimalConfig()
-		opt := WithMetrics(nil)
-		err := opt(&config)
+		option := WithMetrics(nil)
+		err := option(&config)
 		assertError(t, err)
 	})
 }
@@ -112,8 +112,8 @@ func TestWithMetrics(t *testing.T) {
 func TestWithTracer(t *testing.T) {
 	t.Run("otel_tracer", func(t *testing.T) {
 		config := minimalConfig()
-		opt := WithTracer(Otel())
-		err := opt(&config)
+		option := WithTracer(Otel())
+		err := option(&config)
 		assertNoError(t, err)
 
 		assertEqual(t, config.TracerType, "otel")
@@ -121,8 +121,8 @@ func TestWithTracer(t *testing.T) {
 
 	t.Run("noop_tracer", func(t *testing.T) {
 		config := minimalConfig()
-		opt := WithTracer(NoopTracing())
-		err := opt(&config)
+		option := WithTracer(NoopTracing())
+		err := option(&config)
 		assertNoError(t, err)
 
 		assertEqual(t, config.TracerType, "noop")

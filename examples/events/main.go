@@ -278,13 +278,13 @@ func eventWithPII(ctx context.Context) {
 func eventWithAudit(ctx context.Context) {
 	fmt.Println("=== Audit Hash Chain ===")
 
-	dir, err := os.MkdirTemp("", "axio-event-audit-*")
+	directory, err := os.MkdirTemp("", "axio-event-audit-*")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer os.RemoveAll(dir)
-	storePath := filepath.Join(dir, "chain.json")
+	defer os.RemoveAll(directory)
+	storePath := filepath.Join(directory, "chain.json")
 
 	config := axio.Config{
 		ServiceName: "compliance-service",
@@ -329,13 +329,13 @@ func eventWithAudit(ctx context.Context) {
 func eventWithFileOutput(ctx context.Context) {
 	fmt.Println("=== File Output ===")
 
-	dir, err := os.MkdirTemp("", "axio-event-file-*")
+	directory, err := os.MkdirTemp("", "axio-event-file-*")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer os.RemoveAll(dir)
-	filePath := filepath.Join(dir, "events.log")
+	defer os.RemoveAll(directory)
+	filePath := filepath.Join(directory, "events.log")
 
 	config := axio.Config{
 		ServiceName: "checkout-service",

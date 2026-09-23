@@ -179,8 +179,8 @@ func Test_buildOutputs_WithRotation(t *testing.T) {
 
 func TestRotatingFile_TimeRotation(t *testing.T) {
 	t.Run("rotates_on_interval", func(t *testing.T) {
-		dir := tempDir(t)
-		path := filepath.Join(dir, "timed.log")
+		directory := tempDir(t)
+		path := filepath.Join(directory, "timed.log")
 
 		output, err := RotatingFile(path, FormatJSON, RotationConfig{
 			Interval: Duration(100 * time.Millisecond),
@@ -202,13 +202,15 @@ func TestRotatingFile_TimeRotation(t *testing.T) {
 
 		// The current file should contain the post-rotation content
 		content := readFile(t, path)
-		if content != "after rotation\n" {
-			// Rotation may have created a backup; just verify current file is writable
-			// and the backup exists
-			entries, _ := os.ReadDir(dir)
-			if len(entries) < 2 {
-				t.Errorf("expected rotated backup file, got %d files", len(entries))
-			}
+		if content == "after rotation\n" {
+			return
+		}
+
+		// Rotation may have created a backup; just verify current file is writable
+		// and the backup exists
+		entries, _ := os.ReadDir(directory)
+		if len(entries) < 2 {
+			t.Errorf("expected rotated backup file, got %d files", len(entries))
 		}
 	})
 }
@@ -251,21 +253,21 @@ outputs:
 
 func TestFileOutput_LastRotationError(t *testing.T) {
 	t.Run("nil_when_unused", func(t *testing.T) {
-		f := &fileOutput{}
-		if got := f.LastRotationError(); got != nil {
+		output := &fileOutput{}
+		if got := output.LastRotationError(); got != nil {
 			t.Fatalf("expected nil, got %v", got)
 		}
 	})
 
 	t.Run("stores_and_clears", func(t *testing.T) {
-		f := &fileOutput{}
+		output := &fileOutput{}
 		sentinel := errors.New("rotate failed")
-		f.lastRotationError.Store(&sentinel)
-		if got := f.LastRotationError(); got != sentinel {
+		output.lastRotationError.Store(&sentinel)
+		if got := output.LastRotationError(); got != sentinel {
 			t.Fatalf("expected %v, got %v", sentinel, got)
 		}
-		f.lastRotationError.Store(nil)
-		if got := f.LastRotationError(); got != nil {
+		output.lastRotationError.Store(nil)
+		if got := output.LastRotationError(); got != nil {
 			t.Fatalf("expected nil after clear, got %v", got)
 		}
 	})

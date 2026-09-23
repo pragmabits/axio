@@ -16,11 +16,11 @@ import (
 // CPU/alloc measurements from I/O.
 type benchOutput struct{}
 
-func (benchOutput) Write(p []byte) (int, error) { return len(p), nil }
-func (benchOutput) Sync() error                 { return nil }
-func (benchOutput) Close() error                { return nil }
-func (benchOutput) Type() OutputType             { return OutputStdout }
-func (benchOutput) Format() Format               { return FormatJSON }
+func (benchOutput) Write(data []byte) (int, error) { return len(data), nil }
+func (benchOutput) Sync() error                    { return nil }
+func (benchOutput) Close() error                   { return nil }
+func (benchOutput) Type() OutputType               { return OutputStdout }
+func (benchOutput) Format() Format                 { return FormatJSON }
 
 // benchLogger creates a logger writing JSON to a no-op output at debug level.
 func benchLogger(b *testing.B) *logger {
@@ -61,24 +61,24 @@ func benchEntry(traceID, spanID string, err error, annotations ...Annotation) *E
 // ---------------------------------------------------------------------------
 
 func BenchmarkLogger_Info(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.Info(ctx, "simple log message")
+		loggerUnderTest.Info(ctx, "simple log message")
 	}
 }
 
 func BenchmarkLogger_Info_WithAnnotations(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.With(
+		loggerUnderTest.With(
 			Annotate("user_id", "usr_12345"),
 			Annotate("tenant", "acme-corp"),
 		).Info(ctx, "annotated message")
@@ -86,7 +86,7 @@ func BenchmarkLogger_Info_WithAnnotations(b *testing.B) {
 }
 
 func BenchmarkLogger_Info_WithHTTP(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 	httpData := HTTP{
 		Method:     "POST",
@@ -100,30 +100,30 @@ func BenchmarkLogger_Info_WithHTTP(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.With(Annotate("http", httpData)).Info(ctx, "request processed")
+		loggerUnderTest.With(Annotate("http", httpData)).Info(ctx, "request processed")
 	}
 }
 
 func BenchmarkLogger_Error_WithError(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 	err := errors.New("connection refused")
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.Error(ctx, err, "database connection failed")
+		loggerUnderTest.Error(ctx, err, "database connection failed")
 	}
 }
 
 func BenchmarkLogger_Info_Formatted(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.Info(ctx, "processed %d items in %dms", 42, 150)
+		loggerUnderTest.Info(ctx, "processed %d items in %dms", 42, 150)
 	}
 }
 
@@ -132,18 +132,18 @@ func BenchmarkLogger_Info_Formatted(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkFieldsFromEntry_Minimal(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	entry := benchEntry("", "", nil)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.fieldsFromEntry(entry)
+		loggerUnderTest.fieldsFromEntry(entry)
 	}
 }
 
 func BenchmarkFieldsFromEntry_Full(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 	entry := benchEntry(
 		"abc123def456789012345678901234aa",
 		"span1234567890ab",
@@ -156,7 +156,7 @@ func BenchmarkFieldsFromEntry_Full(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.fieldsFromEntry(entry)
+		loggerUnderTest.fieldsFromEntry(entry)
 	}
 }
 
@@ -322,65 +322,26 @@ func BenchmarkNoopTracer_Extract(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Component benchmarks: encodeRFC3339NanoUTC
-// ---------------------------------------------------------------------------
-
-// arrayEncoder is a minimal PrimitiveArrayEncoder for benchmarking.
-type arrayEncoder struct {
-	buf string
-}
-
-func (a *arrayEncoder) AppendBool(bool)             {}
-func (a *arrayEncoder) AppendByteString([]byte)     {}
-func (a *arrayEncoder) AppendComplex128(complex128) {}
-func (a *arrayEncoder) AppendComplex64(complex64)   {}
-func (a *arrayEncoder) AppendFloat64(float64)       {}
-func (a *arrayEncoder) AppendFloat32(float32)       {}
-func (a *arrayEncoder) AppendInt(int)               {}
-func (a *arrayEncoder) AppendInt64(int64)           {}
-func (a *arrayEncoder) AppendInt32(int32)           {}
-func (a *arrayEncoder) AppendInt16(int16)           {}
-func (a *arrayEncoder) AppendInt8(int8)             {}
-func (a *arrayEncoder) AppendString(s string)       { a.buf = s }
-func (a *arrayEncoder) AppendUint(uint)             {}
-func (a *arrayEncoder) AppendUint64(uint64)         {}
-func (a *arrayEncoder) AppendUint32(uint32)         {}
-func (a *arrayEncoder) AppendUint16(uint16)         {}
-func (a *arrayEncoder) AppendUint8(uint8)           {}
-func (a *arrayEncoder) AppendUintptr(uintptr)       {}
-
-func BenchmarkEncodeRFC3339NanoUTC(b *testing.B) {
-	t := time.Date(2025, 3, 26, 12, 30, 45, 123456789, time.UTC)
-	enc := &arrayEncoder{}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		encodeRFC3339NanoUTC(t, enc)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Component benchmarks: formatMessage
 // ---------------------------------------------------------------------------
 
 func BenchmarkFormatMessage_NoArgs(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.formatMessage("simple message without formatting")
+		loggerUnderTest.formatMessage("simple message without formatting")
 	}
 }
 
 func BenchmarkFormatMessage_WithArgs(b *testing.B) {
-	l := benchLogger(b)
+	loggerUnderTest := benchLogger(b)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		l.formatMessage("processed %d items in %s for user %s", 42, "150ms", "usr_123")
+		loggerUnderTest.formatMessage("processed %d items in %s for user %s", 42, "150ms", "usr_123")
 	}
 }
 

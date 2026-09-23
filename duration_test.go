@@ -21,11 +21,11 @@ func TestDuration_UnmarshalText(t *testing.T) {
 			{" 24h ", Duration(24 * time.Hour)}, // with spaces
 		}
 
-		for _, tt := range tests {
+		for _, test := range tests {
 			var duration Duration
-			err := duration.UnmarshalText([]byte(tt.input))
+			err := duration.UnmarshalText([]byte(test.input))
 			assertNoError(t, err)
-			assertEqual(t, duration, tt.want)
+			assertEqual(t, duration, test.want)
 		}
 	})
 

@@ -46,14 +46,15 @@ func loadFromFile(ctx context.Context) {
 	fmt.Printf("  Audit.Enabled: %v\n", config.Audit.Enabled)
 
 	for index, output := range config.Outputs {
-		if output.Rotation.Enabled() {
-			fmt.Printf("  Output[%d] rotation:\n", index)
-			fmt.Printf("    MaxSize:    %d MB\n", output.Rotation.MaxSize)
-			fmt.Printf("    MaxAge:     %d days\n", output.Rotation.MaxAge)
-			fmt.Printf("    MaxBackups: %d\n", output.Rotation.MaxBackups)
-			fmt.Printf("    Compress:   %v\n", output.Rotation.Compress)
-			fmt.Printf("    Interval:   %s\n", time.Duration(output.Rotation.Interval))
+		if !output.Rotation.Enabled() {
+			continue
 		}
+		fmt.Printf("  Output[%d] rotation:\n", index)
+		fmt.Printf("    MaxSize:    %d MB\n", output.Rotation.MaxSize)
+		fmt.Printf("    MaxAge:     %d days\n", output.Rotation.MaxAge)
+		fmt.Printf("    MaxBackups: %d\n", output.Rotation.MaxBackups)
+		fmt.Printf("    Compress:   %v\n", output.Rotation.Compress)
+		fmt.Printf("    Interval:   %s\n", time.Duration(output.Rotation.Interval))
 	}
 
 	logger, err := axio.New(config)

@@ -39,14 +39,18 @@ type NoopTracer struct{}
 
 var _ Tracer = NoopTracer{}
 
+// NoopTracing returns a no-op tracer that never extracts trace information.
+//
+// Example:
+//
+//	logger, err := axio.New(config, axio.WithTracer(axio.NoopTracing()))
+func NoopTracing() Tracer {
+	return NoopTracer{}
+}
+
 // Extract always returns empty values and false.
 func (n NoopTracer) Extract(ctx context.Context) (string, string, bool) {
 	return "", "", false
-}
-
-// NoopTracing returns a no-op tracer that never extracts trace information.
-func NoopTracing() Tracer {
-	return NoopTracer{}
 }
 
 // otelTraceExtractor extracts trace information from OpenTelemetry.

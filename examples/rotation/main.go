@@ -59,24 +59,7 @@ func sizeRotation(ctx context.Context) {
 	}
 	logger.Close()
 
-	entries, _ := os.ReadDir(tempDir)
-	var backups int
-	for _, entry := range entries {
-		info, _ := entry.Info()
-		if info != nil {
-			fmt.Printf("  - %s (%d bytes)\n", entry.Name(), info.Size())
-		}
-		if entry.Name() != "size-test.log" {
-			backups++
-		}
-	}
-
-	if backups > 0 {
-		fmt.Println("[ok] Size-based rotation verified")
-	} else {
-		fmt.Println("[FAIL] Size-based rotation did not trigger")
-	}
-	fmt.Println()
+	reportBackups(tempDir, "size-test.log", "Size-based")
 }
 
 func timeRotation(ctx context.Context) {
@@ -118,6 +101,12 @@ func timeRotation(ctx context.Context) {
 	logger.Info(ctx, "After time rotation")
 	logger.Close()
 
+	reportBackups(tempDir, "time-test.log", "Time-based")
+}
+
+// reportBackups lists the files in tempDir and reports whether rotation left
+// at least one backup beside the active log file.
+func reportBackups(tempDir, activeName, label string) {
 	entries, _ := os.ReadDir(tempDir)
 	var backups int
 	for _, entry := range entries {
@@ -125,15 +114,15 @@ func timeRotation(ctx context.Context) {
 		if info != nil {
 			fmt.Printf("  - %s (%d bytes)\n", entry.Name(), info.Size())
 		}
-		if entry.Name() != "time-test.log" {
+		if entry.Name() != activeName {
 			backups++
 		}
 	}
 
 	if backups > 0 {
-		fmt.Println("[ok] Time-based rotation verified")
+		fmt.Printf("[ok] %s rotation verified\n", label)
 	} else {
-		fmt.Println("[FAIL] Time-based rotation did not trigger")
+		fmt.Printf("[FAIL] %s rotation did not trigger\n", label)
 	}
 	fmt.Println()
 }

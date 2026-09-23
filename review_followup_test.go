@@ -12,11 +12,11 @@ import (
 // preserve previously-attached annotations.
 func TestLogger_With_AccumulatesAcrossChain(t *testing.T) {
 	path := tempFile(t, "chain.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg)
+	logger, err := New(config)
 	assertNoError(t, err)
 	defer logger.Close()
 
@@ -38,11 +38,11 @@ func TestLogger_With_AccumulatesAcrossChain(t *testing.T) {
 // shared parent doesn't bleed annotations between siblings or back into parent.
 func TestLogger_With_DoesNotMutateParent(t *testing.T) {
 	path := tempFile(t, "siblings.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg)
+	logger, err := New(config)
 	assertNoError(t, err)
 	defer logger.Close()
 
@@ -78,11 +78,11 @@ func TestLogger_With_DoesNotMutateParent(t *testing.T) {
 // attached annotations rather than clearing them.
 func TestLogger_Named_PreservesAnnotations(t *testing.T) {
 	path := tempFile(t, "named.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg)
+	logger, err := New(config)
 	assertNoError(t, err)
 	defer logger.Close()
 
@@ -104,11 +104,11 @@ func TestLogger_Named_PreservesAnnotations(t *testing.T) {
 // ErrLoggerClosed and that errors.Is recognises it.
 func TestLogger_Close_ReturnsSentinel(t *testing.T) {
 	path := tempFile(t, "sentinel.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg)
+	logger, err := New(config)
 	assertNoError(t, err)
 
 	if err := logger.Close(); err != nil {
@@ -124,11 +124,11 @@ func TestLogger_Close_ReturnsSentinel(t *testing.T) {
 // panic and silently drops the call.
 func TestLogger_LogIsNoopAfterClose(t *testing.T) {
 	path := tempFile(t, "after-close.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg)
+	logger, err := New(config)
 	assertNoError(t, err)
 	logger.Info(context.Background(), "before-close")
 	if err := logger.Close(); err != nil {
@@ -136,8 +136,8 @@ func TestLogger_LogIsNoopAfterClose(t *testing.T) {
 	}
 	// Must NOT panic.
 	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("log after Close panicked: %v", r)
+		if recovered := recover(); recovered != nil {
+			t.Errorf("log after Close panicked: %v", recovered)
 		}
 	}()
 	logger.Info(context.Background(), "after-close-should-be-dropped")
@@ -153,11 +153,11 @@ func TestLogger_LogIsNoopAfterClose(t *testing.T) {
 // remains untouched.
 func TestPIIHook_DoesNotMutateCallerAnnotations(t *testing.T) {
 	path := tempFile(t, "pii-snap.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	logger, err := New(cfg, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()))
+	logger, err := New(config, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()))
 	assertNoError(t, err)
 	defer logger.Close()
 
@@ -187,8 +187,8 @@ func TestPIIHook_DoesNotMutateCallerAnnotations(t *testing.T) {
 
 // TestWithTracer_NilReturnsErr verifies the new nil-check on WithTracer.
 func TestWithTracer_NilReturnsErr(t *testing.T) {
-	cfg := minimalConfig()
-	_, err := New(cfg, WithTracer(nil))
+	config := minimalConfig()
+	_, err := New(config, WithTracer(nil))
 	if !errors.Is(err, ErrNilTracer) {
 		t.Errorf("expected ErrNilTracer, got %v", err)
 	}
@@ -198,11 +198,11 @@ func TestWithTracer_NilReturnsErr(t *testing.T) {
 // WithOutputs leaves a single file handle open and writes go to it directly.
 func TestWithOutputs_NoDoubleOpen(t *testing.T) {
 	path := tempFile(t, "single-open.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 	}
 	out := MustFile(path, FormatJSON)
-	logger, err := New(cfg, WithOutputs(out))
+	logger, err := New(config, WithOutputs(out))
 	assertNoError(t, err)
 
 	logger.Info(context.Background(), "hello-resolved-output")
@@ -242,11 +242,11 @@ func TestPhoneRegex_FieldRedaction_ASCII(t *testing.T) {
 // root logger fully functional.
 func TestLogger_CloseOnFork_DoesNotAffectRoot(t *testing.T) {
 	path := tempFile(t, "fork-close.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 		Outputs: []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path}},
 	}
-	root, err := New(cfg)
+	root, err := New(config)
 	assertNoError(t, err)
 	defer root.Close()
 
@@ -278,11 +278,11 @@ func TestLogger_CloseOnFork_DoesNotAffectRoot(t *testing.T) {
 // Close does not tear down the file outputs the root still uses.
 func TestLogger_CloseOnFork_DoesNotCloseSharedOutputs(t *testing.T) {
 	path := tempFile(t, "fork-shared-output.log")
-	cfg := Config{
+	config := Config{
 		ServiceName: "t", Environment: Development, Level: LevelInfo,
 	}
 	out := MustFile(path, FormatJSON)
-	root, err := New(cfg, WithOutputs(out))
+	root, err := New(config, WithOutputs(out))
 	assertNoError(t, err)
 
 	fork := root.With(Annotate("scope", "fork"))

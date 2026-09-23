@@ -13,9 +13,9 @@ func TestConsole(t *testing.T) {
 	assertEqual(t, out.Format(), FormatText)
 
 	// Console writes to stderr
-	n, err := out.Write([]byte("test"))
+	written, err := out.Write([]byte("test"))
 	assertNoError(t, err)
-	if n == 0 {
+	if written == 0 {
 		t.Error("should have written bytes")
 	}
 
@@ -75,7 +75,8 @@ func TestFile(t *testing.T) {
 		out, err := File(path, FormatJSON)
 		assertNoError(t, err)
 
-		out.Write([]byte("appended\n"))
+		_, err = out.Write([]byte("appended\n"))
+		assertNoError(t, err)
 		out.Close()
 
 		content := readFile(t, path)
@@ -119,7 +120,7 @@ func TestMustFile(t *testing.T) {
 
 	t.Run("invalid_path_panics", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
+			if recovered := recover(); recovered == nil {
 				t.Error("expected panic for invalid path")
 			}
 		}()
@@ -257,11 +258,11 @@ func TestOutputType_UnmarshalText(t *testing.T) {
 			{" console ", OutputConsole}, // with spaces
 		}
 
-		for _, tt := range tests {
+		for _, test := range tests {
 			var ot OutputType
-			err := ot.UnmarshalText([]byte(tt.input))
+			err := ot.UnmarshalText([]byte(test.input))
 			assertNoError(t, err)
-			assertEqual(t, ot, tt.want)
+			assertEqual(t, ot, test.want)
 		}
 	})
 
@@ -283,17 +284,17 @@ func TestFormat_UnmarshalText(t *testing.T) {
 			{" json ", FormatJSON},
 		}
 
-		for _, tt := range tests {
-			var f Format
-			err := f.UnmarshalText([]byte(tt.input))
+		for _, test := range tests {
+			var format Format
+			err := format.UnmarshalText([]byte(test.input))
 			assertNoError(t, err)
-			assertEqual(t, f, tt.want)
+			assertEqual(t, format, test.want)
 		}
 	})
 
 	t.Run("invalid_format", func(t *testing.T) {
-		var f Format
-		err := f.UnmarshalText([]byte("invalid"))
+		var format Format
+		err := format.UnmarshalText([]byte("invalid"))
 		assertError(t, err)
 	})
 }
@@ -310,17 +311,17 @@ func TestEnvironment_UnmarshalText(t *testing.T) {
 			{" production ", Production},
 		}
 
-		for _, tt := range tests {
-			var e Environment
-			err := e.UnmarshalText([]byte(tt.input))
+		for _, test := range tests {
+			var environment Environment
+			err := environment.UnmarshalText([]byte(test.input))
 			assertNoError(t, err)
-			assertEqual(t, e, tt.want)
+			assertEqual(t, environment, test.want)
 		}
 	})
 
 	t.Run("invalid_environment", func(t *testing.T) {
-		var e Environment
-		err := e.UnmarshalText([]byte("invalid"))
+		var environment Environment
+		err := environment.UnmarshalText([]byte("invalid"))
 		assertError(t, err)
 	})
 }
@@ -338,17 +339,17 @@ func TestLevel_UnmarshalText(t *testing.T) {
 			{" info ", LevelInfo},
 		}
 
-		for _, tt := range tests {
-			var l Level
-			err := l.UnmarshalText([]byte(tt.input))
+		for _, test := range tests {
+			var level Level
+			err := level.UnmarshalText([]byte(test.input))
 			assertNoError(t, err)
-			assertEqual(t, l, tt.want)
+			assertEqual(t, level, test.want)
 		}
 	})
 
 	t.Run("invalid_level", func(t *testing.T) {
-		var l Level
-		err := l.UnmarshalText([]byte("invalid"))
+		var level Level
+		err := level.UnmarshalText([]byte("invalid"))
 		assertError(t, err)
 	})
 }

@@ -28,19 +28,19 @@ func Test_newHookChain(t *testing.T) {
 }
 
 func TestHookChain_Process(t *testing.T) {
-	var mu sync.Mutex
+	var mutex sync.Mutex
 	var order []string
 
-	hookA := &testHook{name: "a", fn: func(ctx context.Context, entry *Entry) error {
-		mu.Lock()
+	hookA := &testHook{name: "a", process: func(ctx context.Context, entry *Entry) error {
+		mutex.Lock()
 		order = append(order, "a")
-		mu.Unlock()
+		mutex.Unlock()
 		return nil
 	}}
-	hookB := &testHook{name: "b", fn: func(ctx context.Context, entry *Entry) error {
-		mu.Lock()
+	hookB := &testHook{name: "b", process: func(ctx context.Context, entry *Entry) error {
+		mutex.Lock()
 		order = append(order, "b")
-		mu.Unlock()
+		mutex.Unlock()
 		return nil
 	}}
 
@@ -55,10 +55,10 @@ func TestHookChain_Process(t *testing.T) {
 
 func TestHookChain_Process_error_stops_chain(t *testing.T) {
 	called := false
-	hookA := &testHook{name: "failing", fn: func(ctx context.Context, entry *Entry) error {
+	hookA := &testHook{name: "failing", process: func(ctx context.Context, entry *Entry) error {
 		return errors.New("hook error")
 	}}
-	hookB := &testHook{name: "after", fn: func(ctx context.Context, entry *Entry) error {
+	hookB := &testHook{name: "after", process: func(ctx context.Context, entry *Entry) error {
 		called = true
 		return nil
 	}}
@@ -77,7 +77,7 @@ func TestHookChain_Add(t *testing.T) {
 	assertEqual(t, chain.length(), 0)
 
 	called := false
-	chain.add(&testHook{name: "added", fn: func(ctx context.Context, entry *Entry) error {
+	chain.add(&testHook{name: "added", process: func(ctx context.Context, entry *Entry) error {
 		called = true
 		return nil
 	}})
@@ -113,13 +113,13 @@ func TestNoopHook(t *testing.T) {
 // test helpers
 
 type testHook struct {
-	name string
-	fn   func(context.Context, *Entry) error
+	name    string
+	process func(context.Context, *Entry) error
 }
 
 func (h *testHook) Name() string { return h.name }
 func (h *testHook) Process(ctx context.Context, entry *Entry) error {
-	return h.fn(ctx, entry)
+	return h.process(ctx, entry)
 }
 
 type metricsAwareHook struct {

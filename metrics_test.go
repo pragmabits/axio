@@ -9,15 +9,15 @@ import (
 )
 
 func TestNoopMetrics(t *testing.T) {
-	m := NoopMetrics{}
+	metrics := NoopMetrics{}
 	ctx := context.Background()
 
 	// All methods should be callable without panic
-	m.LogsTotal(ctx, LevelInfo)
-	m.PIIMasked(ctx, PatternCPF)
-	m.AuditRecords(ctx)
-	m.HookDuration(ctx, "test", time.Millisecond, false)
-	m.HookDuration(ctx, "test", time.Millisecond, true)
+	metrics.LogsTotal(ctx, LevelInfo)
+	metrics.PIIMasked(ctx, PatternCPF)
+	metrics.AuditRecords(ctx)
+	metrics.HookDuration(ctx, "test", time.Millisecond, false)
+	metrics.HookDuration(ctx, "test", time.Millisecond, true)
 }
 
 func Test_buildMetrics_noop_when_disabled(t *testing.T) {

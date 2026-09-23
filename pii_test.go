@@ -92,13 +92,13 @@ func TestPIIMasker_MaskString(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			masker, err := NewPIIMasker(PIIConfig{Patterns: tt.patterns})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			masker, err := NewPIIMasker(PIIConfig{Patterns: test.patterns})
 			assertNoError(t, err)
 
-			got := masker.MaskString(tt.input)
-			assertEqual(t, got, tt.want)
+			got := masker.MaskString(test.input)
+			assertEqual(t, got, test.want)
 		})
 	}
 }
@@ -278,11 +278,11 @@ func TestPIIMasker_MaskFields_MapRecursion_MixedValues(t *testing.T) {
 
 	annotations := Annotations{
 		Annotate("payload", map[string]any{
-			"name":      "alice",
-			"age":       30,
-			"active":    true,
-			"document":  "123.456.789-01",
-			"password":  "hunter2",
+			"name":     "alice",
+			"age":      30,
+			"active":   true,
+			"document": "123.456.789-01",
+			"password": "hunter2",
 			"profile": map[string]any{
 				"phone":    "11999998888",
 				"password": "nested-secret",
@@ -363,9 +363,9 @@ func TestDefaultPIIConfig(t *testing.T) {
 		t.Errorf("expected 3 patterns, got %d", len(config.Patterns))
 	}
 
-	hasPattern := func(p PIIPattern) bool {
+	hasPattern := func(wanted PIIPattern) bool {
 		for _, pattern := range config.Patterns {
-			if pattern == p {
+			if pattern == wanted {
 				return true
 			}
 		}
@@ -397,7 +397,7 @@ func TestMustPIIMasker(t *testing.T) {
 
 	t.Run("invalid_config_panics", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
+			if recovered := recover(); recovered == nil {
 				t.Error("expected panic with invalid regex")
 			}
 		}()
@@ -458,7 +458,7 @@ func TestMustPIIHook(t *testing.T) {
 
 	t.Run("invalid_config_panics", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
+			if recovered := recover(); recovered == nil {
 				t.Error("expected panic with invalid regex")
 			}
 		}()

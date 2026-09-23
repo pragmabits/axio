@@ -37,8 +37,8 @@ func TestAnnotations_Names_Data_Add(t *testing.T) {
 }
 
 func TestHTTP_Annotable(t *testing.T) {
-	h := HTTP{Method: "GET", URL: "/api", StatusCode: 200, LatencyMS: 5, UserAgent: "test", ClientIP: "127.0.0.1"}
-	annotations := h.Append(nil)
+	request := HTTP{Method: "GET", URL: "/api", StatusCode: 200, LatencyMS: 5, UserAgent: "test", ClientIP: "127.0.0.1"}
+	annotations := request.Append(nil)
 
 	assertEqual(t, len(annotations), 6)
 	assertEqual(t, annotations[0].Name(), "method")

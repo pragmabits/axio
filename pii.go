@@ -8,6 +8,13 @@ import (
 	"sync"
 )
 
+// DefaultPIIMaxDepth is the depth used when [PIIConfig.MaxDepth] is zero.
+//
+// At MaxDepth = 2, masking enters a top-level map[string]any annotation
+// value and one level of nested map[string]any inside it. Deeper nesting
+// is logged as-is.
+const DefaultPIIMaxDepth = 2
+
 // PIIPattern identifies a type of personally identifiable information.
 //
 // Each pattern corresponds to a regular expression that detects the specific
@@ -40,72 +47,6 @@ const (
 	// Mask: *****-****
 	PatternPhoneNoDDD PIIPattern = "phone_no_ddd"
 )
-
-// piiPatternInfo holds the regex and mask for a PII pattern.
-type piiPatternInfo struct {
-	name  PIIPattern
-	regex *regexp.Regexp
-	mask  string
-}
-
-// piiPatterns maps pattern types to their regexes and masks.
-var piiPatterns = map[PIIPattern]piiPatternInfo{
-	PatternCPF: {
-		regex: regexp.MustCompile(`\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b`),
-		mask:  "***.***.***-**",
-	},
-	PatternCNPJ: {
-		regex: regexp.MustCompile(`\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b`),
-		mask:  "**.***.***/****-**",
-	},
-	PatternCreditCard: {
-		regex: regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
-		mask:  "****-****-****-****",
-	},
-	PatternEmail: {
-		regex: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
-		mask:  "***@***.***",
-	},
-	PatternPhone: {
-		regex: regexp.MustCompile(`\(?\d{2}\)?\s?\d{4,5}[\s-]?\d{4}`),
-		mask:  "(**) *****-****",
-	},
-	PatternPhoneNoDDD: {
-		regex: regexp.MustCompile(`\b9?\d{4}[\s-]?\d{4}\b`),
-		mask:  "*****-****",
-	},
-}
-
-// DefaultSensitiveFields returns the default list of field names that are
-// automatically redacted.
-//
-// Matching is case-insensitive and uses partial matching
-// (e.g., "user_password" matches "password").
-//
-// A fresh copy is returned on every call so callers cannot mutate the package
-// default. The returned slice may be modified freely.
-func DefaultSensitiveFields() []string {
-	out := make([]string, len(defaultSensitiveFields))
-	copy(out, defaultSensitiveFields)
-	return out
-}
-
-var defaultSensitiveFields = []string{
-	"password", "senha",
-	"token", "api_key", "apikey",
-	"secret", "credential",
-	"authorization", "bearer",
-	"private_key", "privatekey",
-	"access_key", "secret_key",
-	"client_secret", "clientsecret",
-}
-
-// DefaultPIIMaxDepth is the depth used when [PIIConfig.MaxDepth] is zero.
-//
-// At MaxDepth = 2, masking enters a top-level map[string]any annotation
-// value and one level of nested map[string]any inside it. Deeper nesting
-// is logged as-is.
-const DefaultPIIMaxDepth = 2
 
 // CustomPII defines a custom PII pattern via regex.
 //
@@ -168,6 +109,33 @@ func DefaultPIIConfig() PIIConfig {
 	}
 }
 
+// DefaultSensitiveFields returns the default list of field names that are
+// automatically redacted.
+//
+// Matching is case-insensitive and uses partial matching
+// (e.g., "user_password" matches "password").
+//
+// A fresh copy is returned on every call so callers cannot mutate the package
+// default. The returned slice may be modified freely.
+//
+// Example:
+//
+//	fields := append(axio.DefaultSensitiveFields(), "cpf_titular")
+//	logger, err := axio.New(config, axio.WithPII(nil, fields))
+func DefaultSensitiveFields() []string {
+	out := make([]string, len(defaultSensitiveFields))
+	copy(out, defaultSensitiveFields)
+	return out
+}
+
+// PIIMaskResult contains the result of PII masking with match counts.
+type PIIMaskResult struct {
+	// Masked is the string with PII masked.
+	Masked string
+	// Matches maps each pattern to the number of occurrences found.
+	Matches map[PIIPattern]int
+}
+
 // PIIMasker masks personally identifiable information in strings and annotations.
 //
 // The masker detects configured patterns (CPF, CNPJ, credit card,
@@ -198,25 +166,23 @@ type PIIMasker struct {
 	maxDepth int
 }
 
-// MustPIIMasker is like [NewPIIMasker] but panics on error.
-//
-// Useful for initialization where failure must be fatal.
-//
-// Example:
-//
-//	masker := axio.MustPIIMasker(axio.DefaultPIIConfig())
-//	result := masker.MaskString("CPF: 123.456.789-01")
-func MustPIIMasker(config PIIConfig) *PIIMasker {
-	masker, err := NewPIIMasker(config)
-	if err != nil {
-		panic(err)
-	}
-	return masker
-}
-
 // NewPIIMasker creates a new masker with the specified configuration.
 //
 // Returns an error if any CustomPattern has an invalid regex.
+//
+// Example:
+//
+//	masker, err := axio.NewPIIMasker(axio.PIIConfig{
+//	    Patterns: []axio.PIIPattern{axio.PatternEmail},
+//	    CustomPatterns: []axio.CustomPII{
+//	        {Name: "matricula", Pattern: `MAT-\d{6}`, Mask: "MAT-******"},
+//	    },
+//	})
+//	if err != nil {
+//	    return err
+//	}
+//	masked := masker.MaskString("contato: ana@example.com, MAT-123456")
+//	// masked: "contato: ***@***.***, MAT-******"
 func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 	maxDepth := config.MaxDepth
 	if maxDepth == 0 {
@@ -258,6 +224,22 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 	}
 
 	return masker, nil
+}
+
+// MustPIIMasker is like [NewPIIMasker] but panics on error.
+//
+// Useful for initialization where failure must be fatal.
+//
+// Example:
+//
+//	masker := axio.MustPIIMasker(axio.DefaultPIIConfig())
+//	result := masker.MaskString("CPF: 123.456.789-01")
+func MustPIIMasker(config PIIConfig) *PIIMasker {
+	masker, err := NewPIIMasker(config)
+	if err != nil {
+		panic(err)
+	}
+	return masker
 }
 
 // MaskString replaces PII patterns in the input string with masks.
@@ -313,14 +295,6 @@ func (m *PIIMasker) MaskFields(fields Annotations) {
 			continue
 		}
 	}
-}
-
-// PIIMaskResult contains the result of PII masking with match counts.
-type PIIMaskResult struct {
-	// Masked is the string with PII masked.
-	Masked string
-	// Matches maps each pattern to the number of occurrences found.
-	Matches map[PIIPattern]int
 }
 
 // MaskStringWithCounts replaces PII patterns and returns match counts.
@@ -455,24 +429,6 @@ func (m *PIIMasker) isSensitiveField(fieldName string) bool {
 	return false
 }
 
-// containsFold reports whether value contains target, case-insensitively, without allocating.
-// It iterates by byte offset, which is correct for ASCII substrings but may miss
-// matches involving multi-byte Unicode case folding where byte lengths differ.
-func containsFold(value, target string) bool {
-	if len(target) == 0 {
-		return true
-	}
-	if len(target) > len(value) {
-		return false
-	}
-	for index := 0; index <= len(value)-len(target); index++ {
-		if strings.EqualFold(value[index:index+len(target)], target) {
-			return true
-		}
-	}
-	return false
-}
-
 // PIIHook is a hook that masks PII in log entries before they are written.
 //
 // The hook processes both the message and the structured fields,
@@ -533,17 +489,17 @@ func MustPIIHook(config PIIConfig) *PIIHook {
 }
 
 // Name returns the hook identifier.
-func (hook *PIIHook) Name() string {
+func (p *PIIHook) Name() string {
 	return "pii"
 }
 
 // SetMetrics implements [MetricsAware].
 //
 // When configured, the hook emits metrics for each detected PII pattern.
-func (hook *PIIHook) SetMetrics(metrics Metrics) {
-	hook.mutex.Lock()
-	defer hook.mutex.Unlock()
-	hook.metrics = metrics
+func (p *PIIHook) SetMetrics(metrics Metrics) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.metrics = metrics
 }
 
 // Process masks PII in the log entry.
@@ -553,14 +509,14 @@ func (hook *PIIHook) SetMetrics(metrics Metrics) {
 //
 // If metrics is configured via [SetMetrics], emits metrics for
 // each detected PII occurrence.
-func (hook *PIIHook) Process(ctx context.Context, entry *Entry) error {
-	fieldMatches := hook.masker.MaskFieldsWithCounts(entry.Annotations)
-	messageResult := hook.masker.MaskStringWithCounts(entry.Message)
+func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
+	fieldMatches := p.masker.MaskFieldsWithCounts(entry.Annotations)
+	messageResult := p.masker.MaskStringWithCounts(entry.Message)
 	entry.Message = messageResult.Masked
 
-	hook.mutex.RLock()
-	metrics := hook.metrics
-	hook.mutex.RUnlock()
+	p.mutex.RLock()
+	metrics := p.metrics
+	p.mutex.RUnlock()
 
 	if metrics == nil {
 		return nil
@@ -579,4 +535,67 @@ func (hook *PIIHook) Process(ctx context.Context, entry *Entry) error {
 	}
 
 	return nil
+}
+
+// containsFold reports whether value contains target, case-insensitively, without allocating.
+// It iterates by byte offset, which is correct for ASCII substrings but may miss
+// matches involving multi-byte Unicode case folding where byte lengths differ.
+func containsFold(value, target string) bool {
+	if len(target) == 0 {
+		return true
+	}
+	if len(target) > len(value) {
+		return false
+	}
+	for index := 0; index <= len(value)-len(target); index++ {
+		if strings.EqualFold(value[index:index+len(target)], target) {
+			return true
+		}
+	}
+	return false
+}
+
+// piiPatternInfo holds the regex and mask for a PII pattern.
+type piiPatternInfo struct {
+	name  PIIPattern
+	regex *regexp.Regexp
+	mask  string
+}
+
+// piiPatterns maps pattern types to their regexes and masks.
+var piiPatterns = map[PIIPattern]piiPatternInfo{
+	PatternCPF: {
+		regex: regexp.MustCompile(`\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b`),
+		mask:  "***.***.***-**",
+	},
+	PatternCNPJ: {
+		regex: regexp.MustCompile(`\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b`),
+		mask:  "**.***.***/****-**",
+	},
+	PatternCreditCard: {
+		regex: regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
+		mask:  "****-****-****-****",
+	},
+	PatternEmail: {
+		regex: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
+		mask:  "***@***.***",
+	},
+	PatternPhone: {
+		regex: regexp.MustCompile(`\(?\d{2}\)?\s?\d{4,5}[\s-]?\d{4}`),
+		mask:  "(**) *****-****",
+	},
+	PatternPhoneNoDDD: {
+		regex: regexp.MustCompile(`\b9?\d{4}[\s-]?\d{4}\b`),
+		mask:  "*****-****",
+	},
+}
+
+var defaultSensitiveFields = []string{
+	"password", "senha",
+	"token", "api_key", "apikey",
+	"secret", "credential",
+	"authorization", "bearer",
+	"private_key", "privatekey",
+	"access_key", "secret_key",
+	"client_secret", "clientsecret",
 }

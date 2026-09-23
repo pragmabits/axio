@@ -26,16 +26,16 @@ import (
 type Duration time.Duration
 
 // UnmarshalText implements [encoding.TextUnmarshaler].
-func (duration *Duration) UnmarshalText(text []byte) error {
+func (d *Duration) UnmarshalText(text []byte) error {
 	parsed, err := time.ParseDuration(strings.TrimSpace(string(text)))
 	if err != nil {
 		return fmt.Errorf("invalid duration %q: %w", string(text), err)
 	}
-	*duration = Duration(parsed)
+	*d = Duration(parsed)
 	return nil
 }
 
 // MarshalText implements [encoding.TextMarshaler].
-func (duration Duration) MarshalText() ([]byte, error) {
-	return []byte(time.Duration(duration).String()), nil
+func (d Duration) MarshalText() ([]byte, error) {
+	return []byte(time.Duration(d).String()), nil
 }

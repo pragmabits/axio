@@ -47,32 +47,20 @@ func Annotate[T any](key string, value T) Annotation {
 		return Annotation{field: zap.String(key, concrete)}
 	case int:
 		return Annotation{field: zap.Int(key, concrete)}
-	case int8:
-		return Annotation{field: zap.Int8(key, concrete)}
-	case int16:
-		return Annotation{field: zap.Int16(key, concrete)}
-	case int32:
-		return Annotation{field: zap.Int32(key, concrete)}
 	case int64:
 		return Annotation{field: zap.Int64(key, concrete)}
+	case int32:
+		return Annotation{field: zap.Int32(key, concrete)}
 	case uint:
 		return Annotation{field: zap.Uint(key, concrete)}
-	case uint8:
-		return Annotation{field: zap.Uint8(key, concrete)}
-	case uint16:
-		return Annotation{field: zap.Uint16(key, concrete)}
-	case uint32:
-		return Annotation{field: zap.Uint32(key, concrete)}
 	case uint64:
 		return Annotation{field: zap.Uint64(key, concrete)}
-	case float32:
-		return Annotation{field: zap.Float32(key, concrete)}
 	case float64:
 		return Annotation{field: zap.Float64(key, concrete)}
 	case bool:
 		return Annotation{field: zap.Bool(key, concrete)}
 	default:
-		return Annotation{field: zap.Any(key, value)}
+		return annotateUncommon(key, value)
 	}
 }
 
@@ -194,3 +182,24 @@ func (h HTTP) Append(target []Annotation) []Annotation {
 	)
 }
 
+// annotateUncommon covers the primitive types [Annotate] does not switch on
+// directly, falling back to interface boxing for everything else. The split
+// keeps the common types on a single type switch.
+func annotateUncommon[T any](key string, value T) Annotation {
+	switch concrete := any(value).(type) {
+	case int8:
+		return Annotation{field: zap.Int8(key, concrete)}
+	case int16:
+		return Annotation{field: zap.Int16(key, concrete)}
+	case uint8:
+		return Annotation{field: zap.Uint8(key, concrete)}
+	case uint16:
+		return Annotation{field: zap.Uint16(key, concrete)}
+	case uint32:
+		return Annotation{field: zap.Uint32(key, concrete)}
+	case float32:
+		return Annotation{field: zap.Float32(key, concrete)}
+	default:
+		return Annotation{field: zap.Any(key, value)}
+	}
+}

@@ -124,32 +124,32 @@ func newOtelMetrics(provider metric.MeterProvider, config MetricsConfig) (*otelM
 }
 
 // LogsTotal increments the log counter at the specified level.
-func (metrics *otelMetrics) LogsTotal(ctx context.Context, level Level) {
-	metrics.logsTotal.Add(ctx, 1, metric.WithAttributes(
+func (o *otelMetrics) LogsTotal(ctx context.Context, level Level) {
+	o.logsTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("level", string(level)),
 	))
 }
 
 // PIIMasked increments the counter when PII of the specified type is masked.
-func (metrics *otelMetrics) PIIMasked(ctx context.Context, pattern PIIPattern) {
-	metrics.piiMasked.Add(ctx, 1, metric.WithAttributes(
+func (o *otelMetrics) PIIMasked(ctx context.Context, pattern PIIPattern) {
+	o.piiMasked.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("pattern", string(pattern)),
 	))
 }
 
 // AuditRecords increments the counter of created audit records.
-func (metrics *otelMetrics) AuditRecords(ctx context.Context) {
-	metrics.auditRecords.Add(ctx, 1)
+func (o *otelMetrics) AuditRecords(ctx context.Context) {
+	o.auditRecords.Add(ctx, 1)
 }
 
 // HookDuration records the execution duration of a hook along with whether
 // the hook returned an error.
-func (metrics *otelMetrics) HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool) {
+func (o *otelMetrics) HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool) {
 	errorValue := "false"
 	if hasError {
 		errorValue = "true"
 	}
-	metrics.hookDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
+	o.hookDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
 		attribute.String("hook.name", hookName),
 		attribute.String("error", errorValue),
 	))

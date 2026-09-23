@@ -203,7 +203,7 @@ func TestMustLoadConfig(t *testing.T) {
 
 	t.Run("invalid_file_panics", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
+			if recovered := recover(); recovered == nil {
 				t.Error("expected panic for invalid file")
 			}
 		}()

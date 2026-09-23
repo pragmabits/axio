@@ -351,6 +351,12 @@ type piiRequest struct {
 	Body []byte `json:"body"`
 }
 
+// piiToken returns a JWT with a fixed header and signature and claims as its payload.
+func piiToken(claims string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return encode([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + encode([]byte(claims)) + "." + encode([]byte("signature"))
+}
+
 // piiOrder is a struct annotation with nothing to mask.
 type piiOrder struct {
 	ID string `json:"id"`
@@ -362,6 +368,10 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	payload := []byte(`{"cpf":"123.456.789-01"}`)
 	maskedPayload := `"` + base64.StdEncoding.EncodeToString([]byte(`{"cpf":"***.***.***-**"}`)) + `"`
 	binary := []byte{0xff, 0xfe, 0x00, 0x01}
+	token := piiToken(`{"sub":"42","cpf":"123.456.789-01","password":"x"}`)
+	maskedToken := piiToken(`{"cpf":"***.***.***-**","password":"[REDACTED]","sub":"42"}`)
+	unpadded := []byte(`{"cpf":"123.456.789-01","ok":1}`)
+	urlSafe := []byte(`{"cpf":"123.456.789-01","note":"~~~"}`)
 
 	tests := []struct {
 		name  string
@@ -438,6 +448,26 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			value: map[string]any{"body": base64.StdEncoding.EncodeToString(payload)},
 			want:  `{"body":` + maskedPayload + `}`,
 		},
+		{
+			name:  "unpadded_base64_string",
+			value: base64.RawStdEncoding.EncodeToString(unpadded),
+			want:  `"` + base64.RawStdEncoding.EncodeToString([]byte(`{"cpf":"***.***.***-**","ok":1}`)) + `"`,
+		},
+		{
+			name:  "url_base64_string",
+			value: base64.URLEncoding.EncodeToString(urlSafe),
+			want:  `"` + base64.URLEncoding.EncodeToString([]byte(`{"cpf":"***.***.***-**","note":"~~~"}`)) + `"`,
+		},
+		{
+			name:  "jwt",
+			value: token,
+			want:  `"` + maskedToken + `"`,
+		},
+		{
+			name:  "jwt_inside_text",
+			value: "Bearer " + token + " expired",
+			want:  `"Bearer ` + maskedToken + ` expired"`,
+		},
 	}
 
 	masker := MustPIIMasker(PIIConfig{
@@ -490,23 +520,36 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	})
 }
 
-func TestLooksLikeBase64(t *testing.T) {
-	t.Run("every_standard_encoding_is_accepted", func(t *testing.T) {
-		for length := 1; length <= 64; length++ {
-			data := make([]byte, length)
-			for index := range data {
-				data[index] = byte(index * 37)
+func TestBase64EncodingOf(t *testing.T) {
+	encodings := map[string]*base64.Encoding{
+		"standard":     base64.StdEncoding,
+		"raw_standard": base64.RawStdEncoding,
+		"url":          base64.URLEncoding,
+		"raw_url":      base64.RawURLEncoding,
+	}
+	for name, encoding := range encodings {
+		t.Run(name+"_decodes_back", func(t *testing.T) {
+			for length := 1; length <= 64; length++ {
+				data := make([]byte, length)
+				for index := range data {
+					data[index] = byte(index * 37)
+				}
+				encoded := encoding.EncodeToString(data)
+				recognized := base64EncodingOf(encoded)
+				if recognized == nil {
+					t.Fatalf("rejected %q, %d bytes", encoded, length)
+				}
+				decoded, err := recognized.DecodeString(encoded)
+				if err != nil || string(decoded) != string(data) {
+					t.Errorf("%q decoded to %v, %v", encoded, decoded, err)
+				}
 			}
-			encoded := base64.StdEncoding.EncodeToString(data)
-			if !looksLikeBase64(encoded) {
-				t.Errorf("rejected the standard base64 of %d bytes: %q", length, encoded)
-			}
-		}
-	})
+		})
+	}
 
 	t.Run("other_shapes_are_rejected", func(t *testing.T) {
-		for _, text := range []string{"", "abc", "ab c", "a===", "usr_12345", "123.456.789-01", "aGVs-G8="} {
-			if looksLikeBase64(text) {
+		for _, text := range []string{"", "a", "abcde", "ab c", "a===", "ab=c", "ab+-", "usr_12345", "123.456.789-01"} {
+			if base64EncodingOf(text) != nil {
 				t.Errorf("accepted %q", text)
 			}
 		}
@@ -521,11 +564,12 @@ func TestPIIMasker_MaskFieldsWithCounts_CountsInsideValues(t *testing.T) {
 		Annotate("body", []byte("222.333.444-55")),
 		Annotate("request", piiRequest{Body: []byte("333.444.555-66")}),
 		Annotate("encoded", base64.StdEncoding.EncodeToString([]byte("444.555.666-77"))),
+		Annotate("session", piiToken(`{"cpf":"555.666.777-88"}`)),
 	}
 
 	matches := masker.MaskFieldsWithCounts(annotations)
 
-	assertEqual(t, matches[PatternCPF], 6)
+	assertEqual(t, matches[PatternCPF], 7)
 }
 
 func TestPIIMasker_NegativeMaxDepth(t *testing.T) {
@@ -686,6 +730,19 @@ func TestPIIHook(t *testing.T) {
 		assertNoError(t, err)
 		assertEqual(t, entry.Message, encode("customer ***.***.***-**"))
 		assertEqual(t, entry.Error.Error(), encode("customer ***.***.***-**"))
+	})
+
+	t.Run("masks_jwt_in_message", func(t *testing.T) {
+		hook, err := NewPIIHook(PIIConfig{
+			Patterns: []PIIPattern{PatternCPF},
+		})
+		assertNoError(t, err)
+
+		entry := &Entry{Message: "login with " + piiToken(`{"cpf":"123.456.789-01"}`)}
+
+		err = hook.Process(context.Background(), entry)
+		assertNoError(t, err)
+		assertEqual(t, entry.Message, "login with "+piiToken(`{"cpf":"***.***.***-**"}`))
 	})
 
 	t.Run("hook_name", func(t *testing.T) {

@@ -287,11 +287,14 @@ func (m *PIIMasker) MaskString(input string) string {
 // become "[REDACTED]"; and a structured value — map, slice, struct or pointer —
 // walked as its JSON encoding.
 //
-// A string with the shape of standard base64 is also decoded, and masked when
-// the text it decodes to carries PII: that is how a struct's []byte field
-// arrives in its JSON encoding, and how a caller may have encoded bytes itself.
-// A string that decodes to something other than text passes as it is, since
-// nothing tells the base64 of binary data from any other string of that shape. A structured value that
+// A string with the shape of base64 — the standard or the URL alphabet, padded
+// or not — is also decoded, and masked when the text it decodes to carries PII:
+// that is how a struct's []byte field arrives in its JSON encoding, and how a
+// caller may have encoded bytes itself. A string that decodes to something
+// other than text passes as it is, since nothing tells the base64 of binary data
+// from any other string of that shape. The payload of a JWT, anywhere in a
+// text, is decoded and masked as the JSON it is, sensitive claims included; the
+// token's signature then no longer matches. A structured value that
 // needed masking is replaced by its masked JSON tree, objects as
 // map[string]any, so its keys are then written in alphabetical order; one that
 // did not keeps its original type. A container nested deeper than
@@ -491,17 +494,19 @@ func (m *PIIMasker) maskBytes(data []byte, counts map[PIIPattern]int) (any, bool
 	return []byte(masked), true
 }
 
-// maskBase64 returns the base64 of the masked text when text has the shape of
-// standard base64 and decodes to UTF-8 text carrying PII, and false otherwise:
-// decoded bytes that are not text are left alone, since nothing tells the base64
-// of binary data from any other string of that shape.
+// maskBase64 returns the masked text in the encoding it came in when text has
+// the shape of base64 — standard or URL alphabet, padded or not — and decodes
+// to UTF-8 text carrying PII, and false otherwise: decoded bytes that are not
+// text are left alone, since nothing tells the base64 of binary data from any
+// other string of that shape.
 func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, bool) {
-	if !looksLikeBase64(text) {
+	encoding := base64EncodingOf(text)
+	if encoding == nil {
 		return "", false
 	}
 	// Short strings, which most values are, decode on the stack.
 	var buffer [128]byte
-	decoded, err := base64.StdEncoding.AppendDecode(buffer[:0], []byte(text))
+	decoded, err := encoding.AppendDecode(buffer[:0], []byte(text))
 	if err != nil || !utf8.Valid(decoded) {
 		return "", false
 	}
@@ -510,7 +515,33 @@ func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, 
 	if masked == plain {
 		return "", false
 	}
-	return base64.StdEncoding.EncodeToString([]byte(masked)), true
+	return encoding.EncodeToString([]byte(masked)), true
+}
+
+// maskToken returns a JWT with the PII in its payload masked. The payload is
+// JSON, walked like any structured value, so a sensitive claim is redacted and
+// every string in it masked; the signature no longer matches, which a copy in a
+// log does not need. A token whose payload is not JSON comes back unchanged.
+func (m *PIIMasker) maskToken(token string, counts map[PIIPattern]int) string {
+	parts := strings.SplitN(token, ".", 3)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return token
+	}
+	claims, ok := decodeJSON(payload)
+	if !ok {
+		return token
+	}
+	masked, changed := m.maskValue(claims, 1, counts)
+	if !changed {
+		return token
+	}
+	encoded, err := json.Marshal(masked)
+	if err != nil {
+		return redacted
+	}
+	parts[1] = base64.RawURLEncoding.EncodeToString(encoded)
+	return strings.Join(parts, ".")
 }
 
 // maskError returns err with the PII in its message masked, or nil when there
@@ -538,9 +569,14 @@ func (m *PIIMasker) verboseCarriesPII(err error) bool {
 	return m.MaskString(verbose) != verbose
 }
 
-// maskText masks the PII patterns in text, adding the matches to counts when
-// counts is not nil.
+// maskText masks the payload of every JWT in text and then the PII patterns,
+// adding the matches to counts when counts is not nil.
 func (m *PIIMasker) maskText(text string, counts map[PIIPattern]int) string {
+	if strings.Contains(text, ".ey") {
+		text = tokenPattern.ReplaceAllStringFunc(text, func(token string) string {
+			return m.maskToken(token, counts)
+		})
+	}
 	if counts == nil {
 		return m.MaskString(text)
 	}
@@ -710,21 +746,64 @@ func encodedValue(field zapcore.Field) (any, bool) {
 	return value, ok
 }
 
-// looksLikeBase64 reports whether text has the shape of standard base64: a
-// length that is a multiple of four, the alphabet, and at most two padding
-// characters at the end. It spares a decode attempt to most strings.
-func looksLikeBase64(text string) bool {
+// base64EncodingOf returns the base64 encoding text has the shape of — the
+// standard or the URL alphabet, padded or not — or nil when it has none. It
+// spares a decode attempt to most strings. Text of letters and digits alone
+// fits both alphabets, and both decode it the same way.
+func base64EncodingOf(text string) *base64.Encoding {
 	body := strings.TrimRight(text, "=")
-	if len(text) == 0 || len(text)%4 != 0 || len(text)-len(body) > 2 {
-		return false
+	padded := len(body) < len(text)
+	if !base64Length(len(text), len(body), padded) {
+		return nil
 	}
-	return strings.IndexFunc(body, outsideBase64) < 0
+	url, ok := base64Alphabet(body)
+	switch {
+	case !ok:
+		return nil
+	case url && padded:
+		return base64.URLEncoding
+	case url:
+		return base64.RawURLEncoding
+	case padded:
+		return base64.StdEncoding
+	default:
+		return base64.RawStdEncoding
+	}
 }
 
-// outsideBase64 reports whether char is outside the standard base64 alphabet.
-func outsideBase64(char rune) bool {
-	inside := char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '+' || char == '/'
-	return !inside
+// base64Length reports whether a text of length, bodyLength of it before any
+// padding, can be base64: padded to a multiple of four with at most two '=',
+// or unpadded with a length some input encodes to.
+func base64Length(length, bodyLength int, padded bool) bool {
+	if bodyLength == 0 {
+		return false
+	}
+	if padded {
+		return length%4 == 0 && length-bodyLength <= 2
+	}
+	return bodyLength%4 != 1
+}
+
+// base64Alphabet reports, in one pass, whether body is written in a base64
+// alphabet and whether that alphabet is the URL one. Body may not mix the two.
+func base64Alphabet(body string) (url, ok bool) {
+	standard := false
+	for index := 0; index < len(body); index++ {
+		switch char := body[index]; {
+		case char == '+' || char == '/':
+			standard = true
+		case char == '-' || char == '_':
+			url = true
+		case !isAlphanumeric(char):
+			return false, false
+		}
+	}
+	return url, !standard || !url
+}
+
+// isAlphanumeric reports whether char is an ASCII letter or digit.
+func isAlphanumeric(char byte) bool {
+	return char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9'
 }
 
 // jsonTree returns value as the JSON tree it encodes to — map[string]any,
@@ -734,7 +813,13 @@ func jsonTree(value any) (any, bool) {
 	if err != nil {
 		return nil, false
 	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	return decodeJSON(encoded)
+}
+
+// decodeJSON returns the JSON tree data holds, numbers kept as json.Number so
+// none loses precision on the way back out.
+func decodeJSON(data []byte) (any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var tree any
 	if err := decoder.Decode(&tree); err != nil {
@@ -777,6 +862,10 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 		mask:  "*****-****",
 	},
 }
+
+// tokenPattern matches a JWT: a header and a payload, both base64url JSON
+// objects and so both starting with "ey", and a signature, empty when unsigned.
+var tokenPattern = regexp.MustCompile(`ey[A-Za-z0-9_-]+\.ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`)
 
 var defaultSensitiveFields = []string{
 	"password", "senha",

@@ -86,6 +86,8 @@ Axio funciona como uma camada de abstração com interface estável (`Logger`). 
 
 ## Instalação
 
+Requer Go 1.27 ou mais recente.
+
 ```bash
 go get github.com/pragmabits/axio
 ```
@@ -365,6 +367,8 @@ logger.With(
 
 Uma anotação com o nome de uma chave que o próprio axio escreve — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (com `errorVerbose` e `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — sai com um sublinhado na frente, como `_message`, para que uma linha nunca repita uma chave.
 
+Um struct, um slice ou um mapa sai como a sua codificação JSON, em `encoding/json/v2`: slices e mapas nil como `null`, chaves de mapa em ordem, um `time.Duration` em nanossegundos e um array de bytes em base64. `omitempty` omite um campo cujo valor codifica como vazio — `""`, `null`, `[]`, `{}` — e `omitzero` omite `false`, `0` e todo outro valor zero. Uma opção de tag que a codificação não aceita, como `,string` num slice, faz o valor falhar: a linha leva `<chave>Error` no lugar dele.
+
 #### HTTP
 
 Struct para metadados de requisições HTTP:
@@ -543,10 +547,10 @@ O mascaramento de PII cobre todo valor que uma linha carrega:
 - **O erro** passado a `Warn`, `Error` ou `Event.SetError`, pela mensagem dele. Um erro mascarado continua desembrulhando no original, então `errors.Is` segue funcionando nos hooks seguintes.
 - **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro vira `[REDACTED]`, qualquer que seja o tipo.
 - **Strings, erros e valores `fmt.Stringer`**, pelo texto.
-- **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`.
-- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct, e o campo `[]byte` de um struct, que a codificação JSON carrega em base64 — também é decodificada, e mascarada quando o texto decodificado tem PII. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma.
+- **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`, sejam uma anotação própria, sejam campo ou elemento de um valor estruturado.
+- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct — também é decodificada, e mascarada quando o texto decodificado tem PII. É assim que chegam um `[]byte` de texto, um array de bytes ou um tipo nomeado de slice de bytes dentro de um valor estruturado, que a codificação JSON carrega em base64. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma, e por isso um array de bytes ou um tipo nomeado de slice de bytes com dados binários dentro de um struct também passa.
 - **JWTs.** O payload de um JWT em qualquer ponto de um texto — mensagem, query de URL, anotação — é decodificado e mascarado como o JSON que é: uma claim com nome sensível vira `[REDACTED]` e toda string nele passa pelos padrões. A assinatura do token registrado deixa de conferir.
-- **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
+- **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON que o log escreve para eles: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
 - **Valores `Annotable`** como o `HTTP`, expandidos nos seus campos antes de qualquer hook rodar.
 
 Um valor estruturado que precisou de máscara é escrito como a árvore JSON mascarada, com as chaves dos objetos em ordem alfabética; um que não tinha nada a mascarar mantém a forma original. Um contêiner aninhado além do limite de profundidade (padrão `32`) vira `[REDACTED]` inteiro, nunca sai sem máscara. O limite se ajusta com `axio.WithPIIMaxDepth(n)`, com `piiMaxDepth` no arquivo de config, ou com `PIIConfig.MaxDepth` ao montar um `PIIMasker` ou `PIIHook` à mão.

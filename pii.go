@@ -484,7 +484,7 @@ func (m *PIIMasker) maskString(text string, counts map[PIIPattern]int) (string, 
 	return masked, masked != text
 }
 
-// maskBytes masks bytes that zap and encoding/json write as base64: text is
+// maskBytes masks bytes that the log writes as base64: text is
 // masked as a string would be and stays bytes; bytes that are not UTF-8 text
 // cannot be inspected and become redacted.
 func (m *PIIMasker) maskBytes(data []byte, counts map[PIIPattern]int) (any, bool) {

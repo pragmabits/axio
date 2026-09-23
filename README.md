@@ -88,6 +88,8 @@ Axio functions as an abstraction layer with a stable interface (`Logger`). Busin
 
 ## Installation
 
+Requires Go 1.27 or newer.
+
 ```bash
 go get github.com/pragmabits/axio
 ```
@@ -400,6 +402,8 @@ logger.With(
 
 An annotation named like a key axio writes itself — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (with `errorVerbose` and `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — is written behind an underscore, as `_message`, so a line never carries the same key twice.
 
+A struct, a slice or a map is written as its JSON encoding, in `encoding/json/v2`: nil slices and maps as `null`, map keys in sorted order, a `time.Duration` as its nanoseconds and a byte array as base64. `omitempty` omits a field whose value encodes as empty — `""`, `null`, `[]`, `{}` — and `omitzero` omits `false`, `0` and every other zero value. A tag option the encoding does not accept, such as `,string` on a slice, makes the value fail: the line carries `<key>Error` in its place.
+
 #### HTTP
 
 Struct for HTTP request metadata:
@@ -578,10 +582,10 @@ PII masking covers every value a line carries:
 - **The error** passed to `Warn`, `Error` or `Event.SetError`, by its message. A masked error still unwraps to the original, so `errors.Is` keeps working in later hooks.
 - **Annotation names matching `PIIConfig.Fields`** — the whole value becomes `[REDACTED]`, whatever its type.
 - **Strings, errors and `fmt.Stringer` values**, by their text.
-- **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`.
-- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct, and a struct's `[]byte` field, which its JSON encoding carries as base64 — is also decoded, and masked when the text it decodes to carries PII. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape.
+- **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`, whether an annotation of their own or a field or element of a structured value.
+- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct — is also decoded, and masked when the text it decodes to carries PII. That is how a `[]byte` of text, a byte array or a named byte-slice type inside a structured value arrives, its JSON encoding carrying it as base64. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape, so a byte array or a named byte-slice type holding binary data inside a struct passes too.
 - **JWTs.** The payload of a JWT anywhere in a text — a message, a URL query, an annotation — is decoded and masked as the JSON it is: a claim whose name is sensitive becomes `[REDACTED]` and every string in it is pattern-scanned. The logged token's signature then no longer matches.
-- **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as their JSON encoding: at every level, keys are checked against `Fields` and strings against the patterns.
+- **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as the JSON encoding the log writes for them: at every level, keys are checked against `Fields` and strings against the patterns.
 - **`Annotable` values** such as `HTTP`, expanded into their fields before any hook runs.
 
 A structured value that needed masking is written as its masked JSON tree, object keys in alphabetical order; one with nothing to mask keeps its original form. A container nested deeper than the depth limit (default `32`) is replaced by `[REDACTED]` whole, never written unmasked. Set the limit with `axio.WithPIIMaxDepth(n)`, `piiMaxDepth` in the config file, or `PIIConfig.MaxDepth` when building a `PIIMasker` or `PIIHook` yourself.

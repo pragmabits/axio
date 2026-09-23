@@ -135,7 +135,7 @@ event.SetError(err, axio.Annotate("error_code", "declined"))
 - Built-in patterns: CPF, CNPJ, CreditCard, Email, Phone, PhoneNoDDD
 - Custom patterns via `CustomPII{Name, Pattern, Mask}`
 - Sensitive field redaction (password, token, api_key, etc.)
-- Covers the message, the error, strings, errors, Stringers, `[]byte` (non-text bytes become `[REDACTED]`), base64 strings and JWT payloads (decoded and checked) and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`
+- Covers the message, the error, strings, errors, Stringers, `[]byte` (non-text bytes become `[REDACTED]`, inside structs too), base64 strings and JWT payloads (decoded and checked) and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`
 - `WithPII(patterns, fields)` option or `WithHooks(MustPIIHook(config))`
 
 ### Audit Hash Chain

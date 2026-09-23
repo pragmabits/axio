@@ -217,6 +217,13 @@ func (a Annotations) Data() []any
 func (a *Annotations) Add(key string, value any) Annotations
 ```
 
+A struct, slice or map is written as its `encoding/json/v2` encoding: nil
+slices and maps as `null`, map keys sorted, a `time.Duration` in nanoseconds, a
+byte array as base64. `omitempty` omits a value that encodes as empty (`""`,
+`null`, `[]`, `{}`); `omitzero` omits `false`, `0` and every other zero value. A
+tag option the encoding rejects, such as `,string` on a slice, makes the value
+fail, and the line carries `<key>Error` instead.
+
 ### Annotable Interface
 
 ```go
@@ -307,14 +314,15 @@ type PIIMaskResult struct {
 Masking covers every value a line carries: the message; the entry's error,
 by its message (a masked error still unwraps to the original); strings,
 errors and `fmt.Stringer` annotations, by their text; `[]byte`, by the text it
-holds, bytes that are not UTF-8 text becoming `[REDACTED]`; and structured values —
-maps, slices, structs, pointers, `http.Header` — walked as their JSON
-encoding, keys checked against `Fields` and strings against the patterns at
-every level. Any string with the shape of base64 — standard or URL alphabet,
-padded or not: the message, the error, an annotation, a nested value, a
-struct's `[]byte` field as its JSON encoding carries it — is also decoded and
-masked when the text it decodes to carries PII; one that decodes to binary
-passes. The payload of a JWT anywhere in a text is decoded and masked as the
+holds, bytes that are not UTF-8 text becoming `[REDACTED]`, inside a structured
+value too; and structured values — maps, slices, structs, pointers,
+`http.Header` — walked as the JSON encoding the log writes for them, keys
+checked against `Fields` and strings against the patterns at every level. Any
+string with the shape of base64 — standard or URL alphabet, padded or not: the
+message, the error, an annotation, a nested value, and a `[]byte` of text, a
+byte array or a named byte-slice type inside a structured value, as its JSON
+encoding carries them — is also decoded and masked when the text it decodes to
+carries PII; one that decodes to binary passes. The payload of a JWT anywhere in a text is decoded and masked as the
 JSON it is, sensitive claims included. A structured value that needed masking is written as its masked
 JSON tree, object keys in alphabetical order; one with nothing to mask keeps
 its original form. A container nested deeper than `MaxDepth` becomes

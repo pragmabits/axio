@@ -10,9 +10,9 @@
 type Environment string
 
 const (
-    Production  Environment = "production"
-    Staging     Environment = "staging"
-    Development Environment = "development"
+    EnvironmentProduction  Environment = "production"
+    EnvironmentStaging     Environment = "staging"
+    EnvironmentDevelopment Environment = "development"
 )
 
 func (e Environment) Validate() error
@@ -90,6 +90,7 @@ type Config struct {
     PIIPatterns      []PIIPattern
     PIICustomPatterns []CustomPII
     PIIFields        []string
+    PIIMaxDepth      int         // 0 means DefaultPIIMaxDepth (32)
     Audit            AuditConfig
     TracerType       string      // "otel" or "noop"
     Metrics          MetricsConfig
@@ -127,6 +128,7 @@ func WithOutputs(outputs ...Output) Option
 func WithAgentMode() Option
 func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
+func WithPIIMaxDepth(depth int) Option
 func WithAudit(storePath string) Option
 func WithAuditChain(chain *HashChain) Option
 func WithMetrics(provider metric.MeterProvider) Option
@@ -224,6 +226,13 @@ type Annotable interface {
 }
 ```
 
+A logger expands `Annotable` values into their fields before any hook runs,
+so PII masking and custom hooks see each field on its own.
+
+An annotation named like a key axio writes itself (`message`, `level`,
+`error`, `hash`, `service`, …) is written behind an underscore, `_message`,
+so a line never carries the same key twice.
+
 ### HTTP Annotation
 
 ```go
@@ -274,6 +283,7 @@ type PIIConfig struct {
     Patterns       []PIIPattern
     CustomPatterns []CustomPII
     Fields         []string
+    MaxDepth       int  // 0 means DefaultPIIMaxDepth (32)
 }
 
 func DefaultPIIConfig() PIIConfig
@@ -294,6 +304,20 @@ type PIIMaskResult struct {
     Matches map[PIIPattern]int
 }
 ```
+
+Masking covers every value a line carries: the message; the entry's error,
+by its message (a masked error still unwraps to the original); strings,
+errors and `fmt.Stringer` annotations, by their text; `[]byte`, by the text it
+holds, bytes that are not UTF-8 text becoming `[REDACTED]`; and structured values —
+maps, slices, structs, pointers, `http.Header` — walked as their JSON
+encoding, keys checked against `Fields` and strings against the patterns at
+every level. Any string with the shape of standard base64 — the message, the
+error, an annotation, a nested value, a struct's `[]byte` field as its JSON
+encoding carries it — is also decoded and masked when the text it decodes to
+carries PII; one that decodes to binary passes. A structured value that needed masking is written as its masked
+JSON tree, object keys in alphabetical order; one with nothing to mask keeps
+its original form. A container nested deeper than `MaxDepth` becomes
+`[REDACTED]` whole.
 
 ### PIIHook
 
@@ -384,6 +408,11 @@ func (s *FileStore) Save(sequence uint64, lastHash string) error
 func (s *FileStore) Load() (uint64, string, error)
 ```
 
+The first `Save` takes an exclusive `flock` on `path + ".lock"` and holds it
+while the process runs; a second process saving to the same store gets
+`ErrChainStoreLocked`, and `WithAudit` on a store in use fails in `New`.
+`Load` takes no lock. Windows, Solaris and AIX have no lock.
+
 ### HashChain
 
 ```go
@@ -413,7 +442,9 @@ verifying rotated files one at a time. From the terminal: `axio verify
 --store chain.json [file...]`.
 
 `WithAudit(path)` shares one chain per path across every Logger and Event in
-the process. `WithAuditChain(chain)` takes a chain over any `ChainStore`.
+the process. `WithAuditChain(chain)` takes a chain over any `ChainStore`. An
+audited Logger needs a JSON output (`ErrAuditWithoutJSON`); an Event writes
+JSON to every output.
 
 ## Tracing (tracing.go)
 
@@ -458,6 +489,9 @@ func (e *Event) Emit(ctx context.Context)
 func (e *Event) Close() error
 ```
 
+A hook may rename the event through `Entry.Message`. An `Emit` after `Close`
+writes nothing; a second `Close` returns `ErrEventClosed`.
+
 ## Duration (duration.go)
 
 ```go
@@ -482,6 +516,8 @@ var (
     ErrInvalidTracer       = errors.New("invalid tracer")
     ErrAuditWithoutPath    = errors.New("audit enabled requires storePath")
     ErrFileOutputNoPath    = errors.New("output type 'file' requires 'path'")
+    ErrAuditWithoutJSON    = errors.New("audit requires a JSON output")
+    ErrInvalidPIIMaxDepth  = errors.New("PII max depth cannot be negative")
 )
 
 var (
@@ -495,7 +531,8 @@ var (
 )
 
 var (
-    ErrOpenFile = errors.New("failed to open file")
+    ErrOpenFile     = errors.New("failed to open file")
+    ErrOutputClosed = errors.New("output already closed")
 )
 
 var (
@@ -507,10 +544,18 @@ var (
     ErrChainBroken         = errors.New("chain integrity compromised")
     ErrChainIncomplete     = errors.New("log does not reach the chain's last hash")
     ErrNilAuditChain       = errors.New("audit chain cannot be nil")
+    ErrChainStoreLocked    = errors.New("chain store is in use by another process")
 )
 
 var (
     ErrNilMetricsProvider = errors.New("metrics provider cannot be nil")
     ErrCreateMetric       = errors.New("failed to create metric instrument")
+    ErrNilTracer          = errors.New("tracer cannot be nil")
+)
+
+var (
+    ErrLoggerClosed  = errors.New("logger already closed")
+    ErrLoggerNotRoot = errors.New("close called on forked logger")
+    ErrEventClosed   = errors.New("event already closed")
 )
 ```

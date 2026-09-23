@@ -121,7 +121,7 @@ func main() {
     logger, err = axio.New(axio.Config{
         ServiceName:    "sales-api",
         ServiceVersion: "1.0.0",
-        Environment:    axio.Production,
+        Environment:    axio.EnvironmentProduction,
         Level:          axio.LevelInfo,
     })
     if err != nil {
@@ -174,6 +174,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `PIIEnabled`        | `bool`           | No          | `false`                    | `true`, `false`                        | -                                         |
 | `PIIPatterns`       | `[]PIIPattern`   | No          | `[cpf, cnpj, credit_card]` | see PII table                          | -                                         |
 | `PIIFields`         | `[]string`       | No          | `DefaultSensitiveFields()` | any                                    | -                                         |
+| `PIIMaxDepth`       | `int`            | No          | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` if negative       |
 | `PIICustomPatterns` | `[]CustomPII`    | No          | `[]`                       | see CustomPII                          | Regex must be valid                       |
 | `TracerType`        | `string`         | No          | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` if invalid             |
 | `Audit`             | `AuditConfig`    | No          | disabled                   | see AuditConfig                        | -                                         |
@@ -263,6 +264,7 @@ piiFields:
   - password
   - token
   - secret
+piiMaxDepth: 8
 
 piiCustomPatterns:
   - name: employee_id
@@ -325,6 +327,8 @@ logger, _ := axio.New(config,
 // Agent mode (stdout + JSON, optimized for Promtail, Fluent Bit, etc.)
 logger, _ := axio.New(config, axio.WithAgentMode())
 ```
+
+Options override the config file: the first `WithOutputs` replaces the file's `outputs`, which are then neither opened nor validated, and later calls add to it.
 
 #### Log Rotation
 
@@ -395,6 +399,8 @@ logger.With(
 ).Info(ctx, "order created")
 ```
 
+An annotation named like a key axio writes itself — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (with `errorVerbose` and `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — is written behind an underscore, as `_message`, so a line never carries the same key twice.
+
 #### HTTP
 
 Struct for HTTP request metadata:
@@ -440,6 +446,8 @@ func (o Order) Append(target []axio.Annotation) []axio.Annotation {
 // Usage — fields are expanded individually in the log output
 logger.With(axio.Annotate("order", order)).Info(ctx, "order processed")
 ```
+
+The fields are expanded before any hook runs, so PII masking and custom hooks see each one.
 
 #### Named (sub-loggers)
 
@@ -563,34 +571,29 @@ config := axio.PIIConfig{
 }
 ```
 
-#### Coverage and Struct Annotations
+#### Coverage
 
-PII masking applies to:
+PII masking covers every value a line carries:
 
-- **String annotation values** — scanned for configured patterns (CPF, CNPJ, etc.) and replaced where matched.
-- **Annotation names matching `PIIConfig.Fields`** — the full value is replaced with `[REDACTED]` regardless of type.
-- **`map[string]any` annotation values** — recursively masked up to `PIIConfig.MaxDepth` levels (default `2`). At each level, keys are checked against `Fields` and string values are pattern-scanned. Values at or beyond the depth cap are passed through unchanged. Set `MaxDepth: 1` to mask only top-level map keys.
+- **The message.**
+- **The error** passed to `Warn`, `Error` or `Event.SetError`, by its message. A masked error still unwraps to the original, so `errors.Is` keeps working in later hooks.
+- **Annotation names matching `PIIConfig.Fields`** — the whole value becomes `[REDACTED]`, whatever its type.
+- **Strings, errors and `fmt.Stringer` values**, by their text.
+- **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`.
+- **Base64 text.** Any string with the shape of standard base64 — the message, the error, an annotation, a value inside a map or struct, and a struct's `[]byte` field, which its JSON encoding carries as base64 — is also decoded, and masked when the text it decodes to carries PII. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape.
+- **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as their JSON encoding: at every level, keys are checked against `Fields` and strings against the patterns.
+- **`Annotable` values** such as `HTTP`, expanded into their fields before any hook runs.
 
-**Struct-typed annotation values are NOT recursively scanned.** If you log a struct whose fields contain sensitive data, axio cannot see those fields from the annotation hook. To make a struct's fields visible to masking, implement [`Annotable`](#annotable-custom-types) on the type — `Annotable` values are flattened to top-level annotations before the PII hook runs, so each resulting field is subject to the same name/value checks.
+A structured value that needed masking is written as its masked JSON tree, object keys in alphabetical order; one with nothing to mask keeps its original form. A container nested deeper than the depth limit (default `32`) is replaced by `[REDACTED]` whole, never written unmasked. Set the limit with `axio.WithPIIMaxDepth(n)`, `piiMaxDepth` in the config file, or `PIIConfig.MaxDepth` when building a `PIIMasker` or `PIIHook` yourself.
 
 ```go
 type User struct {
-    Email    string
-    Password string
+    Email    string `json:"email"`
+    Password string `json:"password"`
 }
 
-// Without Annotable: the whole struct ships to the wire intact.
-//   logger.With(axio.Annotate("user", User{Email: "a@b.com", Password: "x"})).Info(ctx, "...")
-//   -> {"user": {"Email": "a@b.com", "Password": "x"}}
-
-// With Annotable: each field becomes a top-level annotation, masked individually.
-func (u User) Append(target []axio.Annotation) []axio.Annotation {
-    return append(target,
-        axio.Annotate("user_email", u.Email),
-        axio.Annotate("user_password", u.Password),
-    )
-}
-//   -> {"user_email": "***@***.***", "user_password": "[REDACTED]"}
+logger.With(axio.Annotate("user", User{Email: "a@b.com", Password: "x"})).Info(ctx, "...")
+//   -> "user": {"email": "***@***.***", "password": "[REDACTED]"}   (with PatternEmail)
 ```
 
 ---
@@ -636,6 +639,10 @@ logger, _ := axio.New(config,
 ```
 
 Every Logger and Event audited with the same path in a process extends **one** chain, whichever was created first.
+
+An audited Logger needs a JSON output: only JSON lines carry the hashes a log is verified against, so `New` returns `ErrAuditWithoutJSON` when every output is text. An Event writes JSON to every output and has no such requirement.
+
+The first write takes an exclusive lock on a file beside the store (`chain.json.lock`) and holds it while the process runs: a second process using the same path fails in `New` with `ErrChainStoreLocked` instead of forking the chain. Reading the store, as verifying does, takes no lock. The lock uses `flock`, so Windows, Solaris and AIX have none.
 
 #### Verifying a log
 
@@ -827,8 +834,8 @@ event.Emit(ctx)
 | `Add(key, value)` | Adds a key-value field (thread-safe) |
 | `With(...Annotation)` | Adds annotations, including `Annotable` types like `HTTP` |
 | `SetError(err, ...Annotation)` | Records an error with optional detail annotations |
-| `Emit(ctx)` | Writes the event as a single log entry (computes `duration_ms`, runs hooks) |
-| `Close()` | Releases output resources (call after `Emit`) |
+| `Emit(ctx)` | Writes the event as a single log entry (computes `duration_ms`, runs hooks; a hook may rename the event) |
+| `Close()` | Releases output resources (call after `Emit`); an `Emit` after `Close` writes nothing, and a second `Close` returns `ErrEventClosed` |
 
 #### Context Propagation (Middleware Pattern)
 
@@ -895,6 +902,8 @@ event, _ := axio.NewEvent("http_request", config,
 ```bash
 go install github.com/pragmabits/axio/cmd/axio@latest
 ```
+
+The command is a module of its own, `github.com/pragmabits/axio/cmd/axio`, so importing the library does not bring its Cobra dependency along.
 
 ### axio render
 
@@ -1195,6 +1204,8 @@ logger.With(
 | `ErrIncompatibleOutputs` | AgentMode with non-stdout/json output| In AgentMode, use only stdout + json         |
 | `ErrFileOutputNoPath`    | File output type without path        | Specify `path` in OutputConfig               |
 | `ErrAuditWithoutPath`    | Audit enabled without storePath      | Specify `storePath` in AuditConfig           |
+| `ErrAuditWithoutJSON`    | Audited Logger with only text outputs| Add a JSON output; only JSON lines verify    |
+| `ErrInvalidPIIMaxDepth`  | Negative PII masking depth           | Use `0` for the default, or a positive depth |
 | `ErrInvalidTracer`       | Invalid TracerType value             | Use `otel` or `noop`                         |
 | `ErrLoadConfig`          | Failed to read config file           | Check path and permissions                   |
 | `ErrUnknownFormat`       | Unknown file extension               | Use `.yaml`, `.yml`, `.json`, or `.toml`     |
@@ -1207,6 +1218,7 @@ logger.With(
 | `ErrBuildAudit`          | Failed to build audit chain          | Check the store path and its permissions     |
 | `ErrBuildEngine`         | Failed to build logging engine       | Check output and config combination          |
 | `ErrOpenFile`            | Failed to open log file              | Check path and permissions                   |
+| `ErrOutputClosed`        | File output closed a second time     | Close each output once                       |
 | `ErrLoadChainState`      | Failed to load chain state           | Check chain file                             |
 | `ErrSaveChainState`      | Failed to save chain state           | Check write permissions                      |
 | `ErrMarshalChainState`   | Failed to marshal chain state        | Internal serialization error                 |
@@ -1215,8 +1227,10 @@ logger.With(
 | `ErrChainBroken`         | Chain integrity compromised          | A line was removed, moved or inserted        |
 | `ErrChainIncomplete`     | Log ends before the chain            | End removed, or the whole chain rewritten    |
 | `ErrNilAuditChain`       | Chain passed to WithAuditChain is nil| Pass a chain from `NewHashChain`             |
+| `ErrChainStoreLocked`    | Another process holds the chain store| One process per store; give each its own path |
 | `ErrNilMetricsProvider`  | Metrics provider is nil              | Pass a valid MeterProvider                   |
 | `ErrCreateMetric`        | Failed to create OTel instrument     | Check provider configuration                 |
 | `ErrNilTracer`           | Tracer passed to WithTracer is nil   | Pass a non-nil Tracer or omit the option     |
 | `ErrLoggerClosed`        | Logger has already been closed       | Idempotent guard; check with `errors.Is`     |
 | `ErrLoggerNotRoot`       | Close called on a forked Logger      | Only the root from `New` can be closed       |
+| `ErrEventClosed`         | Event has already been closed        | Idempotent guard; check with `errors.Is`     |

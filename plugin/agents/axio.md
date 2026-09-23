@@ -42,7 +42,7 @@ Key source files and what they contain:
 | annotation.go | Annotation, Annotate, Annotable, HTTP, Annotations |
 | event.go | Event (wide events), NewEvent, WithEvent, EventFromContext |
 | internal/logline | Line format shared by the logger and axio render: keys, audit trailer, encoder configs, Renderer |
-| cmd/axio, internal/cli | The axio command (Cobra): axio render, axio verify |
+| cmd/axio (its own module), cmd/axio/internal/cli | The axio command (Cobra): axio render, axio verify |
 | duration.go | Duration type for config unmarshaling |
 | errors.go | All sentinel errors |
 
@@ -58,7 +58,7 @@ If source files are unavailable, check for bundled docs at `${CLAUDE_PLUGIN_ROOT
 config := axio.Config{
     ServiceName:    "my-service",
     ServiceVersion: "1.0.0",
-    Environment:    axio.Production,
+    Environment:    axio.EnvironmentProduction,
     Level:          axio.LevelInfo,
 }
 logger, err := axio.New(config)
@@ -92,9 +92,9 @@ type Logger interface {
 Note: Warn and Error take an `error` as second parameter. Debug and Info do not.
 
 ### Environments
-- `axio.Development` — colored text console, no stack traces
-- `axio.Staging` — JSON, stack traces on errors
-- `axio.Production` — JSON, stack traces on errors, service metadata
+- `axio.EnvironmentDevelopment` — colored text console, no stack traces
+- `axio.EnvironmentStaging` — JSON, stack traces on errors
+- `axio.EnvironmentProduction` — JSON, stack traces on errors, service metadata
 
 ### Levels
 - `axio.LevelDebug`, `axio.LevelInfo`, `axio.LevelWarn`, `axio.LevelError`
@@ -135,6 +135,7 @@ event.SetError(err, axio.Annotate("error_code", "declined"))
 - Built-in patterns: CPF, CNPJ, CreditCard, Email, Phone, PhoneNoDDD
 - Custom patterns via `CustomPII{Name, Pattern, Mask}`
 - Sensitive field redaction (password, token, api_key, etc.)
+- Covers the message, the error, strings, errors, Stringers, `[]byte` (non-text bytes become `[REDACTED]`), base64 strings (decoded and checked) and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`
 - `WithPII(patterns, fields)` option or `WithHooks(MustPIIHook(config))`
 
 ### Audit Hash Chain
@@ -142,6 +143,7 @@ event.SetError(err, axio.Annotate("error_code", "declined"))
 - `WithAudit(storePath)` (one chain per path in the process) or `WithAuditChain(chain)` for any `ChainStore`
 - The hash covers the JSON bytes written; `HashChain.Verify(file, "")` checks a log, `VerifyLines` one rotated file at a time, and `axio verify --store chain.json [file...]` does it from the terminal
 - `FileStore` for file persistence, or implement `ChainStore` interface
+- An audited Logger needs a JSON output; a second process on the same `FileStore` fails in `New` with `ErrChainStoreLocked`
 
 ### Custom Hooks
 ```go

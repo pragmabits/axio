@@ -25,12 +25,18 @@ before writing or reviewing code:
 
 ## Commands
 
+The `axio` command is a module of its own (`cmd/axio`), so Cobra stays out of
+the library's `go.mod`. A local `go.work`, which `.gitignore` keeps out of git,
+joins the two; create it once per clone. `./...` from the root does not reach
+`cmd/axio`, hence the second pattern.
+
 ```bash
-go build ./...                        # Build
-go vet ./...                          # Static analysis
-golangci-lint run ./...               # Lint (config in .golangci.yml)
-go test ./... -count=1                # Run tests (no cache)
-go test -race ./...                   # Race detector (needs cgo and a C compiler)
+go work init . ./cmd/axio             # Once per clone: join the library and the command
+go build ./... ./cmd/axio/...         # Build
+go vet ./... ./cmd/axio/...           # Static analysis
+golangci-lint run ./... && (cd cmd/axio && golangci-lint run ./...)  # Lint both modules (config in .golangci.yml)
+go test ./... ./cmd/axio/... -count=1 # Run tests (no cache)
+go test -race ./... ./cmd/axio/...    # Race detector (needs cgo and a C compiler)
 go test -bench=. -benchmem -run='^$'  # Benchmarks
 go run ./cmd/axio render app.log      # JSON log → the Console's text
 go run ./cmd/axio verify --store chain.json app.log  # Check an audited log
@@ -47,6 +53,14 @@ go run ./examples/events/             # Wide Events (Emit, error attachment)
 go run ./examples/combined/           # Multiple options together
 ```
 
+`cmd/axio/go.mod` requires a published version of the library, and the
+workspace hides it. After pushing a library commit the command needs, point the
+command at it, or `go install .../cmd/axio@latest` builds against the old one:
+
+```bash
+cd cmd/axio && GOWORK=off go get github.com/pragmabits/axio@<commit> && GOWORK=off go mod tidy
+```
+
 ## Architecture
 
 - `axio.go` — Logger interface, core types (Environment, Level, Format)
@@ -57,12 +71,12 @@ go run ./examples/combined/           # Multiple options together
 - `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig
 - `options.go` — Functional options (WithOutputs, WithPII, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
-- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone)
-- `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore`, and the audited core that hashes each JSON line as it is written
+- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as JSON
+- `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written
+- `storelock_flock.go`, `storelock_other.go` — the `FileStore` lock: flock where it exists, nothing elsewhere
 - `tracing.go` — OpenTelemetry trace extraction
 - `metrics.go` — OTel metrics
 - `duration.go` — duration parsing for config
 - `errors.go` — Sentinel errors
-- `internal/logline/` — the shape of a log line, shared by the logger and the `axio` command: keys, audit trailer, short hash, encoder configs, and the `Renderer` that turns JSON back into the Console's text
-- `internal/cli/` — the `axio` command tree (Cobra): root, `render`, `verify`, flag types
-- `cmd/axio/` — `main` for the `axio` command
+- `internal/logline/` — the shape of a log line, shared by the logger and the `axio` command: keys, the reserved-key rename (`FieldKey`), audit trailer, short hash, encoder configs, and the `Renderer` that turns JSON back into the Console's text
+- `cmd/axio/` — the `axio` command, a module of its own: `main`, and `internal/cli/` with the command tree (Cobra): root, `render`, `verify`, flag types

@@ -21,5 +21,11 @@ RotationConfig: MaxSize (MB), MaxAge (days), MaxBackups, Compress, LocalTime, In
 ## Agent Mode
 `WithAgentMode()` forces stdout+JSON for log collection agents.
 
+## Options Override the Config
+The first `WithOutputs` replaces the outputs loaded from a config file, which are then neither opened nor validated; later calls add to it.
+
+## Closing
+Closing a file output a second time returns `ErrOutputClosed`.
+
 ## Usage
 Use `/axio` command for detailed output configuration guidance.

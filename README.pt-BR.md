@@ -119,7 +119,7 @@ func main() {
     logger, err = axio.New(axio.Config{
         ServiceName:    "api-vendas",
         ServiceVersion: "1.0.0",
-        Environment:    axio.Production,
+        Environment:    axio.EnvironmentProduction,
         Level:          axio.LevelInfo,
     })
     if err != nil {
@@ -172,6 +172,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `PIIEnabled`        | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
 | `PIIPatterns`       | `[]PIIPattern`   | Não         | `[cpf, cnpj, credit_card]` | ver tabela PII                         | -                                        |
 | `PIIFields`         | `[]string`       | Não         | `DefaultSensitiveFields()` | qualquer                               | -                                        |
+| `PIIMaxDepth`       | `int`            | Não         | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` se negativo      |
 | `PIICustomPatterns` | `[]CustomPII`    | Não         | `[]`                       | ver CustomPII                          | Regex deve ser válida                    |
 | `TracerType`        | `string`         | Não         | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` se inválido           |
 | `Audit`             | `AuditConfig`    | Não         | desabilitado               | ver AuditConfig                        | -                                        |
@@ -261,6 +262,7 @@ piiFields:
   - password
   - token
   - secret
+piiMaxDepth: 8
 
 piiCustomPatterns:
   - name: matricula
@@ -324,6 +326,8 @@ logger, _ := axio.New(config,
 logger, _ := axio.New(config, axio.WithAgentMode())
 ```
 
+As options vencem o arquivo de config: o primeiro `WithOutputs` substitui os `outputs` do arquivo, que então não são abertos nem validados, e as chamadas seguintes acrescentam.
+
 ---
 
 ### Níveis de Log
@@ -359,6 +363,8 @@ logger.With(
     axio.Annotate("amount_cents", 15000),
 ).Info(ctx, "pedido criado")
 ```
+
+Uma anotação com o nome de uma chave que o próprio axio escreve — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (com `errorVerbose` e `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — sai com um sublinhado na frente, como `_message`, para que uma linha nunca repita uma chave.
 
 #### HTTP
 
@@ -405,6 +411,8 @@ func (o Order) Append(target []axio.Annotation) []axio.Annotation {
 // Uso — os campos são expandidos individualmente na saída do log
 logger.With(axio.Annotate("order", order)).Info(ctx, "pedido processado")
 ```
+
+Os campos são expandidos antes de qualquer hook rodar, então o mascaramento de PII e os hooks customizados veem cada um.
 
 #### Named (sub-loggers)
 
@@ -528,34 +536,29 @@ config := axio.PIIConfig{
 }
 ```
 
-#### Cobertura e Anotações com Struct
+#### Cobertura
 
-O mascaramento PII se aplica a:
+O mascaramento de PII cobre todo valor que uma linha carrega:
 
-- **Valores de anotação do tipo string** — verificados contra os padrões configurados (CPF, CNPJ, etc.) e substituídos quando há correspondência.
-- **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro é substituído por `[REDACTED]` independentemente do tipo.
-- **Valores `map[string]any`** — mascarados recursivamente até `PIIConfig.MaxDepth` níveis (padrão `2`). Em cada nível, as chaves são verificadas contra `Fields` e valores string são analisados pelos padrões. Valores no limite ou além são preservados sem alteração. Use `MaxDepth: 1` para mascarar apenas chaves do mapa de nível superior.
+- **A mensagem.**
+- **O erro** passado a `Warn`, `Error` ou `Event.SetError`, pela mensagem dele. Um erro mascarado continua desembrulhando no original, então `errors.Is` segue funcionando nos hooks seguintes.
+- **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro vira `[REDACTED]`, qualquer que seja o tipo.
+- **Strings, erros e valores `fmt.Stringer`**, pelo texto.
+- **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`.
+- **Texto em base64.** Toda string com forma de base64 padrão — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct, e o campo `[]byte` de um struct, que a codificação JSON carrega em base64 — também é decodificada, e mascarada quando o texto decodificado tem PII. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma.
+- **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
+- **Valores `Annotable`** como o `HTTP`, expandidos nos seus campos antes de qualquer hook rodar.
 
-**Valores de anotação do tipo struct NÃO são verificados recursivamente.** Se você loga um struct cujos campos contêm dados sensíveis, axio não consegue enxergá-los a partir do hook de PII. Para tornar os campos de um struct visíveis ao mascaramento, implemente [`Annotable`](#annotable-tipos-customizados) no tipo — valores `Annotable` são achatados em anotações de nível superior antes do hook PII rodar, e cada campo resultante passa pelas mesmas verificações de nome/valor.
+Um valor estruturado que precisou de máscara é escrito como a árvore JSON mascarada, com as chaves dos objetos em ordem alfabética; um que não tinha nada a mascarar mantém a forma original. Um contêiner aninhado além do limite de profundidade (padrão `32`) vira `[REDACTED]` inteiro, nunca sai sem máscara. O limite se ajusta com `axio.WithPIIMaxDepth(n)`, com `piiMaxDepth` no arquivo de config, ou com `PIIConfig.MaxDepth` ao montar um `PIIMasker` ou `PIIHook` à mão.
 
 ```go
 type Usuario struct {
-    Email string
-    Senha string
+    Email string `json:"email"`
+    Senha string `json:"senha"`
 }
 
-// Sem Annotable: o struct inteiro vai para a saída intacto.
-//   logger.With(axio.Annotate("usuario", Usuario{Email: "a@b.com", Senha: "x"})).Info(ctx, "...")
-//   -> {"usuario": {"Email": "a@b.com", "Senha": "x"}}
-
-// Com Annotable: cada campo vira uma anotação de nível superior, mascarado individualmente.
-func (u Usuario) Append(target []axio.Annotation) []axio.Annotation {
-    return append(target,
-        axio.Annotate("usuario_email", u.Email),
-        axio.Annotate("usuario_senha", u.Senha),
-    )
-}
-//   -> {"usuario_email": "***@***.***", "usuario_senha": "[REDACTED]"}
+logger.With(axio.Annotate("usuario", Usuario{Email: "a@b.com", Senha: "x"})).Info(ctx, "...")
+//   -> "usuario": {"email": "***@***.***", "senha": "[REDACTED]"}   (com PatternEmail)
 ```
 
 ---
@@ -601,6 +604,10 @@ logger, _ := axio.New(config,
 ```
 
 Todo Logger e Event auditado com o mesmo caminho num processo estende **uma** cadeia, qualquer que tenha sido criado primeiro.
+
+Um Logger auditado precisa de uma saída JSON: só as linhas JSON carregam os hashes contra os quais o log é verificado, então `New` devolve `ErrAuditWithoutJSON` quando todas as saídas são de texto. Um Event escreve JSON em toda saída e não tem essa exigência.
+
+A primeira escrita toma um lock exclusivo num arquivo ao lado do store (`chain.json.lock`) e o segura enquanto o processo roda: um segundo processo com o mesmo caminho falha no `New` com `ErrChainStoreLocked`, em vez de bifurcar a cadeia. Ler o store, como a verificação faz, não toma lock. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
 
 #### Verificando um log
 
@@ -792,8 +799,8 @@ event.Emit(ctx)
 | `Add(key, value)` | Adiciona um campo chave-valor (thread-safe) |
 | `With(...Annotation)` | Adiciona anotações, incluindo tipos `Annotable` como `HTTP` |
 | `SetError(err, ...Annotation)` | Registra um erro com anotações de detalhe opcionais |
-| `Emit(ctx)` | Escreve o evento como uma única entrada (calcula `duration_ms`, executa hooks) |
-| `Close()` | Libera recursos de saída (chame depois de `Emit`) |
+| `Emit(ctx)` | Escreve o evento como uma única entrada (calcula `duration_ms`, executa hooks; um hook pode renomear o evento) |
+| `Close()` | Libera recursos de saída (chame depois de `Emit`); um `Emit` depois do `Close` não escreve nada, e um segundo `Close` devolve `ErrEventClosed` |
 
 #### Propagação via Context (padrão middleware)
 
@@ -860,6 +867,8 @@ event, _ := axio.NewEvent("http_request", config,
 ```bash
 go install github.com/pragmabits/axio/cmd/axio@latest
 ```
+
+O comando é um módulo próprio, `github.com/pragmabits/axio/cmd/axio`, então importar a biblioteca não traz junto a dependência do Cobra.
 
 ### axio render
 
@@ -1160,6 +1169,8 @@ logger.With(
 | `ErrIncompatibleOutputs` | AgentMode com output não-stdout/json | Em AgentMode, use apenas stdout + json       |
 | `ErrFileOutputNoPath`    | Output tipo file sem path            | Especifique `path` no OutputConfig           |
 | `ErrAuditWithoutPath`    | Audit habilitado sem storePath       | Especifique `storePath` no AuditConfig       |
+| `ErrAuditWithoutJSON`    | Logger auditado só com saídas texto  | Adicione uma saída JSON; só JSON é verificável |
+| `ErrInvalidPIIMaxDepth`  | Profundidade de PII negativa         | Use `0` para o padrão, ou uma profundidade positiva |
 | `ErrInvalidTracer`       | Valor de TracerType inválido         | Use `otel` ou `noop`                         |
 | `ErrLoadConfig`          | Falha ao ler arquivo de config       | Verifique caminho e permissões               |
 | `ErrUnknownFormat`       | Extensão de arquivo desconhecida     | Use `.yaml`, `.yml`, `.json` ou `.toml`      |
@@ -1172,6 +1183,7 @@ logger.With(
 | `ErrBuildAudit`          | Falha ao construir a cadeia de audit | Verifique o caminho do store e as permissões |
 | `ErrBuildEngine`         | Falha ao construir engine de logging | Verifique combinação de outputs e config     |
 | `ErrOpenFile`            | Falha ao abrir arquivo de log        | Verifique caminho e permissões               |
+| `ErrOutputClosed`        | Output de arquivo fechado duas vezes | Feche cada output uma vez                    |
 | `ErrLoadChainState`      | Falha ao carregar estado da chain    | Verifique arquivo de chain                   |
 | `ErrSaveChainState`      | Falha ao salvar estado da chain      | Verifique permissões de escrita              |
 | `ErrMarshalChainState`   | Falha ao serializar estado da chain  | Erro interno de serialização                 |
@@ -1180,8 +1192,10 @@ logger.With(
 | `ErrChainBroken`         | Integridade da cadeia comprometida   | Uma linha foi removida, movida ou inserida   |
 | `ErrChainIncomplete`     | O log termina antes da cadeia        | Fim apagado ou cadeia inteira reescrita      |
 | `ErrNilAuditChain`       | Cadeia passada a WithAuditChain é nil| Passe uma cadeia de `NewHashChain`           |
+| `ErrChainStoreLocked`    | Outro processo segura o store        | Um processo por store; dê a cada um seu caminho |
 | `ErrNilMetricsProvider`  | Provider de métricas é nil           | Passe um MeterProvider válido                |
 | `ErrCreateMetric`        | Falha ao criar instrumento OTel      | Verifique configuração do provider           |
 | `ErrNilTracer`           | Tracer passado a WithTracer é nil    | Passe um Tracer não-nulo ou omita a opção    |
 | `ErrLoggerClosed`        | Logger já foi fechado                | Guarda idempotente; cheque com `errors.Is`   |
 | `ErrLoggerNotRoot`       | Close chamado em um Logger derivado  | Apenas o root retornado por `New` pode fechar|
+| `ErrEventClosed`         | Event já foi fechado                 | Guarda idempotente; cheque com `errors.Is`   |

@@ -46,6 +46,27 @@ underscores: `sequence_increments`, `no_staging_leftover_on_success`,
 `error_present_when_set`. `go test -run` takes it without quoting, and the
 failure line reads as the claim that broke.
 
+## A top-level test names its subject
+
+A top-level test is `Test` followed by the identifier it tests, its first letter
+raised when unexported (`TestBuildOutputs` for `buildOutputs`), and optionally
+by what it checks, in CamelCase parts joined by underscores: `TestLogger_Close`,
+`TestLogger_ServiceMetadataOnlyInJSON`, `TestHookChain_Process_ErrorStopsChain`.
+Snake_case belongs to subtests, where the behaviour is a sentence. A test in an
+external `_test` package names the exported identifier it goes through:
+`TestNewRootCommand_Render`.
+
+A subject that is not an identifier — `Audit`, `PII`, `ReviewFollowup` — names a
+theme or an occasion, and nobody finds the test by the name of what it tests.
+
+## An enum's values carry the type's word
+
+`LevelInfo`, `FormatJSON`, `OutputStdout`, `PatternCPF`, `EnvironmentProduction`:
+every value of an enumeration starts with the word that names its type — the
+type's name less its redundant words, `Output` for `OutputType` and `Pattern`
+for `PIIPattern`. The value reads as what it is wherever it appears, and
+completion lists the set together.
+
 ## The name must be true, and must name a thing
 
 Two failures the abbreviation rule does not catch.
@@ -55,9 +76,9 @@ as a switch for sampling, and axio does not sample: the field is ignored. The
 name passes every linter and still tells the reader something false.
 
 **A name has to name a subject, not the occasion it arrived in.**
-`review_followup_test.go` is named after the review that produced it, and holds
-tests for `With`, `Named`, `Close`, PII and `WithOutputs`. Nobody looking for
-the `Close` tests would open it. A file, a type or a test is named after what it
+A file named `review_followup_test.go`, after the review that produced it, and
+holding tests for `With`, `Named`, `Close`, PII and `WithOutputs`, is opened by
+nobody looking for the `Close` tests. A file, a type or a test is named after what it
 is about; when no candidate names a subject, look for the unnamed concept before
 the next word.
 
@@ -76,7 +97,7 @@ it has no claim on names the author merely reaches.
 goes into `.golangci.yml`, scoped to the path where the library is reached and
 matched on the exact spelling, so a name written by hand is still caught there.
 The one in the config today is `cobra.Command`'s `Args` field, silenced only
-for `Args:` as a key in `internal/cli`.
+for `Args:` as a key in `cmd/axio/internal/cli`.
 
 ## Where this is enforced
 

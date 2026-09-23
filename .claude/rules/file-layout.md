@@ -43,7 +43,7 @@ A constructor that returns an error may have a `Must` twin that panics instead,
 for initialisation where failure is fatal. The twin is a convenience over the
 original, never a different behaviour: it calls the original and panics on its
 error. It sits directly under the original — `MustFile` under `File`,
-`MustRotatingFile` under `RotatingFile`, `MustAuditHook` under `NewAuditHook` —
+`MustRotatingFile` under `RotatingFile`, `MustPIIMasker` under `NewPIIMasker` —
 so a reader who finds one finds both.
 
 ## The subject comes first, except when it cannot

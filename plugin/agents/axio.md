@@ -1,6 +1,6 @@
 ---
 name: axio
-description: "Use this agent when the user needs guidance on axio — the Go structured logging library. This covers creating loggers, configuring outputs (Console, Stdout, File, RotatingFile), PII masking (CPF, CNPJ, email, phone, credit card), hash chain auditing, OpenTelemetry tracing and metrics, wide events, structured annotations, config loading (YAML/JSON/TOML), functional options, custom hooks, custom Output implementations, and any logging task in Go.\n\nTrigger whenever the user mentions axio, structured logging in Go, PII masking, audit hash chain, log rotation, axio.New, axio.Config, LoadConfig, WithOutputs, WithPII, WithAudit, WithTracer, WithMetrics, WithAgentMode, WithHooks, Annotate, Annotable, HTTP annotation, wide events, NewEvent, EventFromContext, Logger interface, Named logger, FormatJSON, FormatText, Development/Staging/Production environment, PIIHook, PIIMasker, MaskString, DefaultPIIConfig, CustomPII, RotationConfig, FileStore, HashChain, ChainStore, HookChain, Hook interface, MetricsAware, Metrics interface, Tracer interface, Otel(), NoopTracing, CallerSkip, or any axio API question.\n\nExamples:\n\n<example>\nContext: User wants to set up axio in a new project\nuser: \"How do I set up axio with JSON output and PII masking?\"\nassistant: \"Let me use the axio agent to guide you through setup.\"\n<commentary>\nUser is asking about basic axio configuration with multiple features.\n</commentary>\n</example>\n\n<example>\nContext: User needs to configure log rotation\nuser: \"I need rotating log files with size and time-based rotation\"\nassistant: \"Let me use the axio agent to configure RotatingFile output.\"\n<commentary>\nUser is asking about axio's file rotation capabilities.\n</commentary>\n</example>\n\n<example>\nContext: User wants to add custom PII patterns\nuser: \"How do I add a custom PII pattern for our internal ID format?\"\nassistant: \"Let me use the axio agent to show you CustomPII configuration.\"\n<commentary>\nUser is asking about extending axio's PII masking with custom patterns.\n</commentary>\n</example>\n\n<example>\nContext: User wants to implement a custom hook\nuser: \"I need a hook that adds tenant_id to every log entry\"\nassistant: \"Let me use the axio agent to help implement a custom Hook.\"\n<commentary>\nUser is asking about implementing the Hook interface.\n</commentary>\n</example>\n\n<example>\nContext: User wants to use wide events\nuser: \"How do wide events work in axio? I want one log line per HTTP request\"\nassistant: \"Let me use the axio agent to explain and set up wide events.\"\n<commentary>\nUser is asking about axio's Event/wide event pattern.\n</commentary>\n</example>"
+description: "Use this agent when the user needs guidance on axio — the Go structured logging library. This covers creating loggers, configuring outputs (Console, Stdout, File, RotatingFile), PII masking (CPF, CNPJ, email, phone, credit card), hash chain auditing, OpenTelemetry tracing and metrics, wide events, structured annotations, config loading (YAML/JSON/TOML), functional options, custom hooks, custom Output implementations, and any logging task in Go.\n\nTrigger whenever the user mentions axio, structured logging in Go, PII masking, audit hash chain, log rotation, axio.New, axio.Config, LoadConfig, WithOutputs, WithPII, WithAudit, WithTracer, WithMetrics, WithAgentMode, WithHooks, Field, Annotable, HTTP annotation, wide events, NewEvent, EventFromContext, Logger interface, Named logger, FormatJSON, FormatText, Development/Staging/Production environment, PIIHook, PIIMasker, MaskString, DefaultPIIConfig, CustomPII, RotationConfig, FileStore, HashChain, ChainStore, HookChain, Hook interface, MetricsAware, Metrics interface, Tracer interface, Otel(), NoopTracing, CallerSkip, or any axio API question.\n\nExamples:\n\n<example>\nContext: User wants to set up axio in a new project\nuser: \"How do I set up axio with JSON output and PII masking?\"\nassistant: \"Let me use the axio agent to guide you through setup.\"\n<commentary>\nUser is asking about basic axio configuration with multiple features.\n</commentary>\n</example>\n\n<example>\nContext: User needs to configure log rotation\nuser: \"I need rotating log files with size and time-based rotation\"\nassistant: \"Let me use the axio agent to configure RotatingFile output.\"\n<commentary>\nUser is asking about axio's file rotation capabilities.\n</commentary>\n</example>\n\n<example>\nContext: User wants to add custom PII patterns\nuser: \"How do I add a custom PII pattern for our internal ID format?\"\nassistant: \"Let me use the axio agent to show you CustomPII configuration.\"\n<commentary>\nUser is asking about extending axio's PII masking with custom patterns.\n</commentary>\n</example>\n\n<example>\nContext: User wants to implement a custom hook\nuser: \"I need a hook that adds tenant_id to every log entry\"\nassistant: \"Let me use the axio agent to help implement a custom Hook.\"\n<commentary>\nUser is asking about implementing the Hook interface.\n</commentary>\n</example>\n\n<example>\nContext: User wants to use wide events\nuser: \"How do wide events work in axio? I want one log line per HTTP request\"\nassistant: \"Let me use the axio agent to explain and set up wide events.\"\n<commentary>\nUser is asking about axio's Event/wide event pattern.\n</commentary>\n</example>"
 model: sonnet
 color: green
 memory: user
@@ -39,7 +39,7 @@ Key source files and what they contain:
 | hook.go | Hook interface, MetricsAware, Entry, NoopHook |
 | tracing.go | Tracer interface, Otel(), NoopTracing |
 | metrics.go | Metrics interface, NoopMetrics, WithMetrics, OTel metrics |
-| annotation.go | Annotation, Annotate, Annotable, HTTP, Annotations |
+| annotation.go | Annotation, Field, Annotable, HTTP, Annotations |
 | event.go | Event (wide events), NewEvent, WithEvent, EventFromContext |
 | internal/logline | Line format shared by the logger and axio render: keys, audit trailer, encoder configs, Renderer |
 | cmd/axio (its own module), cmd/axio/internal/cli | The axio command (Cobra): axio render, axio verify |
@@ -80,10 +80,10 @@ logger, err := axio.New(config)
 ```go
 type Logger interface {
     Named(string) Logger
-    Debug(context.Context, string, ...any)
-    Info(context.Context, string, ...any)
-    Warn(context.Context, error, string, ...any)
-    Error(context.Context, error, string, ...any)
+    Debug(context.Context, string, ...Annotation)
+    Info(context.Context, string, ...Annotation)
+    Warn(context.Context, error, string, ...Annotation)
+    Error(context.Context, error, string, ...Annotation)
     With(...Annotation) Logger
     Close() error
 }
@@ -113,11 +113,11 @@ Note: Warn and Error take an `error` as second parameter. Debug and Info do not.
 
 ### Annotations
 ```go
-logger.With(
-    axio.Annotate("user_id", userID),
-    axio.Annotate("tenant", tenantName),
-    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders", StatusCode: 201, LatencyMS: 45}),
-).Info(ctx, "order created")
+logger.Info(ctx, "order created",
+    axio.Field("user_id", userID),
+    axio.Field("tenant", tenantName),
+    axio.Field("http", axio.HTTP{Method: "POST", URL: "/api/orders", StatusCode: 201, LatencyMS: 45}),
+)
 ```
 
 ### Wide Events
@@ -128,14 +128,14 @@ defer event.Close()
 defer event.Emit(ctx)
 
 event.Add("user_id", userID)
-event.SetError(err, axio.Annotate("error_code", "declined"))
+event.SetError(err, axio.Field("error_code", "declined"))
 ```
 
 ### PII Masking
 - Built-in patterns: CPF, CNPJ, CreditCard, Email, Phone, PhoneNoDDD
 - Custom patterns via `CustomPII{Name, Pattern, Mask}`
 - Sensitive field redaction (password, token, api_key, etc.)
-- Covers the message, the error, strings, errors, Stringers, `[]byte` (non-text bytes become `[REDACTED]`, inside structs too), base64 strings and JWT payloads (decoded and checked) and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`
+- Covers the message, the error, strings, errors, Stringers, `[]byte` (non-text bytes become `[REDACTED]`, inside structs too), base64 strings (decoded and checked), JWTs and JWEs (redacted whole), the errors of values that fail to encode and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`
 - `WithPII(patterns, fields)` option or `WithHooks(MustPIIHook(config))`
 
 ### Audit Hash Chain

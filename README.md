@@ -141,16 +141,16 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 
     // ... business logic ...
 
-    logger.With(
-        axio.Annotate("http", axio.HTTP{
+    logger.Info(ctx, "order created",
+        axio.Field("http", axio.HTTP{
             Method:     r.Method,
             URL:        r.URL.Path,
             StatusCode: 201,
             LatencyMS:  time.Since(start).Milliseconds(),
             ClientIP:   r.RemoteAddr,
         }),
-        axio.Annotate("user_id", "usr_123"),
-    ).Info(ctx, "order created")
+        axio.Field("user_id", "usr_123"),
+    )
 
     w.WriteHeader(http.StatusCreated)
 }
@@ -162,24 +162,25 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 
 ### Main Config
 
-| Field               | Type             | Required    | Default                    | Values                                 | Validation                                |
-| ------------------- | ---------------- | ----------- | -------------------------- | -------------------------------------- | ----------------------------------------- |
-| `ServiceName`       | `string`         | No          | `""`                       | any                                    | -                                         |
-| `ServiceVersion`    | `string`         | No          | `""`                       | any                                    | -                                         |
-| `Environment`       | `Environment`    | No          | `development`              | `production`, `staging`, `development` | `ErrInvalidEnvironment` if invalid        |
-| `InstanceID`        | `string`         | No          | `""`                       | any                                    | -                                         |
-| `Level`             | `Level`          | No          | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` if invalid              |
-| `CallerSkip`        | `int`            | No          | `0`                        | `>= 0`                                 | -                                         |
-| `AgentMode`         | `bool`           | No          | `false`                    | `true`, `false`                        | If `true`, outputs must be stdout+json    |
-| `Outputs`           | `[]OutputConfig` | No          | auto                       | see OutputConfig                       | Validated individually                    |
-| `PIIEnabled`        | `bool`           | No          | `false`                    | `true`, `false`                        | -                                         |
-| `PIIPatterns`       | `[]PIIPattern`   | No          | `[cpf, cnpj, credit_card]` | see PII table                          | -                                         |
-| `PIIFields`         | `[]string`       | No          | `DefaultSensitiveFields()` | any                                    | -                                         |
-| `PIIMaxDepth`       | `int`            | No          | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` if negative       |
-| `PIICustomPatterns` | `[]CustomPII`    | No          | `[]`                       | see CustomPII                          | Regex must be valid                       |
-| `TracerType`        | `string`         | No          | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` if invalid             |
-| `Audit`             | `AuditConfig`    | No          | disabled                   | see AuditConfig                        | -                                         |
-| `Metrics`           | `MetricsConfig`  | No          | disabled                   | see MetricsConfig                      | -                                         |
+| Field                 | Type             | Required | Default                    | Values                                 | Validation                             |
+| --------------------- | ---------------- | -------- | -------------------------- | -------------------------------------- | -------------------------------------- |
+| `ServiceName`         | `string`         | No       | `""`                       | any                                    | -                                      |
+| `ServiceVersion`      | `string`         | No       | `""`                       | any                                    | -                                      |
+| `Environment`         | `Environment`    | No       | `development`              | `production`, `staging`, `development` | `ErrInvalidEnvironment` if invalid     |
+| `InstanceID`          | `string`         | No       | `""`                       | any                                    | -                                      |
+| `Level`               | `Level`          | No       | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` if invalid           |
+| `CallerSkip`          | `int`            | No       | `0`                        | `>= 0`                                 | -                                      |
+| `AgentMode`           | `bool`           | No       | `false`                    | `true`, `false`                        | If `true`, outputs must be stdout+json |
+| `Outputs`             | `[]OutputConfig` | No       | auto                       | see OutputConfig                       | Validated individually                 |
+| `PIIEnabled`          | `bool`           | No       | `false`                    | `true`, `false`                        | -                                      |
+| `PIIPatterns`         | `[]PIIPattern`   | No       | `[cpf, cnpj, credit_card]` | see PII table                          | -                                      |
+| `PIIFields`           | `[]string`       | No       | `DefaultSensitiveFields()` | any                                    | -                                      |
+| `PIIMaxDepth`         | `int`            | No       | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` if negative    |
+| `PIIOmitErrorVerbose` | `bool`           | No       | `false`                    | `true`, `false`                        | -                                      |
+| `PIICustomPatterns`   | `[]CustomPII`    | No       | `[]`                       | see CustomPII                          | Regex must be valid                    |
+| `TracerType`          | `string`         | No       | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` if invalid          |
+| `Audit`               | `AuditConfig`    | No       | disabled                   | see AuditConfig                        | -                                      |
+| `Metrics`             | `MetricsConfig`  | No       | disabled                   | see MetricsConfig                      | -                                      |
 
 ### OutputConfig
 
@@ -266,6 +267,7 @@ piiFields:
   - token
   - secret
 piiMaxDepth: 8
+piiOmitErrorVerbose: false
 
 piiCustomPatterns:
   - name: employee_id
@@ -379,44 +381,57 @@ defer logger.Close()
 
 ```go
 logger.Debug(ctx, "debug details")
-logger.Info(ctx, "processed %d items", count)
+logger.Info(ctx, "items processed", axio.Field("count", count))
 logger.Warn(ctx, err, "timeout querying supplier")
 logger.Error(ctx, err, "failed to persist order")
 ```
+
+The message is written as given, never formatted. Data goes in annotations passed after it, which the entry carries after those of the logger (`With`) and which no other call sees.
 
 ---
 
 ### Structured Annotations
 
-#### Annotate
+#### Field
 
 Adds key-value fields to the log:
 
 ```go
-logger.With(
-    axio.Annotate("user_id", "usr_123"),
-    axio.Annotate("order_id", "ord_456"),
-    axio.Annotate("amount_cents", 15000),
-).Info(ctx, "order created")
+logger.Info(ctx, "order created",
+    axio.Field("user_id", "usr_123"),
+    axio.Field("order_id", "ord_456"),
+    axio.Field("amount_cents", 15000),
+)
 ```
 
 An annotation named like a key axio writes itself — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (with `errorVerbose` and `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — is written behind an underscore, as `_message`, so a line never carries the same key twice.
 
 A struct, a slice or a map is written as its JSON encoding, in `encoding/json/v2`: nil slices and maps as `null`, map keys in sorted order, a `time.Duration` as its nanoseconds and a byte array as base64. `omitempty` omits a field whose value encodes as empty — `""`, `null`, `[]`, `{}` — and `omitzero` omits `false`, `0` and every other zero value. A tag option the encoding does not accept, such as `,string` on a slice, makes the value fail: the line carries `<key>Error` in its place.
 
+#### With
+
+Returns a logger that attaches its annotations to every entry it writes, before those each call passes. Use it for fields that hold across several lines, such as a request's ID; the fields of one line go in the call itself:
+
+```go
+requestLogger := logger.With(axio.Field("request_id", requestID))
+
+requestLogger.Info(ctx, "order created", axio.Field("user_id", userID))
+requestLogger.Error(ctx, err, "payment failed")
+```
+
 #### HTTP
 
 Struct for HTTP request metadata:
 
 ```go
-logger.With(axio.Annotate("http", axio.HTTP{
+logger.Info(ctx, "request processed", axio.Field("http", axio.HTTP{
     Method:     "POST",
     URL:        "/api/v1/orders",
     StatusCode: 201,
     LatencyMS:  45,
     UserAgent:  r.UserAgent(),
     ClientIP:   r.RemoteAddr,
-})).Info(ctx, "request processed")
+}))
 ```
 
 | Field        | Type     | Description                    |
@@ -441,13 +456,13 @@ type Order struct {
 
 func (o Order) Append(target []axio.Annotation) []axio.Annotation {
     return append(target,
-        axio.Annotate("order_id", o.ID),
-        axio.Annotate("item_count", len(o.Items)),
+        axio.Field("order_id", o.ID),
+        axio.Field("item_count", len(o.Items)),
     )
 }
 
 // Usage — fields are expanded individually in the log output
-logger.With(axio.Annotate("order", order)).Info(ctx, "order processed")
+logger.Info(ctx, "order processed", axio.Field("order", order))
 ```
 
 The fields are expanded before any hook runs, so PII masking and custom hooks see each one.
@@ -496,7 +511,7 @@ func (h TenantHook) Name() string { return "tenant" }
 
 func (h TenantHook) Process(ctx context.Context, entry *axio.Entry) error {
     entry.Annotations = append(entry.Annotations,
-        axio.Annotate("tenant_id", h.tenantID))
+        axio.Field("tenant_id", h.tenantID))
     return nil
 }
 
@@ -579,16 +594,19 @@ config := axio.PIIConfig{
 PII masking covers every value a line carries:
 
 - **The message.**
-- **The error** passed to `Warn`, `Error` or `Event.SetError`, by its message. A masked error still unwraps to the original, so `errors.Is` keeps working in later hooks.
+- **The error** passed to `Warn`, `Error` or `Event.SetError`, by its message and, for an error that formats itself, its verbose form (`errorVerbose`). A masked error still unwraps to the original, so `errors.Is` keeps working in later hooks.
 - **Annotation names matching `PIIConfig.Fields`** — the whole value becomes `[REDACTED]`, whatever its type.
 - **Strings, errors and `fmt.Stringer` values**, by their text.
 - **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`, whether an annotation of their own or a field or element of a structured value.
-- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct — is also decoded, and masked when the text it decodes to carries PII. That is how a `[]byte` of text, a byte array or a named byte-slice type inside a structured value arrives, its JSON encoding carrying it as base64. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape, so a byte array or a named byte-slice type holding binary data inside a struct passes too.
-- **JWTs.** The payload of a JWT anywhere in a text — a message, a URL query, an annotation — is decoded and masked as the JSON it is: a claim whose name is sensitive becomes `[REDACTED]` and every string in it is pattern-scanned. The logged token's signature then no longer matches.
+- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct — is also decoded, and masked when the text it decodes to carries PII. That is how a `[]byte` of text, a byte array or a named byte-slice type inside a structured value arrives, its JSON encoding carrying it as base64. A string that decodes to binary data becomes `[REDACTED]` when a pattern matches inside it, and passes as it is otherwise: nothing tells the base64 of other binary data from any other string of that shape.
+- **JWTs and JWEs.** A token anywhere in a text — a message, a URL query, an annotation — becomes `[REDACTED]` whole: it is a credential, and its claims may carry what no pattern knows. A string is taken for a token when it has a token's shape and its header decodes to a JSON object naming an algorithm (`alg`), as every JOSE header does.
+- **Encoding failures.** A value whose encoding fails — a `MarshalJSON`, `MarshalLogObject` or `MarshalLogArray` that returns an error — has that error masked where it is written, under `<key>Error`, and the part it did write masked like any value.
 - **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as the JSON encoding the log writes for them: at every level, keys are checked against `Fields` and strings against the patterns.
 - **`Annotable` values** such as `HTTP`, expanded into their fields before any hook runs.
 
 A structured value that needed masking is written as its masked JSON tree, object keys in alphabetical order; one with nothing to mask keeps its original form. A container nested deeper than the depth limit (default `32`) is replaced by `[REDACTED]` whole, never written unmasked. Set the limit with `axio.WithPIIMaxDepth(n)`, `piiMaxDepth` in the config file, or `PIIConfig.MaxDepth` when building a `PIIMasker` or `PIIHook` yourself.
+
+The verbose form of an error that formats itself — the `errorVerbose` beside its message, a stack trace for many errors — is masked and kept. Masking it means scanning it with every pattern: with the default patterns, about 250 µs for a stack of about 2 KB. To omit it instead, never reading it, use `axio.WithPIIOmitErrorVerbose()`, `piiOmitErrorVerbose: true` in the config file, or `PIIConfig.OmitErrorVerbose`; the error is then written by its masked message only.
 
 ```go
 type User struct {
@@ -596,7 +614,7 @@ type User struct {
     Password string `json:"password"`
 }
 
-logger.With(axio.Annotate("user", User{Email: "a@b.com", Password: "x"})).Info(ctx, "...")
+logger.Info(ctx, "...", axio.Field("user", User{Email: "a@b.com", Password: "x"}))
 //   -> "user": {"email": "***@***.***", "password": "[REDACTED]"}   (with PatternEmail)
 ```
 
@@ -854,7 +872,7 @@ ctx = axio.WithEvent(ctx, event)
 // Handler: enrich from context
 event := axio.EventFromContext(ctx)
 event.Add("user_id", userID)
-event.With(axio.Annotate("http", axio.HTTP{
+event.With(axio.Field("http", axio.HTTP{
     Method:     r.Method,
     URL:        r.URL.Path,
     StatusCode: 201,
@@ -873,8 +891,8 @@ event.SetError(err)
 
 // Error with structured details
 event.SetError(err,
-    axio.Annotate("error_code", "card_declined"),
-    axio.Annotate("error_retriable", false),
+    axio.Field("error_code", "card_declined"),
+    axio.Field("error_retriable", false),
 )
 ```
 
@@ -1008,17 +1026,17 @@ For critical operations, use `WithAudit` with a JSON output and combine with rel
 ### 8. Standard HTTP fields
 
 ```go
-logger.With(
-    axio.Annotate("http", axio.HTTP{
+logger.Info(ctx, "request completed",
+    axio.Field("http", axio.HTTP{
         Method:     r.Method,
         URL:        r.URL.Path,
         StatusCode: statusCode,
         LatencyMS:  latencyMS,
         ClientIP:   r.RemoteAddr,
     }),
-    axio.Annotate("request_id", requestID),
-    axio.Annotate("user_id", userID),
-).Info(ctx, "request completed")
+    axio.Field("request_id", requestID),
+    axio.Field("user_id", userID),
+)
 ```
 
 ### 9. Review checklist
@@ -1043,7 +1061,7 @@ logger.With(
 | Domain error       | Warn/Error | `+operation`, `+entity`, `+error`             |
 
 ```go
-logger.With(axio.Annotate("http", axio.HTTP{...}), axio.Annotate("request_id", id)).Info(ctx, "request completed")
+logger.Info(ctx, "request completed", axio.Field("http", axio.HTTP{...}), axio.Field("request_id", id))
 ```
 
 ### Workers and Jobs
@@ -1057,11 +1075,11 @@ logger.With(axio.Annotate("http", axio.HTTP{...}), axio.Annotate("request_id", i
 | Item error    | Warn  | `+item_id`, `+error` (sampled)                               |
 
 ```go
-logger.With(
-    axio.Annotate("job_name", "reconcile_payments"),
-    axio.Annotate("items_ok", okCount),
-    axio.Annotate("items_failed", failedCount),
-).Info(ctx, "job completed")
+logger.Info(ctx, "job completed",
+    axio.Field("job_name", "reconcile_payments"),
+    axio.Field("items_ok", okCount),
+    axio.Field("items_failed", failedCount),
+)
 ```
 
 ### Queue Consumers
@@ -1099,30 +1117,30 @@ logger.With(
 
 **Wrong:**
 ```go
-logger.Info(ctx, "user=%s status=%d", userID, statusCode)
+logger.Info(ctx, fmt.Sprintf("user=%s status=%d", userID, statusCode))
 ```
 
 **Correct:**
 ```go
-logger.With(
-    axio.Annotate("user_id", userID),
-    axio.Annotate("status_code", statusCode),
-).Info(ctx, "request completed")
+logger.Info(ctx, "request completed",
+    axio.Field("user_id", userID),
+    axio.Field("status_code", statusCode),
+)
 ```
 
 ### Anti-pattern: Payload with PII
 
 **Wrong:**
 ```go
-logger.Info(ctx, "payload=%+v", payload)
+logger.Info(ctx, fmt.Sprintf("payload=%+v", payload))
 ```
 
 **Correct:**
 ```go
-logger.With(
-    axio.Annotate("payload_id", payload.ID),
-    axio.Annotate("payload_size", len(payload.Data)),
-).Info(ctx, "payload received")
+logger.Info(ctx, "payload received",
+    axio.Field("payload_id", payload.ID),
+    axio.Field("payload_size", len(payload.Data)),
+)
 ```
 
 ### Anti-pattern: Duplicate log in layers
@@ -1154,29 +1172,29 @@ if err != nil {
 **Wrong:**
 ```go
 for _, item := range items {
-    logger.Debug(ctx, "processing item %s", item.ID)
+    logger.Debug(ctx, "processing item", axio.Field("item_id", item.ID))
 }
 ```
 
 **Correct:**
 ```go
-logger.With(
-    axio.Annotate("items_total", len(items)),
-    axio.Annotate("items_ok", okCount),
-    axio.Annotate("items_failed", failedCount),
-).Info(ctx, "batch processed")
+logger.Info(ctx, "batch processed",
+    axio.Field("items_total", len(items)),
+    axio.Field("items_ok", okCount),
+    axio.Field("items_failed", failedCount),
+)
 ```
 
 ### Anti-pattern: Explosive cardinality
 
 **Wrong:**
 ```go
-logger.With(axio.Annotate("email", user.Email)).Info(ctx, "login")
+logger.Info(ctx, "login", axio.Field("email", user.Email))
 ```
 
 **Correct:**
 ```go
-logger.With(axio.Annotate("user_id", user.ID)).Info(ctx, "login")
+logger.Info(ctx, "login", axio.Field("user_id", user.ID))
 ```
 
 ### Anti-pattern: Vague message
@@ -1188,9 +1206,9 @@ logger.Error(ctx, err, "error")
 
 **Correct:**
 ```go
-logger.With(
-    axio.Annotate("order_id", order.ID),
-).Error(ctx, err, "failed to confirm payment")
+logger.Error(ctx, err, "failed to confirm payment",
+    axio.Field("order_id", order.ID),
+)
 ```
 
 ---

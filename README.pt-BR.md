@@ -139,16 +139,16 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 
     // ... lógica de negócio ...
 
-    logger.With(
-        axio.Annotate("http", axio.HTTP{
+    logger.Info(ctx, "pedido criado",
+        axio.Field("http", axio.HTTP{
             Method:     r.Method,
             URL:        r.URL.Path,
             StatusCode: 201,
             LatencyMS:  time.Since(start).Milliseconds(),
             ClientIP:   r.RemoteAddr,
         }),
-        axio.Annotate("user_id", "usr_123"),
-    ).Info(ctx, "pedido criado")
+        axio.Field("user_id", "usr_123"),
+    )
 
     w.WriteHeader(http.StatusCreated)
 }
@@ -160,24 +160,25 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 
 ### Config Principal
 
-| Campo               | Tipo             | Obrigatório | Padrão                     | Valores                                | Validação                                |
-| ------------------- | ---------------- | ----------- | -------------------------- | -------------------------------------- | ---------------------------------------- |
-| `ServiceName`       | `string`         | Não         | `""`                       | qualquer                               | -                                        |
-| `ServiceVersion`    | `string`         | Não         | `""`                       | qualquer                               | -                                        |
-| `Environment`       | `Environment`    | Não         | `development`              | `production`, `staging`, `development` | `ErrInvalidEnvironment` se inválido      |
-| `InstanceID`        | `string`         | Não         | `""`                       | qualquer                               | -                                        |
-| `Level`             | `Level`          | Não         | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` se inválido            |
-| `CallerSkip`        | `int`            | Não         | `0`                        | `>= 0`                                 | -                                        |
-| `AgentMode`         | `bool`           | Não         | `false`                    | `true`, `false`                        | Se `true`, outputs devem ser stdout+json |
-| `Outputs`           | `[]OutputConfig` | Não         | auto                       | ver OutputConfig                       | Validados individualmente                |
-| `PIIEnabled`        | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
-| `PIIPatterns`       | `[]PIIPattern`   | Não         | `[cpf, cnpj, credit_card]` | ver tabela PII                         | -                                        |
-| `PIIFields`         | `[]string`       | Não         | `DefaultSensitiveFields()` | qualquer                               | -                                        |
-| `PIIMaxDepth`       | `int`            | Não         | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` se negativo      |
-| `PIICustomPatterns` | `[]CustomPII`    | Não         | `[]`                       | ver CustomPII                          | Regex deve ser válida                    |
-| `TracerType`        | `string`         | Não         | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` se inválido           |
-| `Audit`             | `AuditConfig`    | Não         | desabilitado               | ver AuditConfig                        | -                                        |
-| `Metrics`           | `MetricsConfig`  | Não         | desabilitado               | ver MetricsConfig                      | -                                        |
+| Campo                 | Tipo             | Obrigatório | Padrão                     | Valores                                | Validação                                |
+| --------------------- | ---------------- | ----------- | -------------------------- | -------------------------------------- | ---------------------------------------- |
+| `ServiceName`         | `string`         | Não         | `""`                       | qualquer                               | -                                        |
+| `ServiceVersion`      | `string`         | Não         | `""`                       | qualquer                               | -                                        |
+| `Environment`         | `Environment`    | Não         | `development`              | `production`, `staging`, `development` | `ErrInvalidEnvironment` se inválido      |
+| `InstanceID`          | `string`         | Não         | `""`                       | qualquer                               | -                                        |
+| `Level`               | `Level`          | Não         | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` se inválido            |
+| `CallerSkip`          | `int`            | Não         | `0`                        | `>= 0`                                 | -                                        |
+| `AgentMode`           | `bool`           | Não         | `false`                    | `true`, `false`                        | Se `true`, outputs devem ser stdout+json |
+| `Outputs`             | `[]OutputConfig` | Não         | auto                       | ver OutputConfig                       | Validados individualmente                |
+| `PIIEnabled`          | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
+| `PIIPatterns`         | `[]PIIPattern`   | Não         | `[cpf, cnpj, credit_card]` | ver tabela PII                         | -                                        |
+| `PIIFields`           | `[]string`       | Não         | `DefaultSensitiveFields()` | qualquer                               | -                                        |
+| `PIIMaxDepth`         | `int`            | Não         | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` se negativo      |
+| `PIIOmitErrorVerbose` | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
+| `PIICustomPatterns`   | `[]CustomPII`    | Não         | `[]`                       | ver CustomPII                          | Regex deve ser válida                    |
+| `TracerType`          | `string`         | Não         | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` se inválido           |
+| `Audit`               | `AuditConfig`    | Não         | desabilitado               | ver AuditConfig                        | -                                        |
+| `Metrics`             | `MetricsConfig`  | Não         | desabilitado               | ver MetricsConfig                      | -                                        |
 
 ### OutputConfig
 
@@ -264,6 +265,7 @@ piiFields:
   - token
   - secret
 piiMaxDepth: 8
+piiOmitErrorVerbose: false
 
 piiCustomPatterns:
   - name: matricula
@@ -344,44 +346,57 @@ As options vencem o arquivo de config: o primeiro `WithOutputs` substitui os `ou
 
 ```go
 logger.Debug(ctx, "detalhes de depuração")
-logger.Info(ctx, "processados %d itens", count)
+logger.Info(ctx, "itens processados", axio.Field("count", count))
 logger.Warn(ctx, err, "timeout ao consultar fornecedor")
 logger.Error(ctx, err, "falha ao persistir pedido")
 ```
+
+A mensagem é escrita como foi passada, nunca formatada. Os dados vão em anotações passadas depois dela, que a entrada carrega depois das do logger (`With`) e que nenhuma outra chamada vê.
 
 ---
 
 ### Anotações Estruturadas
 
-#### Annotate
+#### Field
 
 Adiciona campos chave-valor ao log:
 
 ```go
-logger.With(
-    axio.Annotate("user_id", "usr_123"),
-    axio.Annotate("order_id", "ord_456"),
-    axio.Annotate("amount_cents", 15000),
-).Info(ctx, "pedido criado")
+logger.Info(ctx, "pedido criado",
+    axio.Field("user_id", "usr_123"),
+    axio.Field("order_id", "ord_456"),
+    axio.Field("amount_cents", 15000),
+)
 ```
 
 Uma anotação com o nome de uma chave que o próprio axio escreve — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (com `errorVerbose` e `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — sai com um sublinhado na frente, como `_message`, para que uma linha nunca repita uma chave.
 
 Um struct, um slice ou um mapa sai como a sua codificação JSON, em `encoding/json/v2`: slices e mapas nil como `null`, chaves de mapa em ordem, um `time.Duration` em nanossegundos e um array de bytes em base64. `omitempty` omite um campo cujo valor codifica como vazio — `""`, `null`, `[]`, `{}` — e `omitzero` omite `false`, `0` e todo outro valor zero. Uma opção de tag que a codificação não aceita, como `,string` num slice, faz o valor falhar: a linha leva `<chave>Error` no lugar dele.
 
+#### With
+
+Devolve um logger que anexa as suas anotações a toda entrada que escreve, antes das que cada chamada passa. Serve para campos que valem por várias linhas, como o ID de uma requisição; os campos de uma linha só vão na própria chamada:
+
+```go
+requestLogger := logger.With(axio.Field("request_id", requestID))
+
+requestLogger.Info(ctx, "pedido criado", axio.Field("user_id", userID))
+requestLogger.Error(ctx, err, "falha no pagamento")
+```
+
 #### HTTP
 
 Struct para metadados de requisições HTTP:
 
 ```go
-logger.With(axio.Annotate("http", axio.HTTP{
+logger.Info(ctx, "requisição processada", axio.Field("http", axio.HTTP{
     Method:     "POST",
     URL:        "/api/v1/orders",
     StatusCode: 201,
     LatencyMS:  45,
     UserAgent:  r.UserAgent(),
     ClientIP:   r.RemoteAddr,
-})).Info(ctx, "requisição processada")
+}))
 ```
 
 | Campo        | Tipo     | Descrição                     |
@@ -406,13 +421,13 @@ type Order struct {
 
 func (o Order) Append(target []axio.Annotation) []axio.Annotation {
     return append(target,
-        axio.Annotate("order_id", o.ID),
-        axio.Annotate("item_count", len(o.Items)),
+        axio.Field("order_id", o.ID),
+        axio.Field("item_count", len(o.Items)),
     )
 }
 
 // Uso — os campos são expandidos individualmente na saída do log
-logger.With(axio.Annotate("order", order)).Info(ctx, "pedido processado")
+logger.Info(ctx, "pedido processado", axio.Field("order", order))
 ```
 
 Os campos são expandidos antes de qualquer hook rodar, então o mascaramento de PII e os hooks customizados veem cada um.
@@ -461,7 +476,7 @@ func (h TenantHook) Name() string { return "tenant" }
 
 func (h TenantHook) Process(ctx context.Context, entry *axio.Entry) error {
     entry.Annotations = append(entry.Annotations,
-        axio.Annotate("tenant_id", h.tenantID))
+        axio.Field("tenant_id", h.tenantID))
     return nil
 }
 
@@ -544,16 +559,19 @@ config := axio.PIIConfig{
 O mascaramento de PII cobre todo valor que uma linha carrega:
 
 - **A mensagem.**
-- **O erro** passado a `Warn`, `Error` ou `Event.SetError`, pela mensagem dele. Um erro mascarado continua desembrulhando no original, então `errors.Is` segue funcionando nos hooks seguintes.
+- **O erro** passado a `Warn`, `Error` ou `Event.SetError`, pela mensagem dele e, num erro que se formata sozinho, pela forma verbosa (`errorVerbose`). Um erro mascarado continua desembrulhando no original, então `errors.Is` segue funcionando nos hooks seguintes.
 - **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro vira `[REDACTED]`, qualquer que seja o tipo.
 - **Strings, erros e valores `fmt.Stringer`**, pelo texto.
 - **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`, sejam uma anotação própria, sejam campo ou elemento de um valor estruturado.
-- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct — também é decodificada, e mascarada quando o texto decodificado tem PII. É assim que chegam um `[]byte` de texto, um array de bytes ou um tipo nomeado de slice de bytes dentro de um valor estruturado, que a codificação JSON carrega em base64. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma, e por isso um array de bytes ou um tipo nomeado de slice de bytes com dados binários dentro de um struct também passa.
-- **JWTs.** O payload de um JWT em qualquer ponto de um texto — mensagem, query de URL, anotação — é decodificado e mascarado como o JSON que é: uma claim com nome sensível vira `[REDACTED]` e toda string nele passa pelos padrões. A assinatura do token registrado deixa de conferir.
+- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct — também é decodificada, e mascarada quando o texto decodificado tem PII. É assim que chegam um `[]byte` de texto, um array de bytes ou um tipo nomeado de slice de bytes dentro de um valor estruturado, que a codificação JSON carrega em base64. Uma string que decodifica para dados binários vira `[REDACTED]` quando algum padrão casa dentro deles, e passa como está caso contrário: nada distingue o base64 de outros dados binários de outra string com a mesma forma.
+- **JWTs e JWEs.** Um token em qualquer ponto de um texto — mensagem, query de URL, anotação — vira `[REDACTED]` inteiro: é uma credencial, e as claims podem carregar o que nenhum padrão reconhece. Uma string é tomada por token quando tem a forma de um e o header decodifica para um objeto JSON que nomeia um algoritmo (`alg`), como todo header JOSE.
+- **Falhas de codificação.** Um valor cuja codificação falha — um `MarshalJSON`, `MarshalLogObject` ou `MarshalLogArray` que devolve erro — tem esse erro mascarado onde é escrito, em `<chave>Error`, e a parte que chegou a escrever mascarada como qualquer valor.
 - **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON que o log escreve para eles: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
 - **Valores `Annotable`** como o `HTTP`, expandidos nos seus campos antes de qualquer hook rodar.
 
 Um valor estruturado que precisou de máscara é escrito como a árvore JSON mascarada, com as chaves dos objetos em ordem alfabética; um que não tinha nada a mascarar mantém a forma original. Um contêiner aninhado além do limite de profundidade (padrão `32`) vira `[REDACTED]` inteiro, nunca sai sem máscara. O limite se ajusta com `axio.WithPIIMaxDepth(n)`, com `piiMaxDepth` no arquivo de config, ou com `PIIConfig.MaxDepth` ao montar um `PIIMasker` ou `PIIHook` à mão.
+
+A forma verbosa de um erro que se formata sozinho — o `errorVerbose` ao lado da mensagem, uma pilha para muitos erros — é mascarada e mantida. Mascarar significa passar todos os padrões por ela: com os padrões default, cerca de 250 µs para uma pilha de uns 2 KB. Para omiti-la, sem nunca lê-la, use `axio.WithPIIOmitErrorVerbose()`, `piiOmitErrorVerbose: true` no arquivo de config, ou `PIIConfig.OmitErrorVerbose`; o erro sai então só pela mensagem mascarada.
 
 ```go
 type Usuario struct {
@@ -561,7 +579,7 @@ type Usuario struct {
     Senha string `json:"senha"`
 }
 
-logger.With(axio.Annotate("usuario", Usuario{Email: "a@b.com", Senha: "x"})).Info(ctx, "...")
+logger.Info(ctx, "...", axio.Field("usuario", Usuario{Email: "a@b.com", Senha: "x"}))
 //   -> "usuario": {"email": "***@***.***", "senha": "[REDACTED]"}   (com PatternEmail)
 ```
 
@@ -819,7 +837,7 @@ ctx = axio.WithEvent(ctx, event)
 // Handler: enriquece a partir do contexto
 event := axio.EventFromContext(ctx)
 event.Add("user_id", userID)
-event.With(axio.Annotate("http", axio.HTTP{
+event.With(axio.Field("http", axio.HTTP{
     Method:     r.Method,
     URL:        r.URL.Path,
     StatusCode: 201,
@@ -838,8 +856,8 @@ event.SetError(err)
 
 // Erro com detalhes estruturados
 event.SetError(err,
-    axio.Annotate("error_code", "card_declined"),
-    axio.Annotate("error_retriable", false),
+    axio.Field("error_code", "card_declined"),
+    axio.Field("error_retriable", false),
 )
 ```
 
@@ -973,17 +991,17 @@ Para operações críticas, use `WithAudit` com uma saída JSON e combine com ar
 ### 8. Campos HTTP padrão
 
 ```go
-logger.With(
-    axio.Annotate("http", axio.HTTP{
+logger.Info(ctx, "requisição concluída",
+    axio.Field("http", axio.HTTP{
         Method:     r.Method,
         URL:        r.URL.Path,
         StatusCode: statusCode,
         LatencyMS:  latencyMS,
         ClientIP:   r.RemoteAddr,
     }),
-    axio.Annotate("request_id", requestID),
-    axio.Annotate("user_id", userID),
-).Info(ctx, "requisição concluída")
+    axio.Field("request_id", requestID),
+    axio.Field("user_id", userID),
+)
 ```
 
 ### 9. Checklist de review
@@ -1008,7 +1026,7 @@ logger.With(
 | Erro de domínio      | Warn/Error | `+operation`, `+entity`, `+error`             |
 
 ```go
-logger.With(axio.Annotate("http", axio.HTTP{...}), axio.Annotate("request_id", id)).Info(ctx, "requisição finalizada")
+logger.Info(ctx, "requisição finalizada", axio.Field("http", axio.HTTP{...}), axio.Field("request_id", id))
 ```
 
 ### Workers e Jobs
@@ -1022,11 +1040,11 @@ logger.With(axio.Annotate("http", axio.HTTP{...}), axio.Annotate("request_id", i
 | Erro em item  | Warn  | `+item_id`, `+error` (amostrado)                             |
 
 ```go
-logger.With(
-    axio.Annotate("job_name", "reconcile_payments"),
-    axio.Annotate("items_ok", okCount),
-    axio.Annotate("items_failed", failedCount),
-).Info(ctx, "job concluído")
+logger.Info(ctx, "job concluído",
+    axio.Field("job_name", "reconcile_payments"),
+    axio.Field("items_ok", okCount),
+    axio.Field("items_failed", failedCount),
+)
 ```
 
 ### Consumidores de Filas
@@ -1064,30 +1082,30 @@ logger.With(
 
 **Errado:**
 ```go
-logger.Info(ctx, "usuario=%s status=%d", userID, statusCode)
+logger.Info(ctx, fmt.Sprintf("usuario=%s status=%d", userID, statusCode))
 ```
 
 **Correto:**
 ```go
-logger.With(
-    axio.Annotate("user_id", userID),
-    axio.Annotate("status_code", statusCode),
-).Info(ctx, "requisição concluída")
+logger.Info(ctx, "requisição concluída",
+    axio.Field("user_id", userID),
+    axio.Field("status_code", statusCode),
+)
 ```
 
 ### Anti-padrão: Payload com PII
 
 **Errado:**
 ```go
-logger.Info(ctx, "payload=%+v", payload)
+logger.Info(ctx, fmt.Sprintf("payload=%+v", payload))
 ```
 
 **Correto:**
 ```go
-logger.With(
-    axio.Annotate("payload_id", payload.ID),
-    axio.Annotate("payload_size", len(payload.Data)),
-).Info(ctx, "payload recebido")
+logger.Info(ctx, "payload recebido",
+    axio.Field("payload_id", payload.ID),
+    axio.Field("payload_size", len(payload.Data)),
+)
 ```
 
 ### Anti-padrão: Log duplicado em camadas
@@ -1119,29 +1137,29 @@ if err != nil {
 **Errado:**
 ```go
 for _, item := range items {
-    logger.Debug(ctx, "processando item %s", item.ID)
+    logger.Debug(ctx, "processando item", axio.Field("item_id", item.ID))
 }
 ```
 
 **Correto:**
 ```go
-logger.With(
-    axio.Annotate("items_total", len(items)),
-    axio.Annotate("items_ok", okCount),
-    axio.Annotate("items_failed", failedCount),
-).Info(ctx, "lote processado")
+logger.Info(ctx, "lote processado",
+    axio.Field("items_total", len(items)),
+    axio.Field("items_ok", okCount),
+    axio.Field("items_failed", failedCount),
+)
 ```
 
 ### Anti-padrão: Cardinalidade explosiva
 
 **Errado:**
 ```go
-logger.With(axio.Annotate("email", user.Email)).Info(ctx, "login")
+logger.Info(ctx, "login", axio.Field("email", user.Email))
 ```
 
 **Correto:**
 ```go
-logger.With(axio.Annotate("user_id", user.ID)).Info(ctx, "login")
+logger.Info(ctx, "login", axio.Field("user_id", user.ID))
 ```
 
 ### Anti-padrão: Mensagem vaga
@@ -1153,9 +1171,9 @@ logger.Error(ctx, err, "erro")
 
 **Correto:**
 ```go
-logger.With(
-    axio.Annotate("order_id", order.ID),
-).Error(ctx, err, "falha ao confirmar pagamento")
+logger.Error(ctx, err, "falha ao confirmar pagamento",
+    axio.Field("order_id", order.ID),
+)
 ```
 
 ---

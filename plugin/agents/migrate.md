@@ -112,44 +112,45 @@ For each package/directory:
 | Before | After |
 |--------|-------|
 | `log.Println("msg")` | `logger.Info(ctx, "msg")` |
-| `log.Printf("user %s", name)` | `logger.Info(ctx, "user %s", name)` |
+| `log.Printf("user %s", name)` | `logger.Info(ctx, "user", axio.Field("name", name))` |
 | `log.Fatalf("err: %v", err)` | `logger.Error(ctx, err, "fatal error"); os.Exit(1)` |
 | `log.SetOutput(w)` | `axio.WithOutputs(...)` |
 
 **slog → axio**:
 | Before | After |
 |--------|-------|
-| `slog.Info("msg", "key", val)` | `logger.With(axio.Annotate("key", val)).Info(ctx, "msg")` |
+| `slog.Info("msg", "key", val)` | `logger.Info(ctx, "msg", axio.Field("key", val))` |
 | `slog.Error("msg", "err", err)` | `logger.Error(ctx, err, "msg")` |
-| `slog.With("key", val)` | `logger.With(axio.Annotate("key", val))` |
+| `slog.With("key", val)` | `logger.With(axio.Field("key", val))` |
 | `slog.Default()` | Use dependency injection instead |
 
 **logrus → axio**:
 | Before | After |
 |--------|-------|
-| `logrus.WithField("k", v).Info("msg")` | `logger.With(axio.Annotate("k", v)).Info(ctx, "msg")` |
-| `logrus.WithFields(logrus.Fields{...})` | `logger.With(axio.Annotate("k1", v1), axio.Annotate("k2", v2))` |
+| `logrus.WithField("k", v).Info("msg")` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
+| `logrus.WithFields(logrus.Fields{...})` | `logger.With(axio.Field("k1", v1), axio.Field("k2", v2))` |
 | `logrus.SetFormatter(&logrus.JSONFormatter{})` | `axio.WithOutputs(axio.Stdout(axio.FormatJSON))` |
 | `logrus.SetLevel(logrus.DebugLevel)` | `config.Level = axio.LevelDebug` |
 
 **zerolog → axio**:
 | Before | After |
 |--------|-------|
-| `log.Info().Str("k", v).Msg("msg")` | `logger.With(axio.Annotate("k", v)).Info(ctx, "msg")` |
+| `log.Info().Str("k", v).Msg("msg")` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
 | `log.Error().Err(err).Msg("msg")` | `logger.Error(ctx, err, "msg")` |
 | `zerolog.New(os.Stdout)` | `axio.New(config, axio.WithOutputs(axio.Stdout(axio.FormatJSON)))` |
 
 **zap (direct) → axio**:
 | Before | After |
 |--------|-------|
-| `zap.L().Info("msg", zap.String("k", v))` | `logger.With(axio.Annotate("k", v)).Info(ctx, "msg")` |
+| `zap.L().Info("msg", zap.String("k", v))` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
 | `zap.NewProduction()` | `axio.New(config)` with Production environment |
-| `sugar.Infow("msg", "k", v)` | `logger.With(axio.Annotate("k", v)).Info(ctx, "msg")` |
+| `sugar.Infow("msg", "k", v)` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
 
 Key differences to highlight:
 - axio ALWAYS requires context.Context as first param (Debug/Info/Warn/Error)
 - Warn and Error take an `error` as second param; Debug and Info do not
-- axio uses `Annotate[T]` generic instead of typed field functions
+- The message is never formatted: a printf-style value becomes an annotation after it
+- axio uses `Field[T]` generic instead of typed field functions
 - axio's Logger interface uses `Named()` for sub-loggers (same as zap)
 
 ## Phase 3: Guided Execution

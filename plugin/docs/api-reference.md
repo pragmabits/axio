@@ -54,14 +54,17 @@ func (f *Format) UnmarshalText(text []byte) error
 ```go
 type Logger interface {
     Named(string) Logger
-    Debug(context.Context, string, ...any)
-    Info(context.Context, string, ...any)
-    Warn(context.Context, error, string, ...any)   // error is 2nd param
-    Error(context.Context, error, string, ...any)   // error is 2nd param
+    Debug(context.Context, string, ...Annotation)
+    Info(context.Context, string, ...Annotation)
+    Warn(context.Context, error, string, ...Annotation)   // error is 2nd param
+    Error(context.Context, error, string, ...Annotation)  // error is 2nd param
     With(...Annotation) Logger
     Close() error
 }
 ```
+
+The message is written as given, never formatted. The annotations passed to a
+level method go on that entry only, after those the logger carries from `With`.
 
 ## Logger Creation (logger.go)
 
@@ -90,6 +93,7 @@ type Config struct {
     PIICustomPatterns []CustomPII
     PIIFields        []string
     PIIMaxDepth      int         // 0 means DefaultPIIMaxDepth (32)
+    PIIOmitErrorVerbose bool     // omit, instead of mask, the %+v of errors
     Audit            AuditConfig
     TracerType       string      // "otel" or "noop"
     Metrics          MetricsConfig
@@ -128,6 +132,7 @@ func WithAgentMode() Option
 func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
 func WithPIIMaxDepth(depth int) Option
+func WithPIIOmitErrorVerbose() Option
 func WithAudit(storePath string) Option
 func WithAuditChain(chain *HashChain) Option
 func WithMetrics(provider metric.MeterProvider) Option
@@ -205,16 +210,16 @@ type OutputConfig struct {
 ```go
 type Annotation struct { /* internal */ }
 
-func Annotate[T any](key string, value T) Annotation
+func Field[T any](key string, value T) Annotation
 func (a Annotation) Name() string
-func (a Annotation) Data() any
-func (a *Annotation) Set(value any)
+func (a Annotation) Data() any              // int64, uint64, float64, or the value as given
+func (a Annotation) Value[T any]() (T, bool) // a number converts to any type of its kind that holds it
 
 type Annotations []Annotation
 
 func (a Annotations) Names() []string
 func (a Annotations) Data() []any
-func (a *Annotations) Add(key string, value any) Annotations
+func (a *Annotations) Add[T any](key string, value T) Annotations
 ```
 
 A struct, slice or map is written as its `encoding/json/v2` encoding: nil
@@ -290,6 +295,7 @@ type PIIConfig struct {
     CustomPatterns []CustomPII
     Fields         []string
     MaxDepth       int  // 0 means DefaultPIIMaxDepth (32)
+    OmitErrorVerbose bool // omit, instead of mask, the %+v of errors
 }
 
 func DefaultPIIConfig() PIIConfig
@@ -312,7 +318,8 @@ type PIIMaskResult struct {
 ```
 
 Masking covers every value a line carries: the message; the entry's error,
-by its message (a masked error still unwraps to the original); strings,
+by its message and its verbose form (a masked error still unwraps to the
+original); the error of a value that fails to encode; strings,
 errors and `fmt.Stringer` annotations, by their text; `[]byte`, by the text it
 holds, bytes that are not UTF-8 text becoming `[REDACTED]`, inside a structured
 value too; and structured values — maps, slices, structs, pointers,
@@ -322,10 +329,12 @@ string with the shape of base64 — standard or URL alphabet, padded or not: the
 message, the error, an annotation, a nested value, and a `[]byte` of text, a
 byte array or a named byte-slice type inside a structured value, as its JSON
 encoding carries them — is also decoded and masked when the text it decodes to
-carries PII; one that decodes to binary passes. The payload of a JWT anywhere in a text is decoded and masked as the
-JSON it is, sensitive claims included. A structured value that needed masking is written as its masked
-JSON tree, object keys in alphabetical order; one with nothing to mask keeps
-its original form. A container nested deeper than `MaxDepth` becomes
+carries PII; one that decodes to binary data becomes `[REDACTED]` when a
+pattern matches inside it, and passes otherwise. A JWT or JWE anywhere in a text
+becomes `[REDACTED]` whole. `MaskString` and `MaskStringWithCounts` cover a
+string the same way. A structured value that needed masking is written as its
+masked JSON tree, object keys in alphabetical order; one with nothing to mask
+keeps its original form. A container nested deeper than `MaxDepth` becomes
 `[REDACTED]` whole.
 
 ### PIIHook
@@ -491,7 +500,7 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error)
 func WithEvent(ctx context.Context, event *Event) context.Context
 func EventFromContext(ctx context.Context) *Event
 
-func (e *Event) Add(key string, value any)
+func (e *Event) Add[T any](key string, value T)
 func (e *Event) With(annotations ...Annotation)
 func (e *Event) SetError(err error, details ...Annotation)
 func (e *Event) Emit(ctx context.Context)

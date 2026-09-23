@@ -18,7 +18,7 @@ Patterns for migrating from other Go logging libraries to axio.
 ## Key Migration Concerns
 1. context.Context — axio always requires it; add context.TODO() where unavailable
 2. Error parameter — Warn/Error take error as second param
-3. Structured fields → Annotate[T] generic
+3. Structured fields → Field[T] generic
 4. Logger initialization → axio.New(config) with proper error handling
 5. Global loggers → dependency injection pattern
 

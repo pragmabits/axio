@@ -17,7 +17,7 @@ Axio provides interfaces for extending every major subsystem.
 
 ## Important Notes
 - New Output implementations must be handled in WithOutputs (type assertions in options.go)
-- Hook execution order is fixed: PIIHook → AuditHook → Custom hooks
+- Hook execution order is fixed: PIIHook → Custom hooks; auditing hashes the line at write time, after every hook
 - Hooks implementing MetricsAware receive the Metrics object automatically
 - Annotable types are expanded during field serialization via expandAnnotable
 

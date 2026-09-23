@@ -78,6 +78,7 @@ Axio functions as an abstraction layer with a stable interface (`Logger`). Busin
   - [Distributed Tracing (OpenTelemetry)](#distributed-tracing-opentelemetry)
   - [Metrics](#metrics)
   - [Wide Events](#wide-events)
+- [Command Line: axio render and axio verify](#command-line-axio-render-and-axio-verify)
 - [Logging Best Practices](#logging-best-practices)
 - [Guide by Service Type](#guide-by-service-type)
 - [Examples and Anti-patterns](#examples-and-anti-patterns)
@@ -460,8 +461,9 @@ dbLogger.Info(ctx, "query executed")      // logger: "db"
 Hooks process log entries before writing. Executed in fixed order:
 
 1. **PIIHook** - masks sensitive data
-2. **AuditHook** - calculates hash chain
-3. **Custom hooks** - in the order passed to `WithHooks`
+2. **Custom hooks** - in the order passed to `WithHooks`
+
+Auditing is not a hook: the hash is computed when the entry is written, after every hook, so it covers whatever the hooks changed.
 
 #### Hook Interface
 
@@ -606,36 +608,78 @@ Useful for:
 
 **Important:** Hash chain detects tampering, it doesn't prevent it. Immutability depends on the storage backend.
 
-#### Added Fields
+#### How axio hashes a line
 
-| Field           | Description               |
-| --------------- | ------------------------- |
-| `hash`          | SHA256 hash of this entry |
-| `previous_hash` | Hash of previous entry    |
+Each audited JSON line ends with two fields, always last:
+
+| Field           | Description                                                          |
+| --------------- | -------------------------------------------------------------------- |
+| `previous_hash` | Hash of the previous line; empty on the first line of the chain      |
+| `hash`          | SHA-256 of `previous_hash` followed by every byte before the trailer |
+
+The hash covers exactly what was written: message, error, stacktrace, service metadata, annotations and whatever custom hooks changed. Encoding, hashing and writing happen under one lock, so the order of the chain is the order of the file, even with many goroutines logging at once.
+
+```json
+{"level":"info","timestamp":"2026-09-23T15:16:24.230105632Z","logger":"orders","caller":"app/main.go:26","message":"order created","order_id":"ord_8812","previous_hash":"","hash":"28d41c7b24128b63eed1ed71b77bc63e3f9b9b463af820a3171a0a1927b3f3a8"}
+```
+
+Only JSON outputs can be verified. A text output shows the first 6 characters of the hash, for finding the same entry in the JSON output.
 
 #### Configuration
 
 ```go
-// Via Options
+// Chain state in a local file
 logger, _ := axio.New(config,
+    axio.WithOutputs(axio.MustFile("/var/log/app.log", axio.FormatJSON)),
     axio.WithAudit("/var/lib/axio/chain.json"),
 )
-
-// Via Hook directly
-store := axio.NewFileStore("/var/lib/axio/chain.json")
-hook, _ := axio.NewAuditHook(store)
-logger, _ := axio.New(config, axio.WithHooks(hook))
 ```
+
+Every Logger and Event audited with the same path in a process extends **one** chain, whichever was created first.
+
+#### Verifying a log
+
+```go
+chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/chain.json"))
+if err != nil {
+    return err
+}
+file, err := os.Open("/var/log/app.log")
+if err != nil {
+    return err
+}
+defer file.Close()
+
+// "" because the file starts the chain; for a rotated file, pass the last
+// hash of the file before it.
+if err := chain.Verify(file, ""); err != nil {
+    return fmt.Errorf("audit log does not verify: %w", err)
+}
+```
+
+| Error                | Meaning                                                          |
+| -------------------- | ---------------------------------------------------------------- |
+| `ErrHashMismatch`    | A line's content changed after it was written                     |
+| `ErrChainBroken`     | A line was removed, moved or inserted, or carries no trailer      |
+| `ErrChainIncomplete` | The log ends before the chain: its end was removed, or the whole chain was rewritten |
+
+For rotated files, `axio.VerifyLines(reader, previousHash)` checks one file and returns the hash of its last line — the `previousHash` of the next file. `chain.Verify` is `VerifyLines` plus the check that the log ends at the chain's last hash. From the terminal, `axio verify` does both (see below).
 
 #### Custom ChainStore
 
-Implement `ChainStore` for custom backends (Redis, PostgreSQL, etc.):
+Implement `ChainStore` for custom backends (Redis, PostgreSQL, etc.) and pass the chain with `WithAuditChain`. Loggers and Events given the same chain extend one chain:
 
 ```go
 type ChainStore interface {
     Save(sequence uint64, lastHash string) error
     Load() (sequence uint64, lastHash string, err error)
 }
+
+chain, err := axio.NewHashChain(redisStore)
+if err != nil {
+    return err
+}
+logger, _ := axio.New(config, axio.WithAuditChain(chain))
 ```
 
 ---
@@ -846,6 +890,57 @@ event, _ := axio.NewEvent("http_request", config,
 
 ---
 
+## Command Line: axio render and axio verify
+
+```bash
+go install github.com/pragmabits/axio/cmd/axio@latest
+```
+
+### axio render
+
+Logs meant for machines are JSON. `axio render` turns them back into the text a person reads on a terminal — the same text the `Console` output writes, byte for byte, colors included.
+
+```bash
+kubectl logs -f deploy/checkout | axio render
+kubectl logs -f -l app=checkout --prefix | axio render
+docker compose logs -f checkout | axio render
+journalctl -u checkout -o cat -f | axio render
+axio render /var/log/checkout.log
+kubectl logs deploy/checkout | axio render | grep -E 'WARN|ERROR'
+kubectl logs deploy/checkout | axio render --color=always | less -R
+```
+
+- Reads files in order, or standard input; `-` also names standard input
+- Writes each line as soon as it reads it, so it follows `-f` streams
+- Lines that are not axio entries pass through unchanged; a prefix before the JSON (pod name, compose service) stays in front
+- Wide events show `EVENT` in the level column
+- `--color=auto|always|never`: `auto` colors only a terminal and respects `NO_COLOR`
+- `--utc`: timestamps in UTC instead of the local time zone
+- `axio completion bash|zsh|fish|powershell` generates shell completion
+
+### axio verify
+
+Checks an audited JSON log against the chain stored by `WithAudit`: every line's hash matches the line, every line continues the one before it, and the log ends where the chain ends.
+
+```bash
+axio verify --store /var/lib/axio/chain.json /var/log/app.log
+axio verify --store chain.json app.log.2 app.log.1 app.log          # rotated files, oldest first
+axio verify --store chain.json --previous-hash "$(tail -1 app.log.1 | jq -r .hash)" app.log
+kubectl logs deploy/payments | axio verify --store chain.json
+```
+
+```text
+verified: the log reaches the chain's last hash 550e01                      # exit 0
+axio: app.log.1: hash mismatch: line 2                                      # exit 1
+axio: app.log: chain integrity compromised: line 1 does not continue the line before it
+axio: log does not reach the chain's last hash: log ends at "f0503d", chain at "550e01"
+```
+
+- `--store` is required; `--previous-hash` is the hash of the line before the first one, when the oldest file you have is not the first of the chain
+- Verify a log that is no longer being written: while a logger is still writing, the chain may end past the last line read
+
+---
+
 ## Logging Best Practices
 
 ### 1. Structure before text
@@ -895,7 +990,7 @@ Fields with unlimited values (email, payloads) explode indexes. Maintain:
 
 ### 7. Audit and integrity
 
-For critical operations, use `AuditHook` and combine with reliable storage.
+For critical operations, use `WithAudit` with a JSON output and combine with reliable storage.
 
 ### 8. Standard HTTP fields
 
@@ -1109,16 +1204,17 @@ logger.With(
 | `ErrBuildOutputs`        | Failed to create outputs             | Check file paths                             |
 | `ErrBuildHooks`          | Failed to create hooks               | Check PIICustomPatterns regex                |
 | `ErrBuildMetrics`        | Failed to build metrics              | Check MeterProvider configuration            |
+| `ErrBuildAudit`          | Failed to build audit chain          | Check the store path and its permissions     |
 | `ErrBuildEngine`         | Failed to build logging engine       | Check output and config combination          |
 | `ErrOpenFile`            | Failed to open log file              | Check path and permissions                   |
 | `ErrLoadChainState`      | Failed to load chain state           | Check chain file                             |
 | `ErrSaveChainState`      | Failed to save chain state           | Check write permissions                      |
 | `ErrMarshalChainState`   | Failed to marshal chain state        | Internal serialization error                 |
 | `ErrUnmarshalChainState` | Failed to unmarshal chain state      | Chain file corrupted or invalid format       |
-| `ErrHashMismatch`        | Calculated hash doesn't match        | Audit chain corrupted                        |
-| `ErrChainBroken`         | Chain integrity compromised          | Records have been tampered with              |
-| `ErrSerializeEntry`      | Failed to serialize audit entry      | Entry contains non-serializable data         |
-| `ErrCreateAuditHook`     | Failed to create audit hook          | Check chain store configuration              |
+| `ErrHashMismatch`        | A line's hash doesn't match it       | The line changed after it was written        |
+| `ErrChainBroken`         | Chain integrity compromised          | A line was removed, moved or inserted        |
+| `ErrChainIncomplete`     | Log ends before the chain            | End removed, or the whole chain rewritten    |
+| `ErrNilAuditChain`       | Chain passed to WithAuditChain is nil| Pass a chain from `NewHashChain`             |
 | `ErrNilMetricsProvider`  | Metrics provider is nil              | Pass a valid MeterProvider                   |
 | `ErrCreateMetric`        | Failed to create OTel instrument     | Check provider configuration                 |
 | `ErrNilTracer`           | Tracer passed to WithTracer is nil   | Pass a non-nil Tracer or omit the option     |

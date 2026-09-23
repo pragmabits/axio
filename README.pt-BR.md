@@ -57,7 +57,7 @@ Axio funciona como uma camada de abstração com interface estável (`Logger`). 
 
 ---
 
-## Ýndice
+## Índice
 
 - [Instalação](#instalação)
 - [Exemplo Rápido](#exemplo-rápido)
@@ -76,6 +76,7 @@ Axio funciona como uma camada de abstração com interface estável (`Logger`). 
   - [Auditoria (Hash Chain)](#auditoria-hash-chain)
   - [Tracing Distribuído (OpenTelemetry)](#tracing-distribuído-opentelemetry)
   - [Métricas](#métricas)
+- [Linha de Comando: axio render e axio verify](#linha-de-comando-axio-render-e-axio-verify)
 - [Boas Práticas de Logging](#boas-práticas-de-logging)
 - [Guia por Tipo de Serviço](#guia-por-tipo-de-serviço)
 - [Exemplos e Anti-padrões](#exemplos-e-anti-padrões)
@@ -425,8 +426,9 @@ dbLogger.Info(ctx, "query executada")        // logger: "db"
 Hooks processam entradas de log antes da escrita. Executados em ordem fixa:
 
 1. **PIIHook** - mascara dados sensíveis
-2. **AuditHook** - calcula hash chain
-3. **Hooks customizados** - na ordem passada para `WithHooks`
+2. **Hooks customizados** - na ordem passada para `WithHooks`
+
+Auditoria não é um hook: o hash é calculado quando a entrada é escrita, depois de todos os hooks, e por isso cobre o que eles mudaram.
 
 #### Interface Hook
 
@@ -571,36 +573,78 @@ Uma **hash chain** (cadeia de hashes) é uma estrutura onde cada registro conté
 
 **Importante:** Hash chain detecta alteração, não previne. A imutabilidade depende do backend de armazenamento.
 
-#### Campos Adicionados
+#### Como o axio calcula o hash de uma linha
 
-| Campo           | Descrição                 |
-| --------------- | ------------------------- |
-| `hash`          | Hash SHA256 desta entrada |
-| `previous_hash` | Hash da entrada anterior  |
+Cada linha JSON auditada termina com dois campos, sempre por último:
+
+| Campo           | Descrição                                                          |
+| --------------- | ------------------------------------------------------------------ |
+| `previous_hash` | Hash da linha anterior; vazio na primeira linha da cadeia          |
+| `hash`          | SHA-256 de `previous_hash` seguido de todos os bytes antes do fim  |
+
+O hash cobre exatamente o que foi escrito: mensagem, erro, stacktrace, metadados do serviço, anotações e o que os hooks customizados mudaram. Codificar, calcular o hash e escrever acontecem sob um único lock, então a ordem da cadeia é a ordem do arquivo, mesmo com várias goroutines escrevendo ao mesmo tempo.
+
+```json
+{"level":"info","timestamp":"2026-09-23T15:16:24.230105632Z","logger":"orders","caller":"app/main.go:26","message":"order created","order_id":"ord_8812","previous_hash":"","hash":"28d41c7b24128b63eed1ed71b77bc63e3f9b9b463af820a3171a0a1927b3f3a8"}
+```
+
+Só saídas JSON são verificáveis. Uma saída de texto mostra os 6 primeiros caracteres do hash, para achar a mesma entrada no JSON.
 
 #### Configuração
 
 ```go
-// Via Options
+// Estado da cadeia num arquivo local
 logger, _ := axio.New(config,
+    axio.WithOutputs(axio.MustFile("/var/log/app.log", axio.FormatJSON)),
     axio.WithAudit("/var/lib/axio/chain.json"),
 )
-
-// Via Hook direto
-store := axio.NewFileStore("/var/lib/axio/chain.json")
-hook, _ := axio.NewAuditHook(store)
-logger, _ := axio.New(config, axio.WithHooks(hook))
 ```
+
+Todo Logger e Event auditado com o mesmo caminho num processo estende **uma** cadeia, qualquer que tenha sido criado primeiro.
+
+#### Verificando um log
+
+```go
+chain, err := axio.NewHashChain(axio.NewFileStore("/var/lib/axio/chain.json"))
+if err != nil {
+    return err
+}
+file, err := os.Open("/var/log/app.log")
+if err != nil {
+    return err
+}
+defer file.Close()
+
+// "" porque o arquivo começa a cadeia; num arquivo rotacionado, passe o
+// último hash do arquivo anterior.
+if err := chain.Verify(file, ""); err != nil {
+    return fmt.Errorf("o log de auditoria não confere: %w", err)
+}
+```
+
+| Erro                 | Significado                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `ErrHashMismatch`    | O conteúdo de uma linha mudou depois de escrito                     |
+| `ErrChainBroken`     | Uma linha foi removida, movida ou inserida, ou não tem os hashes no fim |
+| `ErrChainIncomplete` | O log termina antes da cadeia: o fim foi apagado ou a cadeia inteira foi reescrita |
+
+Para arquivos rotacionados, `axio.VerifyLines(reader, previousHash)` confere um arquivo e devolve o hash da sua última linha — o `previousHash` do arquivo seguinte. `chain.Verify` é `VerifyLines` mais a conferência de que o log termina no último hash da cadeia. No terminal, o `axio verify` faz as duas coisas (veja abaixo).
 
 #### ChainStore Customizado
 
-Implemente `ChainStore` para backends customizados (Redis, PostgreSQL, etc.):
+Implemente `ChainStore` para backends customizados (Redis, PostgreSQL, etc.) e passe a cadeia com `WithAuditChain`. Loggers e Events que recebem a mesma cadeia estendem uma cadeia só:
 
 ```go
 type ChainStore interface {
     Save(sequence uint64, lastHash string) error
     Load() (sequence uint64, lastHash string, err error)
 }
+
+chain, err := axio.NewHashChain(redisStore)
+if err != nil {
+    return err
+}
+logger, _ := axio.New(config, axio.WithAuditChain(chain))
 ```
 
 ---
@@ -811,6 +855,57 @@ event, _ := axio.NewEvent("http_request", config,
 
 ---
 
+## Linha de Comando: axio render e axio verify
+
+```bash
+go install github.com/pragmabits/axio/cmd/axio@latest
+```
+
+### axio render
+
+Logs feitos para máquinas são JSON. O `axio render` transforma esses logs de volta no texto que uma pessoa lê no terminal: o mesmo texto que a saída `Console` escreve, byte a byte, com as cores.
+
+```bash
+kubectl logs -f deploy/checkout | axio render
+kubectl logs -f -l app=checkout --prefix | axio render
+docker compose logs -f checkout | axio render
+journalctl -u checkout -o cat -f | axio render
+axio render /var/log/checkout.log
+kubectl logs deploy/checkout | axio render | grep -E 'WARN|ERROR'
+kubectl logs deploy/checkout | axio render --color=always | less -R
+```
+
+- Lê arquivos em ordem, ou a entrada padrão; `-` também indica a entrada padrão
+- Escreve cada linha assim que a lê, então acompanha streams com `-f`
+- Linhas que não são entradas do axio passam intactas; um prefixo antes do JSON (nome do pod, serviço do compose) fica na frente
+- Wide events mostram `EVENT` na coluna de nível
+- `--color=auto|always|never`: `auto` só colore um terminal e respeita `NO_COLOR`
+- `--utc`: horários em UTC em vez do fuso local
+- `axio completion bash|zsh|fish|powershell` gera o autocompletar do shell
+
+### axio verify
+
+Confere um log JSON auditado contra a cadeia guardada pelo `WithAudit`: o hash de cada linha confere com a linha, cada linha continua a anterior e o log termina onde a cadeia termina.
+
+```bash
+axio verify --store /var/lib/axio/chain.json /var/log/app.log
+axio verify --store chain.json app.log.2 app.log.1 app.log          # arquivos rotacionados, do mais antigo ao mais novo
+axio verify --store chain.json --previous-hash "$(tail -1 app.log.1 | jq -r .hash)" app.log
+kubectl logs deploy/payments | axio verify --store chain.json
+```
+
+```text
+verified: the log reaches the chain's last hash 550e01                      # saída 0
+axio: app.log.1: hash mismatch: line 2                                      # saída 1
+axio: app.log: chain integrity compromised: line 1 does not continue the line before it
+axio: log does not reach the chain's last hash: log ends at "f0503d", chain at "550e01"
+```
+
+- `--store` é obrigatório; `--previous-hash` é o hash da linha anterior à primeira, quando o arquivo mais antigo que você tem não é o primeiro da cadeia
+- Verifique um log que não está mais sendo escrito: enquanto um logger ainda escreve, a cadeia pode terminar depois da última linha lida
+
+---
+
 ## Boas Práticas de Logging
 
 ### 1. Estrutura antes de texto
@@ -860,7 +955,7 @@ Campos com valores ilimitados (email, payloads) explodem índices. Mantenha:
 
 ### 7. Auditoria e integridade
 
-Para operações críticas, use `AuditHook` e combine com armazenamento confiável.
+Para operações críticas, use `WithAudit` com uma saída JSON e combine com armazenamento confiável.
 
 ### 8. Campos HTTP padrão
 
@@ -1074,16 +1169,17 @@ logger.With(
 | `ErrBuildOutputs`        | Falha ao criar outputs               | Verifique caminhos de arquivo                |
 | `ErrBuildHooks`          | Falha ao criar hooks                 | Verifique regex de PIICustomPatterns         |
 | `ErrBuildMetrics`        | Falha ao construir métricas          | Verifique configuração do MeterProvider      |
+| `ErrBuildAudit`          | Falha ao construir a cadeia de audit | Verifique o caminho do store e as permissões |
 | `ErrBuildEngine`         | Falha ao construir engine de logging | Verifique combinação de outputs e config     |
 | `ErrOpenFile`            | Falha ao abrir arquivo de log        | Verifique caminho e permissões               |
 | `ErrLoadChainState`      | Falha ao carregar estado da chain    | Verifique arquivo de chain                   |
 | `ErrSaveChainState`      | Falha ao salvar estado da chain      | Verifique permissões de escrita              |
 | `ErrMarshalChainState`   | Falha ao serializar estado da chain  | Erro interno de serialização                 |
 | `ErrUnmarshalChainState` | Falha ao desserializar estado da chain | Arquivo de chain corrompido ou formato inválido |
-| `ErrHashMismatch`        | Hash calculado não corresponde       | Cadeia de auditoria corrompida               |
-| `ErrChainBroken`         | Integridade da cadeia comprometida   | Registros foram adulterados                  |
-| `ErrSerializeEntry`      | Falha ao serializar entrada de audit | Entrada contém dados não serializáveis       |
-| `ErrCreateAuditHook`     | Falha ao criar hook de auditoria     | Verifique configuração do chain store        |
+| `ErrHashMismatch`        | O hash de uma linha não confere      | A linha mudou depois de escrita              |
+| `ErrChainBroken`         | Integridade da cadeia comprometida   | Uma linha foi removida, movida ou inserida   |
+| `ErrChainIncomplete`     | O log termina antes da cadeia        | Fim apagado ou cadeia inteira reescrita      |
+| `ErrNilAuditChain`       | Cadeia passada a WithAuditChain é nil| Passe uma cadeia de `NewHashChain`           |
 | `ErrNilMetricsProvider`  | Provider de métricas é nil           | Passe um MeterProvider válido                |
 | `ErrCreateMetric`        | Falha ao criar instrumento OTel      | Verifique configuração do provider           |
 | `ErrNilTracer`           | Tracer passado a WithTracer é nil    | Passe um Tracer não-nulo ou omita a opção    |

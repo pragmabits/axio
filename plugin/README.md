@@ -30,7 +30,7 @@ Claude Code plugin providing deep expertise on the **axio** Go structured loggin
 | `configuration` | LoadConfig, YAML/JSON/TOML, functional options, config precedence |
 | `outputs` | Console, Stdout, File, RotatingFile, rotation, agent mode |
 | `pii-masking` | PIIMasker, PIIHook, CPF/CNPJ/email/phone patterns, CustomPII |
-| `audit` | Hash chain, AuditHook, FileStore, ChainStore, compliance |
+| `audit` | Hash chain, Verify, WithAudit, WithAuditChain, FileStore, ChainStore, compliance |
 | `tracing-metrics` | OpenTelemetry, trace_id/span_id, Metrics interface |
 | `migration-patterns` | Migrating from log, slog, logrus, zerolog, zap, apex/log |
 | `custom-extensions` | Implementing Output, Hook, ChainStore, Tracer, Metrics, Annotable |

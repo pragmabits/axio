@@ -22,7 +22,7 @@ DefaultSensitiveFields: password, token, api_key, secret, credential, etc.
 Fields matched case-insensitively with partial matching.
 
 ## Hook Execution Order
-PIIHook runs FIRST — before AuditHook — so sensitive data never enters the audit chain.
+PIIHook runs FIRST, and auditing hashes the line only when it is written, after every hook — so sensitive data never enters the audit chain.
 
 ## Usage
 Use `/axio` command for detailed PII masking guidance.

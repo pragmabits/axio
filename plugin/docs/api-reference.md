@@ -128,8 +128,9 @@ func WithAgentMode() Option
 func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
 func WithAudit(storePath string) Option
+func WithAuditChain(chain *HashChain) Option
 func WithMetrics(provider metric.MeterProvider) Option
-func WithTracer(t Tracer) Option
+func WithTracer(tracer Tracer) Option
 ```
 
 ## Outputs (output.go)
@@ -321,8 +322,6 @@ type Entry struct {
     TraceID      string
     SpanID       string
     Annotations  Annotations
-    Hash         string  // set by AuditHook
-    PreviousHash string  // set by AuditHook
 }
 ```
 
@@ -350,9 +349,10 @@ func NoopHook() Hook
 ```
 
 Hooks supplied via [`WithHooks`](#withhooks) execute in a fixed order:
-`PIIHook` -> `AuditHook` -> custom hooks. PII masks before audit hashes,
-and custom hooks observe the already-masked, already-hashed entry. The
-chain itself is an unexported implementation detail.
+`PIIHook` -> custom hooks. Custom hooks observe the already-masked entry.
+Auditing is not a hook: the hash is computed when the entry is written,
+after every hook, so it covers what the hooks changed. The chain itself is
+an unexported implementation detail.
 
 ## Audit (audit.go)
 
@@ -361,7 +361,7 @@ chain itself is an unexported implementation detail.
 ```go
 type AuditConfig struct {
     Enabled   bool
-    StorePath string  // required when Enabled
+    StorePath string  // required when Enabled, unless WithAuditChain is used
 }
 ```
 
@@ -391,29 +391,29 @@ type HashChain struct { /* internal */ }
 
 func NewHashChain(store ChainStore) (*HashChain, error)
 func (c *HashChain) Add(data []byte) (hash, previousHash string, err error)
-func (c *HashChain) Verify(entries []ChainEntry, getData func(int) []byte) error
+func (c *HashChain) Verify(reader io.Reader, previousHash string) error
 func (c *HashChain) Sequence() uint64
 func (c *HashChain) LastHash() string
 
-type ChainEntry struct {
-    Sequence     uint64
-    Timestamp    time.Time
-    Hash         string
-    PreviousHash string
-}
+func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err error)
 ```
 
-### AuditHook
+`Add` hashes `sha256(previousHash ‖ data)`. An audited Logger or Event writes
+every JSON line with `previous_hash` and `hash` as its last two keys, hashing
+exactly the bytes before them; encoding, hashing and writing happen under the
+chain's lock, so the file's order is the chain's order. Text outputs show the
+first 6 characters of the hash, for reference only.
 
-```go
-type AuditHook struct { /* internal */ }
+`Verify` reads audited JSON lines and returns `ErrHashMismatch` (a line
+changed), `ErrChainBroken` (a line removed, moved, inserted or without
+trailer) or `ErrChainIncomplete` (the log ends before `LastHash`). Pass `""`
+as `previousHash` for a log that starts the chain. `VerifyLines` checks lines
+without the end-of-chain check and returns the last line's hash, for
+verifying rotated files one at a time. From the terminal: `axio verify
+--store chain.json [file...]`.
 
-func NewAuditHook(store ChainStore) (*AuditHook, error)
-func MustAuditHook(store ChainStore) *AuditHook
-func (h *AuditHook) Name() string
-func (h *AuditHook) Process(ctx context.Context, entry *Entry) error
-func (h *AuditHook) SetMetrics(metrics Metrics)  // implements MetricsAware
-```
+`WithAudit(path)` shares one chain per path across every Logger and Event in
+the process. `WithAuditChain(chain)` takes a chain over any `ChainStore`.
 
 ## Tracing (tracing.go)
 
@@ -490,6 +490,7 @@ var (
     ErrBuildOutputs   = errors.New("failed to build outputs")
     ErrBuildHooks     = errors.New("failed to build hooks")
     ErrBuildMetrics   = errors.New("failed to build metrics")
+    ErrBuildAudit     = errors.New("failed to build audit chain")
     ErrBuildEngine    = errors.New("failed to build engine")
 )
 
@@ -504,8 +505,8 @@ var (
     ErrUnmarshalChainState = errors.New("failed to unmarshal chain state")
     ErrHashMismatch        = errors.New("hash mismatch")
     ErrChainBroken         = errors.New("chain integrity compromised")
-    ErrSerializeEntry      = errors.New("failed to serialize audit entry")
-    ErrCreateAuditHook     = errors.New("failed to create audit hook")
+    ErrChainIncomplete     = errors.New("log does not reach the chain's last hash")
+    ErrNilAuditChain       = errors.New("audit chain cannot be nil")
 )
 
 var (

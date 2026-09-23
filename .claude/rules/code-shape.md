@@ -83,10 +83,9 @@ file that fails to close does not leave the others open: `Logger.Close`,
 **The log path has no one to return an error to.** `Info`, `Error`, `Emit` and
 the rest return nothing and must not panic in the caller's code. A failure there
 is reported on stderr, one line prefixed `axio:`, and the call goes on: a hook
-error, a panic while formatting the message (recovered, and the message replaced
-by `[INVALID FORMAT]`), metrics enabled without a provider. Anything that can
-fail *before* the first entry — options, validation, opening outputs — fails in
-`New` with a sentinel instead, where the caller can still act on it.
+error, metrics enabled without a provider. Anything that can fail *before* the
+first entry — options, validation, opening outputs — fails in `New` with a
+sentinel instead, where the caller can still act on it.
 
 Concurrency is verified, not trusted: `datarace`, `forbidden-call-in-wg-go`, and
 `defer` restricted to loop, recover and immediate-recover in `.golangci.yml`,
@@ -97,10 +96,11 @@ and `go test -race ./...`, which needs cgo and therefore a C compiler.
 `any` is not a way out, and `interface{}` is the same escape spelled longer.
 
 A logging library has one place where `any` is the honest type: the value a
-caller attaches to an entry, which axio cannot know in advance — `Annotate`,
-`Event.Add`, `Annotation.Data`. Even there it is narrowed as early as possible:
-`Annotate` switches the primitive types into typed fields, and only what is left
-travels as an interface.
+caller attaches to an entry, which axio cannot know in advance — `Field`,
+`Event.Add`, `Annotations.Add`, `Annotation.Data`. Even there it is narrowed as
+early as possible: `Field` and both `Add` methods take the value's type as a
+type parameter and switch the primitive types into typed fields, and only what
+is left travels as an interface.
 
 Anywhere else, name the type. Where a value truly crosses out of what the types
 know, name the type at that boundary in one line, exactly where the knowledge

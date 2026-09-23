@@ -44,7 +44,7 @@ go install ./cmd/axio                 # Install the axio command
 go run ./examples/basic/              # Logger, levels, named, DefaultConfig
 go run ./examples/config/             # LoadConfig, LoadConfigFrom
 go run ./examples/outputs/            # Console+File, agent mode, production
-go run ./examples/annotations/        # Annotate, HTTP metadata
+go run ./examples/annotations/        # Field, HTTP metadata
 go run ./examples/pii/                # MaskString API, PIIHook
 go run ./examples/audit/              # Audited logger, Verify, tamper detection
 go run ./examples/tracing/            # OpenTelemetry

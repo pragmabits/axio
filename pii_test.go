@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPIIMasker_MaskString(t *testing.T) {
@@ -351,6 +352,21 @@ type piiRequest struct {
 	Body []byte `json:"body"`
 }
 
+// piiVisit is a struct annotation carrying a CPF beside a duration and a number
+// a float64 cannot hold exactly.
+type piiVisit struct {
+	Document string        `json:"document"`
+	Duration time.Duration `json:"duration"`
+	Sequence int64         `json:"sequence"`
+}
+
+// piiRepeated is a value whose own JSON repeats a name carrying a CPF.
+type piiRepeated struct{}
+
+func (piiRepeated) MarshalJSON() ([]byte, error) {
+	return []byte(`{"cpf":"123.456.789-01","cpf":"123.456.789-01"}`), nil
+}
+
 // piiToken returns a JWT with a fixed header and signature and claims as its payload.
 func piiToken(claims string) string {
 	encode := base64.RawURLEncoding.EncodeToString
@@ -439,6 +455,21 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			want:  `{"body":` + maskedPayload + `}`,
 		},
 		{
+			name:  "binary_bytes_inside_struct",
+			value: piiRequest{Body: binary},
+			want:  `{"body":"[REDACTED]"}`,
+		},
+		{
+			name:  "struct_keeps_durations_and_large_numbers",
+			value: piiVisit{Document: "123.456.789-01", Duration: time.Second, Sequence: 9007199254740993},
+			want:  `{"document":"***.***.***-**","duration":1000000000,"sequence":9007199254740993}`,
+		},
+		{
+			name:  "repeated_names",
+			value: piiRepeated{},
+			want:  `{"cpf":"***.***.***-**"}`,
+		},
+		{
 			name:  "base64_string",
 			value: base64.StdEncoding.EncodeToString(payload),
 			want:  maskedPayload,
@@ -462,6 +493,11 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			name:  "jwt",
 			value: token,
 			want:  `"` + maskedToken + `"`,
+		},
+		{
+			name:  "jwt_payload_followed_by_other_data",
+			value: piiToken(`{"cpf":"123.456.789-01"} trailing`),
+			want:  `"` + piiToken(`{"cpf":"***.***.***-**"}`) + `"`,
 		},
 		{
 			name:  "jwt_inside_text",

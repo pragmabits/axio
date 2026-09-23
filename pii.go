@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	"go.uber.org/zap/zapcore"
+
+	"github.com/pragmabits/axio/internal/logline"
 )
 
 // DefaultPIIMaxDepth is the depth used when [PIIConfig.MaxDepth] is zero.
@@ -284,21 +288,22 @@ func (m *PIIMasker) MaskString(input string) string {
 // Every value is covered as it will be written: a string; an error, by its
 // message; a fmt.Stringer, by its text; a []byte, which is written as base64,
 // by the text it holds — bytes that are not UTF-8 text cannot be inspected and
-// become "[REDACTED]"; and a structured value — map, slice, struct or pointer —
-// walked as its JSON encoding.
+// become "[REDACTED]", inside a structured value too; and a structured value —
+// map, slice, struct or pointer — walked as the JSON encoding the log writes
+// for it.
 //
 // A string with the shape of base64 — the standard or the URL alphabet, padded
 // or not — is also decoded, and masked when the text it decodes to carries PII:
-// that is how a struct's []byte field arrives in its JSON encoding, and how a
-// caller may have encoded bytes itself. A string that decodes to something
-// other than text passes as it is, since nothing tells the base64 of binary data
-// from any other string of that shape. The payload of a JWT, anywhere in a
-// text, is decoded and masked as the JSON it is, sensitive claims included; the
-// token's signature then no longer matches. A structured value that
-// needed masking is replaced by its masked JSON tree, objects as
-// map[string]any, so its keys are then written in alphabetical order; one that
-// did not keeps its original type. A container nested deeper than
-// [PIIConfig.MaxDepth] is replaced by "[REDACTED]" whole.
+// that is how a []byte of text, a byte array or a named byte-slice type arrives
+// in the JSON encoding of a structured value, and how a caller may have encoded
+// bytes itself. A string that decodes to something other than text passes as
+// it is, since nothing tells the base64 of binary data from any other string of
+// that shape. The payload of a JWT, anywhere in a text, is decoded and masked as
+// the JSON it is, sensitive claims included; the token's signature then no
+// longer matches. A structured value that needed masking is replaced by its
+// masked JSON tree, objects as map[string]any, so its keys are then written in
+// alphabetical order; one that did not keeps its original type. A container
+// nested deeper than [PIIConfig.MaxDepth] is replaced by "[REDACTED]" whole.
 //
 // A masked error is written by its masked message only, and still unwraps to
 // the original, so errors.Is and errors.As keep working for later hooks.
@@ -402,7 +407,7 @@ func (m *PIIMasker) maskAnnotation(annotation Annotation, counts map[PIIPattern]
 // annotation's own value being 1.
 func (m *PIIMasker) maskValue(value any, depth int, counts map[PIIPattern]int) (any, bool) {
 	switch typed := value.(type) {
-	case nil, bool, json.Number, time.Time, time.Duration,
+	case nil, bool, jsontext.Value, time.Time, time.Duration,
 		int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr,
 		float32, float64, complex64, complex128:
 		return value, false
@@ -428,12 +433,12 @@ func (m *PIIMasker) maskValue(value any, depth int, counts map[PIIPattern]int) (
 // maskEncoded masks value as its JSON encoding, and keeps value itself when the
 // encoding had nothing to mask.
 func (m *PIIMasker) maskEncoded(value any, depth int, counts map[PIIPattern]int) (any, bool) {
-	tree, ok := jsonTree(value)
+	tree, redactedBinary, ok := jsonTree(value)
 	if !ok {
 		return value, false
 	}
 	masked, changed := m.maskValue(tree, depth, counts)
-	if !changed {
+	if !changed && !redactedBinary {
 		return value, false
 	}
 	return masked, true
@@ -528,15 +533,19 @@ func (m *PIIMasker) maskToken(token string, counts map[PIIPattern]int) string {
 	if err != nil {
 		return token
 	}
-	claims, ok := decodeJSON(payload)
+	claims, ok := firstValue(payload)
 	if !ok {
 		return token
 	}
-	masked, changed := m.maskValue(claims, 1, counts)
+	tree, ok := decodeJSON(claims)
+	if !ok {
+		return token
+	}
+	masked, changed := m.maskValue(tree, 1, counts)
 	if !changed {
 		return token
 	}
-	encoded, err := json.Marshal(masked)
+	encoded, err := json.Marshal(masked, logline.ValueOptions())
 	if err != nil {
 		return redacted
 	}
@@ -807,25 +816,62 @@ func isAlphanumeric(char byte) bool {
 }
 
 // jsonTree returns value as the JSON tree it encodes to — map[string]any,
-// []any, string, json.Number, bool or nil — the encoding zap writes for it.
-func jsonTree(value any) (any, bool) {
-	encoded, err := json.Marshal(value)
+// []any, string, jsontext.Value for a number, bool or nil — in the encoding the
+// log writes it with, every []byte that is not UTF-8 text redacted on the way,
+// and whether any was: once encoded, those bytes cannot be told from a string.
+func jsonTree(value any) (tree any, redactedBinary, ok bool) {
+	redaction := binaryRedactions.Get().(*binaryRedaction)
+	defer binaryRedactions.Put(redaction)
+	redaction.redacted = false
+	encoded, err := json.Marshal(value, redaction.options)
 	if err != nil {
-		return nil, false
+		return nil, false, false
 	}
-	return decodeJSON(encoded)
+	tree, ok = decodeJSON(encoded)
+	return tree, redaction.redacted, ok
 }
 
-// decodeJSON returns the JSON tree data holds, numbers kept as json.Number so
-// none loses precision on the way back out.
+// decodeJSON returns the JSON value data holds as a tree, each number kept as
+// the jsontext.Value it was written as so none loses precision on the way back
+// out.
 func decodeJSON(data []byte) (any, bool) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
 	var tree any
-	if err := decoder.Decode(&tree); err != nil {
+	if err := json.Unmarshal(data, &tree, treeDecoding); err != nil {
 		return nil, false
 	}
 	return tree, true
+}
+
+// binaryRedaction redacts, in one encoding at a time, every []byte that is not
+// UTF-8 text, and records whether it did.
+type binaryRedaction struct {
+	options  json.Options
+	redacted bool
+}
+
+// newBinaryRedaction returns a binaryRedaction with its options built, once
+// for every encoding it serves.
+func newBinaryRedaction() *binaryRedaction {
+	redaction := &binaryRedaction{}
+	redaction.options = logline.ValueOptions(json.MarshalToFunc(redaction.marshalBytes))
+	return redaction
+}
+
+// marshalBytes writes data as redacted when it is not UTF-8 text, and leaves
+// text to the default encoding.
+func (b *binaryRedaction) marshalBytes(encoder *jsontext.Encoder, data []byte) error {
+	if utf8.Valid(data) {
+		return errors.ErrUnsupported
+	}
+	b.redacted = true
+	return encoder.WriteToken(jsontext.String(redacted))
+}
+
+// firstValue returns the first JSON value data starts with, and false when it
+// starts with none; whatever follows that value is left out.
+func firstValue(data []byte) (jsontext.Value, bool) {
+	value, err := jsontext.NewDecoder(bytes.NewReader(data), treeDecoding).ReadValue()
+	return value, err == nil
 }
 
 // piiPatternInfo holds the regex and mask for a PII pattern.
@@ -866,6 +912,23 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 // tokenPattern matches a JWT: a header and a payload, both base64url JSON
 // objects and so both starting with "ey", and a signature, empty when unsigned.
 var tokenPattern = regexp.MustCompile(`ey[A-Za-z0-9_-]+\.ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`)
+
+// binaryRedactions holds the binaryRedaction of every encoding not in progress.
+var binaryRedactions = sync.Pool{New: func() any { return newBinaryRedaction() }}
+
+// treeDecoding decodes JSON under the options the log writes it with, each
+// number into an any kept as the jsontext.Value it was written as.
+var treeDecoding = json.JoinOptions(logline.ValueOptions(), json.WithUnmarshalers(json.UnmarshalFromFunc(func(decoder *jsontext.Decoder, value *any) error {
+	if decoder.PeekKind() != '0' {
+		return errors.ErrUnsupported
+	}
+	number, err := decoder.ReadValue()
+	if err != nil {
+		return err
+	}
+	*value = number.Clone()
+	return nil
+})))
 
 var defaultSensitiveFields = []string{
 	"password", "senha",

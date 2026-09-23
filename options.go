@@ -21,6 +21,7 @@ import (
 //   - [WithHooks]: configures custom processing hooks
 //   - [WithPII]: configures PII masking
 //   - [WithPIIMaxDepth]: sets how deep PII masking walks into structured values
+//   - [WithPIIOmitErrorVerbose]: omits the verbose form of errors instead of masking it
 //   - [WithAudit]: configures auditing with a hash chain stored in a file
 //   - [WithAuditChain]: configures auditing with a hash chain of your own
 //   - [WithMetrics]: configures metrics collection
@@ -180,6 +181,27 @@ func WithPIIMaxDepth(depth int) Option {
 			return fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, depth)
 		}
 		config.PIIMaxDepth = depth
+		return nil
+	}
+}
+
+// WithPIIOmitErrorVerbose makes PII masking omit the verbose form of an error
+// that formats itself — the %+v, a stack trace for many errors — instead of
+// masking it, as [Config.PIIOmitErrorVerbose] does from a file. The error is
+// then written by its masked message only, and its verbose form is never read,
+// which spares scanning it: a stack of a couple of kilobytes costs about 250 µs
+// to mask. It takes effect with masking on, through [WithPII] or
+// [Config.PIIEnabled].
+//
+// Example:
+//
+//	logger, err := axio.New(config,
+//	    axio.WithPII(nil, nil),
+//	    axio.WithPIIOmitErrorVerbose(),
+//	)
+func WithPIIOmitErrorVerbose() Option {
+	return func(config *Config) error {
+		config.PIIOmitErrorVerbose = true
 		return nil
 	}
 }

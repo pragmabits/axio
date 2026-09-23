@@ -366,7 +366,7 @@ func TestAuditCore_Write(t *testing.T) {
 	t.Run("changes_made_by_custom_hooks_are_covered", func(t *testing.T) {
 		logPath, storePath := tempFile(t, "audited.log"), tempFile(t, "audited-chain.json")
 		tenant := &testHook{name: "tenant", process: func(ctx context.Context, entry *Entry) error {
-			entry.Annotations = append(entry.Annotations, Annotate("tenant", "acme"))
+			entry.Annotations = append(entry.Annotations, Field("tenant", "acme"))
 			return nil
 		}}
 		logAudited(t, logPath, WithAudit(storePath), WithHooks(tenant))
@@ -400,7 +400,7 @@ func TestAuditCore_Write(t *testing.T) {
 			go func() {
 				defer group.Done()
 				for index := range 200 {
-					logger.Info(context.Background(), "worker %d line %d", worker, index)
+					logger.Info(context.Background(), "worker line", Field("worker", worker), Field("line", index))
 				}
 			}()
 		}
@@ -484,7 +484,7 @@ func logAudited(t *testing.T, path string, options ...Option) {
 	all := append([]Option{WithOutputs(MustFile(path, FormatJSON))}, options...)
 	logger, err := New(Config{ServiceName: "checkout", ServiceVersion: "1.4.2", Environment: EnvironmentProduction, Level: LevelInfo}, all...)
 	assertNoError(t, err)
-	orders := logger.Named("orders").With(Annotate("order_id", "ord_8812"))
+	orders := logger.Named("orders").With(Field("order_id", "ord_8812"))
 	orders.Info(context.Background(), "order created")
 	orders.Error(context.Background(), errors.New("card declined"), "payment failed")
 	orders.Info(context.Background(), "order cancelled")

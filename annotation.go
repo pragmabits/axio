@@ -2,6 +2,8 @@ package axio
 
 import (
 	"math"
+	"reflect"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -9,7 +11,7 @@ import (
 
 // Annotation represents a structured field attached to a log entry.
 //
-// Use [Annotate] to create annotations for simple key-value pairs.
+// Use [Field] to create annotations for simple key-value pairs.
 // For complex types that produce multiple fields, implement [Annotable].
 //
 // The internal storage wraps a zapcore.Field directly to avoid a second
@@ -22,15 +24,15 @@ import (
 //
 // Example:
 //
-//	logger.With(
-//	    axio.Annotate("user_id", "usr_123"),
-//	    axio.Annotate("action", "login"),
-//	).Info(ctx, "user authenticated")
+//	logger.Info(ctx, "user authenticated",
+//	    axio.Field("user_id", "usr_123"),
+//	    axio.Field("action", "login"),
+//	)
 type Annotation struct {
 	field zapcore.Field
 }
 
-// Annotate creates an annotation with the given key and value.
+// Field creates an annotation with the given key and value.
 //
 // For primitive types (string, integers, floats, bool), the implementation
 // is zero-allocation when inlined by the compiler. Complex types (structs,
@@ -38,10 +40,10 @@ type Annotation struct {
 //
 // Example:
 //
-//	axio.Annotate("user_id", "usr_123")
-//	axio.Annotate("count", 42)
-//	axio.Annotate("order", myOrder)
-func Annotate[T any](key string, value T) Annotation {
+//	axio.Field("user_id", "usr_123")
+//	axio.Field("count", 42)
+//	axio.Field("order", myOrder)
+func Field[T any](key string, value T) Annotation {
 	switch concrete := any(value).(type) {
 	case string:
 		return Annotation{field: zap.String(key, concrete)}
@@ -60,31 +62,80 @@ func Annotate[T any](key string, value T) Annotation {
 	case bool:
 		return Annotation{field: zap.Bool(key, concrete)}
 	default:
-		return annotateUncommon(key, value)
+		return uncommonField(key, value)
 	}
 }
 
 // Name returns the annotation key.
 func (a Annotation) Name() string { return a.field.Key }
 
-// Data returns the annotation value.
+// Data returns the annotation value: int64 for a signed integer, uint64 for an
+// unsigned one, float64 for a floating-point number, and any other value as it
+// was given.
 func (a Annotation) Data() any {
+	if value, ok := a.integerData(); ok {
+		return value
+	}
 	switch a.field.Type {
 	case zapcore.StringType:
 		return a.field.String
-	case zapcore.Int64Type, zapcore.Int32Type, zapcore.Int16Type, zapcore.Int8Type:
-		return a.field.Integer
-	case zapcore.Uint64Type, zapcore.Uint32Type, zapcore.Uint16Type, zapcore.Uint8Type:
-		return uint64(a.field.Integer)
 	case zapcore.Float64Type:
 		return math.Float64frombits(uint64(a.field.Integer))
 	case zapcore.Float32Type:
 		return float64(math.Float32frombits(uint32(a.field.Integer)))
 	case zapcore.BoolType:
 		return a.field.Integer == 1
+	case zapcore.DurationType:
+		return time.Duration(a.field.Integer)
+	case zapcore.TimeType:
+		return a.moment()
 	default:
 		return a.field.Interface
 	}
+}
+
+// Value returns the annotation's value as a T, and whether it holds one. A
+// number converts to any number type of its kind — signed, unsigned or
+// floating point — that holds it exactly, so an annotation made from an int
+// comes back as an int, an int64, or an int8 when it fits. Any other value must
+// be a T.
+//
+// Example:
+//
+//	if count, ok := annotation.Value[int](); ok {
+//	    total += count
+//	}
+func (a Annotation) Value[T any]() (T, bool) {
+	data := a.Data()
+	if value, ok := data.(T); ok {
+		return value, true
+	}
+	var value T
+	ok := convertNumber(data, reflect.ValueOf(&value).Elem())
+	return value, ok
+}
+
+// integerData returns the value of a field zap stores as an integer: int64 for
+// a signed one, uint64 for an unsigned one or a uintptr.
+func (a Annotation) integerData() (any, bool) {
+	switch a.field.Type {
+	case zapcore.Int64Type, zapcore.Int32Type, zapcore.Int16Type, zapcore.Int8Type:
+		return a.field.Integer, true
+	case zapcore.Uint64Type, zapcore.Uint32Type, zapcore.Uint16Type, zapcore.Uint8Type, zapcore.UintptrType:
+		return uint64(a.field.Integer), true
+	default:
+		return nil, false
+	}
+}
+
+// moment returns the time a TimeType field holds: nanoseconds since the epoch,
+// in the location zap keeps beside them.
+func (a Annotation) moment() time.Time {
+	moment := time.Unix(0, a.field.Integer)
+	if location, ok := a.field.Interface.(*time.Location); ok {
+		return moment.In(location)
+	}
+	return moment
 }
 
 // Annotations is a collection of annotations with helper methods.
@@ -108,18 +159,20 @@ func (a Annotations) Data() []any {
 	return contents
 }
 
-// Add adds a new annotation to the collection and returns the modified collection.
-func (a *Annotations) Add(key string, value any) Annotations {
-	*a = append(*a, Annotate(key, value))
+// Add adds a new annotation to the collection and returns the modified
+// collection. Like [Field], it takes the value's type as a type parameter, so a
+// value of a primitive type is kept without allocating.
+func (a *Annotations) Add[T any](key string, value T) Annotations {
+	*a = append(*a, Field(key, value))
 	return *a
 }
 
 // Annotable allows complex types to produce annotations for log entries.
 //
-// Types that implement this interface can be passed to [Logger.With]
-// via [Annotate]. The logger detects the [Annotable] implementation and
-// expands the annotations before the hooks run, so PII masking and custom
-// hooks see each field on its own.
+// Types that implement this interface can be passed to a level method or to
+// [Logger.With] via [Field]. The logger detects the [Annotable]
+// implementation and expands the annotations before the hooks run, so PII
+// masking and custom hooks see each field on its own.
 //
 // Append appends the type's annotations to the provided slice and
 // returns the extended slice.
@@ -128,9 +181,9 @@ func (a *Annotations) Add(key string, value any) Annotations {
 //
 //	func (h HTTP) Append(target []axio.Annotation) []axio.Annotation {
 //	    return append(target,
-//	        axio.Annotate("method", h.Method),
-//	        axio.Annotate("url", h.URL),
-//	        axio.Annotate("status_code", h.StatusCode),
+//	        axio.Field("method", h.Method),
+//	        axio.Field("url", h.URL),
+//	        axio.Field("status_code", h.StatusCode),
 //	    )
 //	}
 type Annotable interface {
@@ -155,7 +208,7 @@ type Annotable interface {
 //	    UserAgent:  r.UserAgent(),
 //	    ClientIP:   r.RemoteAddr,
 //	}
-//	logger.With(axio.Annotate("http", http)).Info(ctx, "request processed")
+//	logger.Info(ctx, "request processed", axio.Field("http", http))
 type HTTP struct {
 	// Method is the HTTP method (GET, POST, PUT, DELETE, etc).
 	Method string `json:"method"`
@@ -174,19 +227,19 @@ type HTTP struct {
 // Append implements [Annotable] for HTTP request metadata.
 func (h HTTP) Append(target []Annotation) []Annotation {
 	return append(target,
-		Annotate("method", h.Method),
-		Annotate("url", h.URL),
-		Annotate("status_code", h.StatusCode),
-		Annotate("latency", h.LatencyMS),
-		Annotate("user_agent", h.UserAgent),
-		Annotate("client_ip", h.ClientIP),
+		Field("method", h.Method),
+		Field("url", h.URL),
+		Field("status_code", h.StatusCode),
+		Field("latency", h.LatencyMS),
+		Field("user_agent", h.UserAgent),
+		Field("client_ip", h.ClientIP),
 	)
 }
 
-// annotateUncommon covers the primitive types [Annotate] does not switch on
+// uncommonField covers the primitive types [Field] does not switch on
 // directly, falling back to interface boxing for everything else. The split
 // keeps the common types on a single type switch.
-func annotateUncommon[T any](key string, value T) Annotation {
+func uncommonField[T any](key string, value T) Annotation {
 	switch concrete := any(value).(type) {
 	case int8:
 		return Annotation{field: zap.Int8(key, concrete)}
@@ -203,4 +256,31 @@ func annotateUncommon[T any](key string, value T) Annotation {
 	default:
 		return Annotation{field: zap.Any(key, value)}
 	}
+}
+
+// convertNumber sets target to number when target is a number type of the same
+// kind that holds it exactly, and reports whether it did. The reflect.Value
+// names the one boundary where the type of the target is known only to the
+// caller of [Annotation.Value].
+func convertNumber(number any, target reflect.Value) bool {
+	switch typed := number.(type) {
+	case int64:
+		return setNumber(target.CanInt, target.OverflowInt, target.SetInt, typed)
+	case uint64:
+		return setNumber(target.CanUint, target.OverflowUint, target.SetUint, typed)
+	case float64:
+		return setNumber(target.CanFloat, target.OverflowFloat, target.SetFloat, typed)
+	default:
+		return false
+	}
+}
+
+// setNumber sets number through set when the target is of its kind, as can
+// reports, and holds it exactly, as overflows reports.
+func setNumber[N int64 | uint64 | float64](can func() bool, overflows func(N) bool, set func(N), number N) bool {
+	if !can() || overflows(number) {
+		return false
+	}
+	set(number)
+	return true
 }

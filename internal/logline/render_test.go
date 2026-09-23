@@ -146,22 +146,22 @@ func TestRenderer_Render(t *testing.T) {
 // writeSamples writes entries that exercise every part of the text format.
 func writeSamples(logger axio.Logger) {
 	ctx := context.Background()
-	orders := logger.Named("orders").With(axio.Annotate("order_id", "ord_8812"))
+	orders := logger.Named("orders").With(axio.Field("order_id", "ord_8812"))
 	orders.Info(ctx, "order created")
 	orders.With(
-		axio.Annotate("note", "<a&b> \"quoted\" ação\ttab"),
-		axio.Annotate("ratio", 3.14159),
-		axio.Annotate("express", true),
-		axio.Annotate("shipment", shipment{Zone: "SP", Carrier: "correios", Weight: 1.25}),
-		axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/v1/orders", StatusCode: 201, LatencyMS: 45}),
+		axio.Field("note", "<a&b> \"quoted\" ação\ttab"),
+		axio.Field("ratio", 3.14159),
+		axio.Field("express", true),
+		axio.Field("shipment", shipment{Zone: "SP", Carrier: "correios", Weight: 1.25}),
+		axio.Field("http", axio.HTTP{Method: "POST", URL: "/api/v1/orders", StatusCode: 201, LatencyMS: 45}),
 	).Debug(ctx, "tricky values")
-	orders.Warn(ctx, errors.New("gateway timeout"), "payment retry %d of %d", 2, 3)
+	orders.Warn(ctx, errors.New("gateway timeout"), "payment retry", axio.Field("attempt", 2), axio.Field("max_attempts", 3))
 	orders.Error(ctx, errors.New("card declined\nsecond line"), "payment failed")
 	orders.With(
-		axio.Annotate("message", "user message"),
-		axio.Annotate("service", "user service"),
-		axio.Annotate("hash", "user hash"),
-		axio.Annotate("stacktrace", "user stacktrace"),
+		axio.Field("message", "user message"),
+		axio.Field("service", "user service"),
+		axio.Field("hash", "user hash"),
+		axio.Field("stacktrace", "user stacktrace"),
 	).Info(ctx, "annotations named like reserved keys")
 }
 

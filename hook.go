@@ -53,7 +53,7 @@ type Entry struct {
 //
 //	func (h TenantHook) Process(ctx context.Context, entry *axio.Entry) error {
 //	    entry.Annotations = append(entry.Annotations,
-//	        axio.Annotate("tenant_id", h.tenantID))
+//	        axio.Field("tenant_id", h.tenantID))
 //	    return nil
 //	}
 type Hook interface {
@@ -195,10 +195,11 @@ func buildHooks(config Config) ([]Hook, error) {
 
 	if config.PIIEnabled {
 		piiConfig := PIIConfig{
-			Patterns:       config.PIIPatterns,
-			CustomPatterns: config.PIICustomPatterns,
-			Fields:         config.PIIFields,
-			MaxDepth:       config.PIIMaxDepth,
+			Patterns:         config.PIIPatterns,
+			CustomPatterns:   config.PIICustomPatterns,
+			Fields:           config.PIIFields,
+			MaxDepth:         config.PIIMaxDepth,
+			OmitErrorVerbose: config.PIIOmitErrorVerbose,
 		}
 		piiHook, err := NewPIIHook(piiConfig)
 		if err != nil {

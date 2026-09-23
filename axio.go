@@ -88,16 +88,16 @@
 //
 // Contextualize your logs with typed annotations:
 //
-//	logger.With(
-//	    axio.Annotate("user_id", userID),
-//	    axio.Annotate("tenant", tenantName),
-//	    axio.Annotate("http", axio.HTTP{
+//	logger.Info(ctx, "order created successfully",
+//	    axio.Field("user_id", userID),
+//	    axio.Field("tenant", tenantName),
+//	    axio.Field("http", axio.HTTP{
 //	        Method:     "POST",
 //	        URL:        "/api/v1/orders",
 //	        StatusCode: 201,
 //	        LatencyMS:  45,
 //	    }),
-//	).Info(ctx, "order created successfully")
+//	)
 //
 // # Agent Mode
 //
@@ -148,14 +148,14 @@ import (
 //	// Simple log
 //	logger.Info(ctx, "user authenticated")
 //
-//	// Formatted log
-//	logger.Info(ctx, "processed %d items in %v", count, duration)
+//	// Log with annotations of its own
+//	logger.Info(ctx, "order created",
+//	    axio.Field("user_id", userID),
+//	    axio.Field("http", axio.HTTP{Method: "POST", URL: "/api/orders"}),
+//	)
 //
-//	// Log with structured annotations
-//	logger.With(
-//	    axio.Annotate("user_id", userID),
-//	    axio.Annotate("http", axio.HTTP{Method: "POST", URL: "/api/orders"}),
-//	).Info(ctx, "order created")
+//	// A logger that attaches annotations to every entry it writes
+//	requestLogger := logger.With(axio.Field("request_id", requestID))
 //
 //	// Error log
 //	logger.Error(ctx, err, "failed to process payment")
@@ -163,15 +163,17 @@ type Logger interface {
 	// Named creates a sub-logger with an additional name.
 	// Names are concatenated with dots (e.g., "app.http.handler").
 	Named(string) Logger
-	// Debug logs a debug message.
-	Debug(context.Context, string, ...any)
-	// Info logs an informational message.
-	Info(context.Context, string, ...any)
-	// Warn logs a warning with the associated error.
-	Warn(context.Context, error, string, ...any)
-	// Error logs an error with the associated error.
-	Error(context.Context, error, string, ...any)
-	// With returns a logger with additional annotations attached.
+	// Debug logs a debug message with the given annotations. The message is
+	// written as given; it is never formatted.
+	Debug(context.Context, string, ...Annotation)
+	// Info logs an informational message with the given annotations.
+	Info(context.Context, string, ...Annotation)
+	// Warn logs a warning with the associated error and the given annotations.
+	Warn(context.Context, error, string, ...Annotation)
+	// Error logs an error with the associated error and the given annotations.
+	Error(context.Context, error, string, ...Annotation)
+	// With returns a logger that attaches the annotations to every entry it
+	// writes, before the annotations given to each call.
 	With(...Annotation) Logger
 	// Close releases resources owned by the root logger (open files, rotation
 	// goroutines, etc.). It should be called when the logger is no longer
@@ -219,12 +221,7 @@ func (e Environment) Validate() error {
 
 // UnmarshalText implements [encoding.TextUnmarshaler] for validation during parsing.
 func (e *Environment) UnmarshalText(text []byte) error {
-	value := Environment(strings.TrimSpace(string(text)))
-	if err := value.Validate(); err != nil {
-		return err
-	}
-	*e = value
-	return nil
+	return unmarshalEnum(text, e)
 }
 
 // Level represents the severity of a log entry.
@@ -264,12 +261,7 @@ func (l Level) Validate() error {
 
 // UnmarshalText implements [encoding.TextUnmarshaler] for validation during parsing.
 func (l *Level) UnmarshalText(text []byte) error {
-	value := Level(strings.TrimSpace(string(text)))
-	if err := value.Validate(); err != nil {
-		return err
-	}
-	*l = value
-	return nil
+	return unmarshalEnum(text, l)
 }
 
 // Format defines the encoding format of log output.
@@ -298,10 +290,19 @@ func (f Format) Validate() error {
 
 // UnmarshalText implements [encoding.TextUnmarshaler] for validation during parsing.
 func (f *Format) UnmarshalText(text []byte) error {
-	value := Format(strings.TrimSpace(string(text)))
+	return unmarshalEnum(text, f)
+}
+
+// unmarshalEnum sets target to text, trimmed, once the enum's Validate accepts
+// it, and leaves target alone otherwise.
+func unmarshalEnum[T interface {
+	~string
+	Validate() error
+}](text []byte, target *T) error {
+	value := T(strings.TrimSpace(string(text)))
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	*f = value
+	*target = value
 	return nil
 }

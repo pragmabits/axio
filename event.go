@@ -123,12 +123,15 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 
 // Add adds a key-value annotation to the event.
 //
-// Uses [Annotate] internally, supporting the same types.
+// Uses [Field] internally, supporting the same types. Like [Field], it
+// takes the value's type as a type parameter, so a value of a primitive type is
+// kept without allocating; an untyped nil has no type to take and does not
+// compile.
 // Thread-safe — can be called from multiple goroutines.
-func (e *Event) Add(key string, value any) {
+func (e *Event) Add[T any](key string, value T) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	e.annotations = append(e.annotations, Annotate(key, value))
+	e.annotations = append(e.annotations, Field(key, value))
 }
 
 // With adds annotations to the event.
@@ -152,8 +155,8 @@ func (e *Event) With(annotations ...Annotation) {
 //	event.SetError(err)
 //
 //	event.SetError(err,
-//	    axio.Annotate("error_code", "card_declined"),
-//	    axio.Annotate("error_retriable", false),
+//	    axio.Field("error_code", "card_declined"),
+//	    axio.Field("error_retriable", false),
 //	)
 func (e *Event) SetError(err error, details ...Annotation) {
 	e.mutex.Lock()

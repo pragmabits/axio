@@ -55,7 +55,7 @@ func sizeRotation(ctx context.Context) {
 	// Write enough data to exceed 1MB
 	payload := strings.Repeat("x", 200)
 	for index := range 4000 {
-		logger.Info(ctx, "Size rotation test line %d: %s", index, payload)
+		logger.Info(ctx, "size rotation test line", axio.Field("line", index), axio.Field("payload", payload))
 	}
 	logger.Close()
 
@@ -95,7 +95,7 @@ func timeRotation(ctx context.Context) {
 
 	// Write lines, wait for ticker, write again
 	for index := range 10 {
-		logger.Info(ctx, "Before time rotation, line %d", index)
+		logger.Info(ctx, "before time rotation", axio.Field("line", index))
 	}
 	time.Sleep(300 * time.Millisecond)
 	logger.Info(ctx, "After time rotation")

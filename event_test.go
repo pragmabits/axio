@@ -96,6 +96,49 @@ func TestEvent_Add(t *testing.T) {
 		assertEqual(t, result["cart_total"].(float64), float64(15999))
 		assertEqual(t, result["premium"].(bool), true)
 	})
+
+	t.Run("primitive_value_does_not_allocate", func(t *testing.T) {
+		event := &Event{annotations: make(Annotations, 0, 1)}
+		count, ratio, index := 15999, 0.75, 0
+		users := []string{"usr_456", "usr_789"}
+		tests := []struct {
+			name string
+			add  func()
+		}{
+			{
+				name: "int",
+				add: func() {
+					count++
+					event.Add("count", count)
+				},
+			},
+			{
+				name: "float64",
+				add: func() {
+					ratio += 0.25
+					event.Add("ratio", ratio)
+				},
+			},
+			{
+				name: "string",
+				add: func() {
+					index++
+					event.Add("user_id", users[index%len(users)])
+				},
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				allocations := testing.AllocsPerRun(100, func() {
+					event.annotations = event.annotations[:0]
+					test.add()
+				})
+				if allocations != 0 {
+					t.Errorf("Add allocated %v times per call, want 0", allocations)
+				}
+			})
+		}
+	})
 }
 
 func TestEvent_With(t *testing.T) {
@@ -110,8 +153,8 @@ func TestEvent_With(t *testing.T) {
 		assertNoError(t, err)
 
 		event.With(
-			Annotate("method", "POST"),
-			Annotate("url", "/api/checkout"),
+			Field("method", "POST"),
+			Field("url", "/api/checkout"),
 		)
 		event.Emit(context.Background())
 
@@ -132,7 +175,7 @@ func TestEvent_With(t *testing.T) {
 		event, err := NewEvent("http_request", config)
 		assertNoError(t, err)
 
-		event.With(Annotate("http", HTTP{
+		event.With(Field("http", HTTP{
 			Method:     "POST",
 			URL:        "/api/checkout",
 			StatusCode: 201,
@@ -208,8 +251,8 @@ func TestEvent_SetError(t *testing.T) {
 		assertNoError(t, err)
 
 		event.SetError(errors.New("card declined"),
-			Annotate("error_code", "card_declined"),
-			Annotate("error_retriable", false),
+			Field("error_code", "card_declined"),
+			Field("error_retriable", false),
 		)
 		event.Emit(context.Background())
 
@@ -382,7 +425,7 @@ func TestEvent_Emit(t *testing.T) {
 		assertNoError(t, err)
 
 		event.SetError(errors.New("validation failed"),
-			Annotate("customer_document", "123.456.789-01"),
+			Field("customer_document", "123.456.789-01"),
 		)
 		event.Emit(context.Background())
 

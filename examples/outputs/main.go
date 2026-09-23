@@ -40,9 +40,9 @@ func multipleOutputs(ctx context.Context) {
 		return
 	}
 
-	logger.With(
-		axio.Annotate("request_id", "req-001"),
-	).Info(ctx, "This log appears in both console AND file")
+	logger.Info(ctx, "This log appears in both console AND file",
+		axio.Field("request_id", "req-001"),
+	)
 	logger.Close()
 
 	// Print file content

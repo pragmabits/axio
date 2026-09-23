@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.uber.org/zap/zapcore"
 )
 
 func TestPIIMasker_MaskString(t *testing.T) {
@@ -97,6 +99,18 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			input:    "",
 			want:     "",
 		},
+		{
+			name:     "base64_text_with_cpf",
+			patterns: []PIIPattern{PatternCPF},
+			input:    base64.StdEncoding.EncodeToString([]byte("cpf 123.456.789-01")),
+			want:     base64.StdEncoding.EncodeToString([]byte("cpf ***.***.***-**")),
+		},
+		{
+			name:     "jwt_inside_text",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "Bearer " + piiToken(`{"sub":"42"}`) + " expired",
+			want:     "Bearer [REDACTED] expired",
+		},
 	}
 
 	for _, test := range tests {
@@ -151,7 +165,7 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 		})
 
 		annotations := Annotations{
-			Annotate("document", "123.456.789-01"),
+			Field("document", "123.456.789-01"),
 		}
 
 		masker.MaskFields(annotations)
@@ -167,9 +181,9 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 		})
 
 		annotations := Annotations{
-			Annotate("user_password", "secret123"),
-			Annotate("api_token", "abc123"),
-			Annotate("username", "john"),
+			Field("user_password", "secret123"),
+			Field("api_token", "abc123"),
+			Field("username", "john"),
 		}
 
 		masker.MaskFields(annotations)
@@ -186,7 +200,7 @@ func TestPIIMasker_MaskFields(t *testing.T) {
 
 	t.Run("name_match_ignores_case", func(t *testing.T) {
 		masker, _ := NewPIIMasker(PIIConfig{Fields: []string{"password"}})
-		annotations := Annotations{Annotate("USER_PASSWORD", "x")}
+		annotations := Annotations{Field("USER_PASSWORD", "x")}
 		masker.MaskFields(annotations)
 		assertEqual(t, annotations[0].Data().(string), "[REDACTED]")
 	})
@@ -199,7 +213,7 @@ func TestPIIMasker_MaskFields_MapRecursion(t *testing.T) {
 	})
 
 	annotations := Annotations{
-		Annotate("context", map[string]any{
+		Field("context", map[string]any{
 			"user":     "alice",
 			"password": "hunter2",
 			"document": "123.456.789-01",
@@ -225,7 +239,7 @@ func TestPIIMasker_MaskFields_MapRecursion_DepthCap(t *testing.T) {
 		level3 := map[string]any{"password": "p3"}
 		level2 := map[string]any{"deep": level3}
 		level1 := map[string]any{"nested": level2}
-		return Annotations{Annotate("root", level1)}
+		return Annotations{Field("root", level1)}
 	}
 
 	t.Run("beyond_max_depth_is_redacted", func(t *testing.T) {
@@ -284,7 +298,7 @@ func TestPIIMasker_MaskFields_MapRecursion_NoAliasing(t *testing.T) {
 		"user":     "alice",
 		"password": "hunter2",
 	}
-	annotations := Annotations{Annotate("context", original)}
+	annotations := Annotations{Field("context", original)}
 
 	masker.MaskFields(annotations)
 
@@ -306,7 +320,7 @@ func TestPIIMasker_MaskFields_MapRecursion_MixedValues(t *testing.T) {
 	})
 
 	annotations := Annotations{
-		Annotate("payload", map[string]any{
+		Field("payload", map[string]any{
 			"name":     "alice",
 			"age":      30,
 			"active":   true,
@@ -352,6 +366,11 @@ type piiRequest struct {
 	Body []byte `json:"body"`
 }
 
+// piiRecord is a struct annotation whose byte array v2 writes as base64.
+type piiRecord struct {
+	Document [19]byte `json:"document"`
+}
+
 // piiVisit is a struct annotation carrying a CPF beside a duration and a number
 // a float64 cannot hold exactly.
 type piiVisit struct {
@@ -384,8 +403,9 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	payload := []byte(`{"cpf":"123.456.789-01"}`)
 	maskedPayload := `"` + base64.StdEncoding.EncodeToString([]byte(`{"cpf":"***.***.***-**"}`)) + `"`
 	binary := []byte{0xff, 0xfe, 0x00, 0x01}
+	binaryWithCPF := append([]byte{0xff, 0xfe, 0x00, 0x01, ' '}, "123.456.789-01"...)
 	token := piiToken(`{"sub":"42","cpf":"123.456.789-01","password":"x"}`)
-	maskedToken := piiToken(`{"cpf":"***.***.***-**","password":"[REDACTED]","sub":"42"}`)
+	encode := base64.RawURLEncoding.EncodeToString
 	unpadded := []byte(`{"cpf":"123.456.789-01","ok":1}`)
 	urlSafe := []byte(`{"cpf":"123.456.789-01","note":"~~~"}`)
 
@@ -460,6 +480,21 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			want:  `{"body":"[REDACTED]"}`,
 		},
 		{
+			name:  "base64_of_binary_carrying_pii",
+			value: base64.StdEncoding.EncodeToString(binaryWithCPF),
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "byte_array_of_binary_carrying_pii",
+			value: piiRecord{Document: [19]byte(binaryWithCPF)},
+			want:  `{"document":"[REDACTED]"}`,
+		},
+		{
+			name:  "identifiers_with_the_shape_of_base64",
+			value: []string{"user", "request", "550e8400-e29b-41d4-a716-446655440000", "4bf92f3577b34da6a3ce929d0e0e4736", "api/v1/users"},
+			want:  `["user","request","550e8400-e29b-41d4-a716-446655440000","4bf92f3577b34da6a3ce929d0e0e4736","api/v1/users"]`,
+		},
+		{
 			name:  "struct_keeps_durations_and_large_numbers",
 			value: piiVisit{Document: "123.456.789-01", Duration: time.Second, Sequence: 9007199254740993},
 			want:  `{"document":"***.***.***-**","duration":1000000000,"sequence":9007199254740993}`,
@@ -492,17 +527,37 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 		{
 			name:  "jwt",
 			value: token,
-			want:  `"` + maskedToken + `"`,
+			want:  `"[REDACTED]"`,
 		},
 		{
-			name:  "jwt_payload_followed_by_other_data",
-			value: piiToken(`{"cpf":"123.456.789-01"} trailing`),
-			want:  `"` + piiToken(`{"cpf":"***.***.***-**"}`) + `"`,
+			name:  "jwt_without_pii",
+			value: piiToken(`{"sub":"42"}`),
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "jwt_header_with_line_break",
+			value: encode([]byte("{\n\"alg\":\"HS256\"}")) + "." + encode([]byte(`{"sub":"42"}`)) + ".c2ln",
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "jwt_payload_not_json",
+			value: piiToken("cpf 123.456.789-01"),
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "jwe",
+			value: encode([]byte(`{"alg":"RSA-OAEP","enc":"A256GCM"}`)) + ".a2V5.aXY.Y2lwaGVy.dGFn",
+			want:  `"[REDACTED]"`,
 		},
 		{
 			name:  "jwt_inside_text",
 			value: "Bearer " + token + " expired",
-			want:  `"Bearer ` + maskedToken + ` expired"`,
+			want:  `"Bearer [REDACTED] expired"`,
+		},
+		{
+			name:  "json_header_without_alg_is_not_a_token",
+			value: encode([]byte(`{"sub":"42"}`)) + ".c2Vn.c2Vn",
+			want:  `"` + encode([]byte(`{"sub":"42"}`)) + `.c2Vn.c2Vn"`,
 		},
 	}
 
@@ -512,7 +567,7 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			annotations := Annotations{Annotate("value", test.value)}
+			annotations := Annotations{Field("value", test.value)}
 			masker.MaskFields(annotations)
 
 			encoded, err := json.Marshal(annotations[0].Data())
@@ -523,7 +578,7 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		original := fmt.Errorf("lookup 123.456.789-01 failed")
-		annotations := Annotations{Annotate("cause", original)}
+		annotations := Annotations{Field("cause", original)}
 		masker.MaskFields(annotations)
 
 		masked, ok := annotations[0].Data().(error)
@@ -537,7 +592,7 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	})
 
 	t.Run("value_without_pii_keeps_its_type", func(t *testing.T) {
-		annotations := Annotations{Annotate("order", piiOrder{ID: "ord_8812"})}
+		annotations := Annotations{Field("order", piiOrder{ID: "ord_8812"})}
 		masker.MaskFields(annotations)
 
 		if _, ok := annotations[0].Data().(piiOrder); !ok {
@@ -547,13 +602,56 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 
 	t.Run("struct_beyond_max_depth_is_redacted", func(t *testing.T) {
 		shallow := MustPIIMasker(PIIConfig{Fields: []string{"password"}, MaxDepth: 1})
-		annotations := Annotations{Annotate("value", map[string]any{"customer": customer})}
+		annotations := Annotations{Field("value", map[string]any{"customer": customer})}
 		shallow.MaskFields(annotations)
 
 		encoded, err := json.Marshal(annotations[0].Data())
 		assertNoError(t, err)
 		assertEqual(t, string(encoded), `{"customer":"[REDACTED]"}`)
 	})
+}
+
+func TestMayHoldBuiltInPattern(t *testing.T) {
+	samples := map[PIIPattern]string{
+		PatternCPF:        "123.456.789-01",
+		PatternCNPJ:       "12.345.678/0001-90",
+		PatternCreditCard: "4111 1111 1111 1111",
+		PatternEmail:      "user@example.com",
+		PatternPhone:      "(11) 98765-4321",
+		PatternPhoneNoDDD: "98765-4321",
+	}
+	for pattern, info := range piiPatterns {
+		t.Run(string(pattern), func(t *testing.T) {
+			sample, ok := samples[pattern]
+			if !ok {
+				t.Fatalf("no sample for %s: add one, and make sure mayHoldBuiltInPattern holds for it", pattern)
+			}
+			if !info.regex.MatchString(sample) {
+				t.Fatalf("sample %q does not match %s", sample, pattern)
+			}
+			if !mayHoldBuiltInPattern([]byte("\xff\xfe " + sample)) {
+				t.Errorf("a %s inside binary data would be skipped", pattern)
+			}
+		})
+	}
+
+	t.Run("identifier_bytes_skipped", func(t *testing.T) {
+		decoded, err := base64.RawURLEncoding.DecodeString("550e8400-e29b-41d4-a716-446655440000")
+		assertNoError(t, err)
+		if mayHoldBuiltInPattern(decoded) {
+			t.Error("the bytes of a UUID should not reach the patterns")
+		}
+	})
+}
+
+func TestPIIMasker_MaskFields_CustomPatternInBinary(t *testing.T) {
+	masker := MustPIIMasker(PIIConfig{
+		CustomPatterns: []CustomPII{{Name: "ticket", Pattern: `TK-\d{3}`, Mask: "TK-***"}},
+	})
+	annotations := Annotations{Field("blob", base64.StdEncoding.EncodeToString([]byte("\xff\xfe TK-123")))}
+	masker.MaskFields(annotations)
+
+	assertEqual(t, annotations[0].Data(), any("[REDACTED]"))
 }
 
 func TestBase64EncodingOf(t *testing.T) {
@@ -595,17 +693,17 @@ func TestBase64EncodingOf(t *testing.T) {
 func TestPIIMasker_MaskFieldsWithCounts_CountsInsideValues(t *testing.T) {
 	masker := MustPIIMasker(PIIConfig{Patterns: []PIIPattern{PatternCPF}})
 	annotations := Annotations{
-		Annotate("customer", piiCustomer{Document: "123.456.789-01"}),
-		Annotate("documents", []string{"987.654.321-00", "111.222.333-44"}),
-		Annotate("body", []byte("222.333.444-55")),
-		Annotate("request", piiRequest{Body: []byte("333.444.555-66")}),
-		Annotate("encoded", base64.StdEncoding.EncodeToString([]byte("444.555.666-77"))),
-		Annotate("session", piiToken(`{"cpf":"555.666.777-88"}`)),
+		Field("customer", piiCustomer{Document: "123.456.789-01"}),
+		Field("documents", []string{"987.654.321-00", "111.222.333-44"}),
+		Field("body", []byte("222.333.444-55")),
+		Field("request", piiRequest{Body: []byte("333.444.555-66")}),
+		Field("encoded", base64.StdEncoding.EncodeToString([]byte("444.555.666-77"))),
+		Field("session", piiToken(`{"cpf":"555.666.777-88"}`)),
 	}
 
 	matches := masker.MaskFieldsWithCounts(annotations)
 
-	assertEqual(t, matches[PatternCPF], 7)
+	assertEqual(t, matches[PatternCPF], 6)
 }
 
 func TestPIIMasker_NegativeMaxDepth(t *testing.T) {
@@ -624,6 +722,17 @@ func TestPIIConfig_MaxDepth_ZeroDefaults(t *testing.T) {
 			DefaultPIIMaxDepth, masker.maxDepth)
 	}
 	assertEqual(t, DefaultPIIMaxDepth, 32)
+}
+
+func TestPIIMasker_MaskStringWithCounts_Base64AndTokens(t *testing.T) {
+	masker := MustPIIMasker(PIIConfig{Patterns: []PIIPattern{PatternCPF}})
+
+	result := masker.MaskStringWithCounts(base64.StdEncoding.EncodeToString([]byte("cpf 123.456.789-01")))
+	assertEqual(t, result.Masked, base64.StdEncoding.EncodeToString([]byte("cpf ***.***.***-**")))
+	assertEqual(t, result.Matches[PatternCPF], 1)
+
+	result = masker.MaskStringWithCounts("Bearer " + piiToken(`{"sub":"42"}`))
+	assertEqual(t, result.Masked, "Bearer [REDACTED]")
 }
 
 func TestPIIMasker_MaskStringWithCounts(t *testing.T) {
@@ -724,7 +833,7 @@ func TestPIIHook(t *testing.T) {
 		entry := &Entry{
 			Message: "log",
 			Annotations: Annotations{
-				Annotate("email", "user@test.com"),
+				Field("email", "user@test.com"),
 			},
 		}
 
@@ -768,7 +877,7 @@ func TestPIIHook(t *testing.T) {
 		assertEqual(t, entry.Error.Error(), encode("customer ***.***.***-**"))
 	})
 
-	t.Run("masks_jwt_in_message", func(t *testing.T) {
+	t.Run("redacts_jwt_in_message", func(t *testing.T) {
 		hook, err := NewPIIHook(PIIConfig{
 			Patterns: []PIIPattern{PatternCPF},
 		})
@@ -778,13 +887,168 @@ func TestPIIHook(t *testing.T) {
 
 		err = hook.Process(context.Background(), entry)
 		assertNoError(t, err)
-		assertEqual(t, entry.Message, "login with "+piiToken(`{"cpf":"***.***.***-**"}`))
+		assertEqual(t, entry.Message, "login with [REDACTED]")
 	})
 
 	t.Run("hook_name", func(t *testing.T) {
 		hook, _ := NewPIIHook(DefaultPIIConfig())
 		assertEqual(t, hook.Name(), "pii")
 	})
+}
+
+// piiFailingObject writes a city and then fails with a message carrying a CPF.
+type piiFailingObject struct{ city string }
+
+func (p piiFailingObject) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
+	encoder.AddString("city", p.city)
+	return errors.New("invalid cpf 123.456.789-01")
+}
+
+// piiFailingArray writes an item and then fails with a message carrying a CPF.
+type piiFailingArray struct{ item string }
+
+func (p piiFailingArray) MarshalLogArray(encoder zapcore.ArrayEncoder) error {
+	encoder.AppendString(p.item)
+	return errors.New("invalid cpf 123.456.789-01")
+}
+
+// piiFailingJSON fails to encode with a message carrying a CPF.
+type piiFailingJSON struct{}
+
+func (piiFailingJSON) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("invalid cpf 123.456.789-01")
+}
+
+func TestPIIHook_MasksEncodingFailures(t *testing.T) {
+	const masked = "invalid cpf ***.***.***-**"
+	tests := []struct {
+		name  string
+		value any
+		check func(t *testing.T, record map[string]any)
+	}{
+		{
+			name:  "object_failing_with_nothing_else_to_mask",
+			value: piiFailingObject{city: "Recife"},
+			check: func(t *testing.T, record map[string]any) {
+				assertEqual(t, record["value"].(map[string]any)["city"], any("Recife"))
+				assertEqual(t, record["valueError"], any(masked))
+			},
+		},
+		{
+			name:  "object_failing_with_pii_in_its_fields",
+			value: piiFailingObject{city: "123.456.789-01"},
+			check: func(t *testing.T, record map[string]any) {
+				assertEqual(t, record["value"].(map[string]any)["city"], any("***.***.***-**"))
+				assertEqual(t, record["valueError"], any(masked))
+			},
+		},
+		{
+			name:  "array_failing",
+			value: piiFailingArray{item: "Recife"},
+			check: func(t *testing.T, record map[string]any) {
+				assertEqual(t, record["value"].([]any)[0], any("Recife"))
+				assertEqual(t, record["valueError"], any(masked))
+			},
+		},
+		{
+			name:  "json_marshaler_failing",
+			value: piiFailingJSON{},
+			check: func(t *testing.T, record map[string]any) {
+				if _, ok := record["value"]; ok {
+					t.Errorf("a value that failed to encode was written: %v", record["value"])
+				}
+				if message, _ := record["valueError"].(string); !strings.Contains(message, masked) {
+					t.Errorf("valueError = %q, want it to carry %q", message, masked)
+				}
+			},
+		},
+		{
+			name:  "value_failing_inside_a_map",
+			value: map[string]any{"address": piiFailingJSON{}},
+			check: func(t *testing.T, record map[string]any) {
+				if message, _ := record["valueError"].(string); !strings.Contains(message, masked) {
+					t.Errorf("valueError = %q, want it to carry %q", message, masked)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := newBufferOutput(FormatJSON)
+			loggerUnderTest, err := New(minimalConfig(), WithOutputs(output), WithPII(nil, nil))
+			assertNoError(t, err)
+			loggerUnderTest.Info(context.Background(), "encoding failed", Field("value", test.value))
+			assertNoError(t, loggerUnderTest.Close())
+
+			line := output.String()
+			if strings.Contains(line, "123.456.789-01") {
+				t.Errorf("the CPF leaked:\n%s", line)
+			}
+			test.check(t, parseJSONLines(t, line)[0])
+		})
+	}
+}
+
+// piiVerboseError is an error whose %+v adds a stack line to its message.
+type piiVerboseError struct{ message, stack string }
+
+func (p piiVerboseError) Error() string { return p.message }
+
+func (p piiVerboseError) Format(state fmt.State, verb rune) {
+	if verb == 'v' && state.Flag('+') {
+		_, _ = fmt.Fprintf(state, "%s\n%s", p.message, p.stack)
+		return
+	}
+	_, _ = fmt.Fprint(state, p.message)
+}
+
+func TestPIIHook_MasksVerboseError(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantError   string
+		wantVerbose string
+	}{
+		{
+			name:        "message_and_stack_with_pii",
+			err:         piiVerboseError{message: "rejected 123.456.789-01", stack: "at lookup(123.456.789-01)"},
+			wantError:   "rejected ***.***.***-**",
+			wantVerbose: "rejected ***.***.***-**\nat lookup(***.***.***-**)",
+		},
+		{
+			name:        "stack_with_pii_only",
+			err:         piiVerboseError{message: "rejected", stack: "at lookup(123.456.789-01)"},
+			wantError:   "rejected",
+			wantVerbose: "rejected\nat lookup(***.***.***-**)",
+		},
+		{
+			name:        "no_pii",
+			err:         piiVerboseError{message: "rejected", stack: "at lookup"},
+			wantError:   "rejected",
+			wantVerbose: "rejected\nat lookup",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := newBufferOutput(FormatJSON)
+			loggerUnderTest, err := New(minimalConfig(), WithOutputs(output), WithPII(nil, nil))
+			assertNoError(t, err)
+			loggerUnderTest.Error(context.Background(), test.err, "registration failed")
+			assertNoError(t, loggerUnderTest.Close())
+
+			record := parseJSONLines(t, output.String())[0]
+			assertEqual(t, record["error"], any(test.wantError))
+			assertEqual(t, record["errorVerbose"], any(test.wantVerbose))
+		})
+	}
+}
+
+func TestPIIHook_OmitErrorVerbose(t *testing.T) {
+	hook := MustPIIHook(PIIConfig{Patterns: []PIIPattern{PatternCPF}, OmitErrorVerbose: true})
+	entry := &Entry{Error: piiVerboseError{message: "rejected", stack: "at lookup(123.456.789-01)"}}
+	assertNoError(t, hook.Process(context.Background(), entry))
+
+	assertEqual(t, fmt.Sprintf("%+v", entry.Error), "rejected")
 }
 
 func TestPIIHook_MasksEveryValueTheLogWrites(t *testing.T) {
@@ -796,11 +1060,11 @@ func TestPIIHook_MasksEveryValueTheLogWrites(t *testing.T) {
 	logger, err := New(minimalConfig(), WithOutputs(logged), WithPII(nil, nil))
 	assertNoError(t, err)
 	logger.With(
-		Annotate("http", HTTP{Method: "GET", URL: "/customers?cpf=" + cpf, StatusCode: 200}),
-		Annotate("customer", customer),
-		Annotate("cause", fmt.Errorf("lookup %s failed", cpf)),
-		Annotate("body", payload),
-		Annotate("request", piiRequest{Body: payload}),
+		Field("http", HTTP{Method: "GET", URL: "/customers?cpf=" + cpf, StatusCode: 200}),
+		Field("customer", customer),
+		Field("cause", fmt.Errorf("lookup %s failed", cpf)),
+		Field("body", payload),
+		Field("request", piiRequest{Body: payload}),
 	).Error(context.Background(), fmt.Errorf("customer %s rejected", cpf), "registration failed")
 	assertNoError(t, logger.Close())
 
@@ -834,7 +1098,7 @@ func TestPIIHook_DoesNotMutateCallerAnnotations(t *testing.T) {
 	assertNoError(t, err)
 	defer logger.Close()
 
-	annotations := []Annotation{Annotate("doc", "123.456.789-01"), Annotate("password", "hunter2")}
+	annotations := []Annotation{Field("doc", "123.456.789-01"), Field("password", "hunter2")}
 	scoped := logger.With(annotations...)
 	scoped.Info(context.Background(), "first")
 	scoped.Info(context.Background(), "second")

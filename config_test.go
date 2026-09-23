@@ -204,6 +204,14 @@ level: info
 		assertEqual(t, config.PIIMaxDepth, 4)
 	})
 
+	t.Run("pii_omit_error_verbose", func(t *testing.T) {
+		reader := strings.NewReader("piiEnabled: true\npiiOmitErrorVerbose: true\n")
+
+		config, err := LoadConfigFrom(reader, "yaml")
+		assertNoError(t, err)
+		assertEqual(t, config.PIIOmitErrorVerbose, true)
+	})
+
 	t.Run("unknown_format", func(t *testing.T) {
 		reader := strings.NewReader("content")
 

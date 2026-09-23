@@ -92,6 +92,9 @@ type Config struct {
 	// means [DefaultPIIMaxDepth]; a negative value is rejected. See
 	// [PIIConfig.MaxDepth].
 	PIIMaxDepth int `json:"piiMaxDepth,omitempty" yaml:"piiMaxDepth,omitempty" toml:"piiMaxDepth,omitempty" mapstructure:"piiMaxDepth,omitempty"`
+	// PIIOmitErrorVerbose omits the verbose form of an error that formats
+	// itself, instead of masking it. See [PIIConfig.OmitErrorVerbose].
+	PIIOmitErrorVerbose bool `json:"piiOmitErrorVerbose,omitempty" yaml:"piiOmitErrorVerbose,omitempty" toml:"piiOmitErrorVerbose,omitempty" mapstructure:"piiOmitErrorVerbose,omitempty"`
 
 	// Audit configures auditing with hash chain.
 	Audit AuditConfig `json:"audit" yaml:"audit" toml:"audit" mapstructure:"audit"`

@@ -26,9 +26,9 @@ func main() {
 	)
 	defer logger.Close()
 
-	logger.With(
-		axio.Annotate("transaction_id", "txn_987654"),
-	).Info(ctx, "Log with multiple combined options")
+	logger.Info(ctx, "Log with multiple combined options",
+		axio.Field("transaction_id", "txn_987654"),
+	)
 
 	logger.Info(ctx, "Customer CPF 123.456.789-01 should be masked by PII hook")
 	fmt.Println()

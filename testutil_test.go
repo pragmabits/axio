@@ -2,6 +2,7 @@ package axio
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -145,6 +146,20 @@ func readLines(t *testing.T, path string) []string {
 		}
 	}
 	return lines
+}
+
+// parseJSONLines decodes every line of content as a JSON object.
+func parseJSONLines(t *testing.T, content string) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line is not a JSON object: %v\nline: %s", err, line)
+		}
+		records = append(records, record)
+	}
+	return records
 }
 
 // bufferOutput is an Output that keeps everything written to it in memory.

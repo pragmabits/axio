@@ -8,7 +8,10 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +31,11 @@ const DefaultPIIMaxDepth = 32
 // redacted replaces a value whose name is sensitive, or that sits deeper than
 // [PIIConfig.MaxDepth].
 const redacted = "[REDACTED]"
+
+// minimumPatternDigits is the fewest digits a built-in pattern matches: the
+// eight of a phone number without its area code. The one pattern that matches
+// with fewer, an e-mail address, needs an "@".
+const minimumPatternDigits = 8
 
 // PIIPattern identifies a type of personally identifiable information.
 //
@@ -100,6 +108,12 @@ type PIIConfig struct {
 	// container nested deeper is replaced by "[REDACTED]" whole, never written
 	// unmasked. A value of zero falls back to [DefaultPIIMaxDepth] (32).
 	MaxDepth int `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty" toml:"maxDepth,omitempty" mapstructure:"maxDepth,omitempty"`
+	// OmitErrorVerbose omits the verbose form of an error that formats itself —
+	// the %+v zap writes beside its message, a stack trace for many errors —
+	// instead of masking it. The error is written by its masked message only,
+	// and its verbose form is never read. Off by default: the verbose form is
+	// masked and kept, at the cost of scanning it.
+	OmitErrorVerbose bool `json:"omitErrorVerbose,omitempty" yaml:"omitErrorVerbose,omitempty" toml:"omitErrorVerbose,omitempty" mapstructure:"omitErrorVerbose,omitempty"`
 }
 
 // DefaultPIIConfig returns a configuration with common patterns enabled.
@@ -175,9 +189,10 @@ type PIIMaskResult struct {
 //	msg := masker.MaskString("CPF: 123.456.789-01")
 //	// Result: "CPF: ***.***.***-**"
 type PIIMasker struct {
-	patterns []piiPatternInfo
-	fields   map[string]bool
-	maxDepth int
+	patterns         []piiPatternInfo
+	fields           map[string]bool
+	maxDepth         int
+	omitErrorVerbose bool
 }
 
 // NewPIIMasker creates a new masker with the specified configuration.
@@ -208,8 +223,9 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 	}
 
 	masker := &PIIMasker{
-		fields:   make(map[string]bool),
-		maxDepth: maxDepth,
+		fields:           make(map[string]bool),
+		maxDepth:         maxDepth,
+		omitErrorVerbose: config.OmitErrorVerbose,
 	}
 
 	for _, pattern := range config.Patterns {
@@ -231,9 +247,10 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 			return nil, fmt.Errorf("compile PII pattern '%s': %w", custom.Name, err)
 		}
 		masker.patterns = append(masker.patterns, piiPatternInfo{
-			name:  PIIPattern(custom.Name),
-			regex: regex,
-			mask:  custom.Mask,
+			name:   PIIPattern(custom.Name),
+			regex:  regex,
+			mask:   custom.Mask,
+			custom: true,
 		})
 	}
 
@@ -260,7 +277,9 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 	return masker
 }
 
-// MaskString replaces PII patterns in the input string with masks.
+// MaskString masks the PII in input the way [PIIMasker.MaskFields] masks a
+// string: the patterns, a string with the shape of base64 by the text it
+// decodes to, and every JWT or JWE, which becomes "[REDACTED]" whole.
 //
 // Example:
 //
@@ -268,13 +287,8 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 //	result := masker.MaskString("CPF: 123.456.789-01, Card: 1234-5678-9012-3456")
 //	// Result: "CPF: ***.***.***-**, Card: ****-****-****-****"
 func (m *PIIMasker) MaskString(input string) string {
-	result := input
-	for _, info := range m.patterns {
-		if info.regex.MatchString(result) {
-			result = info.regex.ReplaceAllString(result, info.mask)
-		}
-	}
-	return result
+	masked, _ := m.maskString(input, nil)
+	return masked
 }
 
 // MaskFields masks sensitive values in an annotations slice in place.
@@ -298,12 +312,12 @@ func (m *PIIMasker) MaskString(input string) string {
 // in the JSON encoding of a structured value, and how a caller may have encoded
 // bytes itself. A string that decodes to something other than text passes as
 // it is, since nothing tells the base64 of binary data from any other string of
-// that shape. The payload of a JWT, anywhere in a text, is decoded and masked as
-// the JSON it is, sensitive claims included; the token's signature then no
-// longer matches. A structured value that needed masking is replaced by its
-// masked JSON tree, objects as map[string]any, so its keys are then written in
-// alphabetical order; one that did not keeps its original type. A container
-// nested deeper than [PIIConfig.MaxDepth] is replaced by "[REDACTED]" whole.
+// that shape. A JWT or JWE, anywhere in a text, becomes "[REDACTED]" whole: it
+// is a credential, and its claims may carry what no pattern knows. A structured
+// value that needed masking is replaced by its masked JSON tree, objects as
+// map[string]any, so its keys are then written in alphabetical order; one that
+// did not keeps its original type. A container nested deeper than
+// [PIIConfig.MaxDepth] is replaced by "[REDACTED]" whole.
 //
 // A masked error is written by its masked message only, and still unwraps to
 // the original, so errors.Is and errors.As keep working for later hooks.
@@ -314,7 +328,8 @@ func (m *PIIMasker) MaskFields(fields Annotations) {
 	m.maskAnnotations(fields, nil)
 }
 
-// MaskStringWithCounts replaces PII patterns and returns match counts.
+// MaskStringWithCounts masks input as [PIIMasker.MaskString] does and returns
+// how many times each pattern matched, inside base64 included.
 //
 // Useful when you need to know which patterns were detected and how many times.
 //
@@ -325,20 +340,9 @@ func (m *PIIMasker) MaskFields(fields Annotations) {
 //	// result.Masked: "CPF: ***.***.***-**"
 //	// result.Matches: {"cpf": 1}
 func (m *PIIMasker) MaskStringWithCounts(input string) PIIMaskResult {
-	result := PIIMaskResult{
-		Masked:  input,
-		Matches: make(map[PIIPattern]int),
-	}
-
-	for _, info := range m.patterns {
-		indices := info.regex.FindAllStringIndex(result.Masked, -1)
-		if len(indices) > 0 {
-			result.Matches[info.name] = len(indices)
-			result.Masked = info.regex.ReplaceAllString(result.Masked, info.mask)
-		}
-	}
-
-	return result
+	matches := make(map[PIIPattern]int)
+	masked, _ := m.maskString(input, matches)
+	return PIIMaskResult{Masked: masked, Matches: matches}
 }
 
 // MaskFieldsWithCounts masks sensitive values and returns match counts.
@@ -368,38 +372,56 @@ func (m *PIIMasker) maskAnnotations(fields Annotations, counts map[PIIPattern]in
 func (m *PIIMasker) maskAnnotation(annotation Annotation, counts map[PIIPattern]int) (Annotation, bool) {
 	name := annotation.Name()
 	if m.isSensitiveField(name) {
-		return Annotate(name, redacted), true
+		return Field(name, redacted), true
 	}
 
 	field := annotation.field
 	switch field.Type {
 	case zapcore.StringType:
 		masked, changed := m.maskString(field.String, counts)
-		return Annotate(name, masked), changed
+		return Field(name, masked), changed
 	case zapcore.StringerType:
 		masked, changed := m.maskString(fmt.Sprint(field.Interface), counts)
-		return Annotate(name, masked), changed
+		return Field(name, masked), changed
 	case zapcore.ErrorType:
 		err, _ := field.Interface.(error)
 		masked := m.maskError(err, counts)
 		if masked == nil {
 			return annotation, false
 		}
-		return Annotate(name, masked), true
+		return Field(name, masked), true
 	case zapcore.BinaryType:
 		data, _ := field.Interface.([]byte)
 		masked, changed := m.maskBytes(data, counts)
-		return Annotate(name, masked), changed
+		return Field(name, masked), changed
 	case zapcore.ReflectType, zapcore.ObjectMarshalerType, zapcore.ArrayMarshalerType:
-		value, ok := encodedValue(field)
-		if !ok {
-			return annotation, false
-		}
-		masked, changed := m.maskValue(value, 1, counts)
-		return Annotate(name, masked), changed
+		return m.maskStructured(annotation, counts)
 	default:
 		return annotation, false
 	}
+}
+
+// maskStructured masks a structured annotation as the encoding zap writes for
+// it. One whose encoding failed is always replaced, so zap never encodes the
+// original again and never writes its error unmasked: a marshaler that failed
+// becomes its masked partial value failing with its masked error, and a value
+// that failed to encode as JSON becomes its masked error under the name
+// followed by "Error", the key zap writes an encoding error under.
+func (m *PIIMasker) maskStructured(annotation Annotation, counts map[PIIPattern]int) (Annotation, bool) {
+	name := annotation.Name()
+	value, failure, ok := encodedValue(annotation.field)
+	if !ok {
+		return annotation, false
+	}
+	masked, changed := m.maskValue(value, 1, counts)
+	if failure != "" {
+		message, _ := m.maskString(failure, counts)
+		return Field(name, failedEncodingOf(masked, message)), true
+	}
+	if failed, ok := masked.(encodingFailure); ok {
+		return Field(name+"Error", failed.message), true
+	}
+	return Field(name, masked), changed
 }
 
 // maskValue returns value with its sensitive entries masked, and whether
@@ -431,11 +453,13 @@ func (m *PIIMasker) maskValue(value any, depth int, counts map[PIIPattern]int) (
 }
 
 // maskEncoded masks value as its JSON encoding, and keeps value itself when the
-// encoding had nothing to mask.
+// encoding had nothing to mask. A value that fails to encode becomes an
+// [encodingFailure] carrying the error masked.
 func (m *PIIMasker) maskEncoded(value any, depth int, counts map[PIIPattern]int) (any, bool) {
-	tree, redactedBinary, ok := jsonTree(value)
-	if !ok {
-		return value, false
+	tree, redactedBinary, err := jsonTree(value)
+	if err != nil {
+		message, _ := m.maskString(err.Error(), counts)
+		return encodingFailure{message: message}, true
 	}
 	masked, changed := m.maskValue(tree, depth, counts)
 	if !changed && !redactedBinary {
@@ -501,8 +525,9 @@ func (m *PIIMasker) maskBytes(data []byte, counts map[PIIPattern]int) (any, bool
 
 // maskBase64 returns the masked text in the encoding it came in when text has
 // the shape of base64 — standard or URL alphabet, padded or not — and decodes
-// to UTF-8 text carrying PII, and false otherwise: decoded bytes that are not
-// text are left alone, since nothing tells the base64 of binary data from any
+// to UTF-8 text carrying PII, redacted when it decodes to bytes that are not
+// text but in which a PII pattern matches, and false otherwise: other binary
+// data is left alone, since nothing tells the base64 of binary data from any
 // other string of that shape.
 func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, bool) {
 	encoding := base64EncodingOf(text)
@@ -512,7 +537,13 @@ func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, 
 	// Short strings, which most values are, decode on the stack.
 	var buffer [128]byte
 	decoded, err := encoding.AppendDecode(buffer[:0], []byte(text))
-	if err != nil || !utf8.Valid(decoded) {
+	if err != nil {
+		return "", false
+	}
+	if !utf8.Valid(decoded) {
+		if m.binaryCarriesPII(decoded, counts) {
+			return redacted, true
+		}
 		return "", false
 	}
 	plain := string(decoded)
@@ -523,77 +554,96 @@ func (m *PIIMasker) maskBase64(text string, counts map[PIIPattern]int) (string, 
 	return encoding.EncodeToString([]byte(masked)), true
 }
 
-// maskToken returns a JWT with the PII in its payload masked. The payload is
-// JSON, walked like any structured value, so a sensitive claim is redacted and
-// every string in it masked; the signature no longer matches, which a copy in a
-// log does not need. A token whose payload is not JSON comes back unchanged.
-func (m *PIIMasker) maskToken(token string, counts map[PIIPattern]int) string {
-	parts := strings.SplitN(token, ".", 3)
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return token
-	}
-	claims, ok := firstValue(payload)
-	if !ok {
-		return token
-	}
-	tree, ok := decodeJSON(claims)
-	if !ok {
-		return token
-	}
-	masked, changed := m.maskValue(tree, 1, counts)
-	if !changed {
-		return token
-	}
-	encoded, err := json.Marshal(masked, logline.ValueOptions())
-	if err != nil {
-		return redacted
-	}
-	parts[1] = base64.RawURLEncoding.EncodeToString(encoded)
-	return strings.Join(parts, ".")
-}
-
 // maskError returns err with the PII in its message masked, or nil when there
-// is none. An error whose verbose form — the %+v zap writes beside the message
-// of an error that formats itself — carries PII is masked too, and loses that
-// verbose form.
+// is none. The verbose form of an error that formats itself — the %+v zap
+// writes beside the message — is masked too, and kept; with
+// [PIIConfig.OmitErrorVerbose] it is never read, and such an error is always
+// replaced by its masked message alone.
 func (m *PIIMasker) maskError(err error, counts map[PIIPattern]int) *maskedError {
 	if err == nil {
 		return nil
 	}
-	masked, changed := m.maskString(fmt.Sprint(err), counts)
-	if !changed && !m.verboseCarriesPII(err) {
+	message, messageChanged := m.maskString(fmt.Sprint(err), counts)
+	if _, formats := err.(fmt.Formatter); formats && m.omitErrorVerbose {
+		return &maskedError{message: message, cause: err}
+	}
+	verbose, verboseChanged := m.maskVerbose(err)
+	if !messageChanged && !verboseChanged {
 		return nil
 	}
-	return &maskedError{message: masked, cause: err}
+	return &maskedError{message: message, verbose: verbose, cause: err}
 }
 
-// verboseCarriesPII reports whether the %+v of an error that formats itself
-// has PII to mask.
-func (m *PIIMasker) verboseCarriesPII(err error) bool {
+// maskVerbose returns the %+v of an error that formats itself with its PII
+// masked, and whether anything was; for any other error, it returns "".
+func (m *PIIMasker) maskVerbose(err error) (string, bool) {
 	if _, ok := err.(fmt.Formatter); !ok {
-		return false
+		return "", false
 	}
-	verbose := fmt.Sprintf("%+v", err)
-	return m.MaskString(verbose) != verbose
+	return m.maskString(fmt.Sprintf("%+v", err), nil)
 }
 
-// maskText masks the payload of every JWT in text and then the PII patterns,
+// maskText redacts every JWT and JWE in text and then masks the PII patterns,
 // adding the matches to counts when counts is not nil.
 func (m *PIIMasker) maskText(text string, counts map[PIIPattern]int) string {
-	if strings.Contains(text, ".ey") {
-		text = tokenPattern.ReplaceAllStringFunc(text, func(token string) string {
-			return m.maskToken(token, counts)
-		})
+	if mayHoldToken(text) {
+		text = tokenPattern.ReplaceAllStringFunc(text, redactToken)
 	}
-	if counts == nil {
-		return m.MaskString(text)
-	}
+	return m.maskPatterns(text, counts)
+}
+
+// binaryCarriesPII reports whether a PII pattern matches binary data, adding
+// the matches to counts when counts is not nil. A built-in pattern runs only
+// on data that [mayHoldBuiltInPattern] lets through; a custom one always runs.
+// The patterns read a copy, so data, a buffer on the caller's stack, never
+// escapes to the heap.
+func (m *PIIMasker) binaryCarriesPII(data []byte, counts map[PIIPattern]int) bool {
+	builtIn := mayHoldBuiltInPattern(data)
+	var copied []byte
+	found := false
 	for _, info := range m.patterns {
-		if matches := info.regex.FindAllStringIndex(text, -1); len(matches) > 0 {
-			counts[info.name] += len(matches)
-			text = info.regex.ReplaceAllString(text, info.mask)
+		if !info.custom && !builtIn {
+			continue
 		}
+		if copied == nil {
+			copied = bytes.Clone(data)
+		}
+		matches := info.regex.FindAllIndex(copied, -1)
+		found = found || len(matches) > 0
+		if counts != nil && len(matches) > 0 {
+			counts[info.name] += len(matches)
+		}
+	}
+	return found
+}
+
+// mayHoldBuiltInPattern reports whether data could hold a built-in PII
+// pattern: it has an "@" or at least [minimumPatternDigits] digits.
+func mayHoldBuiltInPattern(data []byte) bool {
+	digits := 0
+	for _, char := range data {
+		if char == '@' {
+			return true
+		}
+		if char >= '0' && char <= '9' {
+			digits++
+		}
+	}
+	return digits >= minimumPatternDigits
+}
+
+// maskPatterns masks every PII pattern in text, adding the matches to counts
+// when counts is not nil.
+func (m *PIIMasker) maskPatterns(text string, counts map[PIIPattern]int) string {
+	for _, info := range m.patterns {
+		matches := info.regex.FindAllStringIndex(text, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		if counts != nil {
+			counts[info.name] += len(matches)
+		}
+		text = info.regex.ReplaceAllString(text, info.mask)
 	}
 	return text
 }
@@ -713,16 +763,75 @@ func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
 	return nil
 }
 
-// maskedError is an error whose message had PII masked. zap writes only its
-// message; it unwraps to the original error for the hooks that run after PII.
+// maskedError is an error whose message had PII masked. zap writes its message
+// and, for an original that formats itself, its masked verbose form; it unwraps
+// to the original error for the hooks that run after PII.
 type maskedError struct {
 	message string
+	verbose string
 	cause   error
 }
 
 func (m maskedError) Error() string { return m.message }
 
+// Format writes the masked verbose form for %+v, when the original has one,
+// and the masked message otherwise. A Format method has no caller to return a
+// write error to.
+func (m maskedError) Format(state fmt.State, verb rune) {
+	switch {
+	case verb == 'v' && state.Flag('+') && m.verbose != "":
+		_, _ = io.WriteString(state, m.verbose)
+	case verb == 'q':
+		_, _ = fmt.Fprintf(state, "%q", m.message)
+	default:
+		_, _ = io.WriteString(state, m.message)
+	}
+}
+
 func (m maskedError) Unwrap() error { return m.cause }
+
+// failedObject is the masked partial object of an ObjectMarshaler that failed:
+// it writes the fields and fails with the masked message.
+type failedObject struct {
+	fields  map[string]any
+	message string
+}
+
+func (f failedObject) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
+	for _, key := range slices.Sorted(maps.Keys(f.fields)) {
+		if err := encoder.AddReflected(key, f.fields[key]); err != nil {
+			return err
+		}
+	}
+	return maskedError{message: f.message}
+}
+
+// failedArray is the masked partial array of an ArrayMarshaler that failed: it
+// writes the elements and fails with the masked message.
+type failedArray struct {
+	elements []any
+	message  string
+}
+
+func (f failedArray) MarshalLogArray(encoder zapcore.ArrayEncoder) error {
+	for _, element := range f.elements {
+		if err := encoder.AppendReflected(element); err != nil {
+			return err
+		}
+	}
+	return maskedError{message: f.message}
+}
+
+// encodingFailure stands in for a value that failed to encode as JSON. It fails
+// to encode in turn, with the original's error masked, so the error zap writes
+// for whatever holds it carries no PII.
+type encodingFailure struct {
+	message string
+}
+
+func (e encodingFailure) MarshalJSON() ([]byte, error) {
+	return nil, maskedError{message: e.message}
+}
 
 // containsFold reports whether value contains target, case-insensitively, without allocating.
 // It iterates by byte offset, which is correct for ASCII substrings but may miss
@@ -744,15 +853,29 @@ func containsFold(value, target string) bool {
 
 // encodedValue returns the value zap encodes for field: an ObjectMarshaler or
 // ArrayMarshaler as the map or slice it marshals to — only what it chooses to
-// write — and anything else as the value itself.
-func encodedValue(field zapcore.Field) (any, bool) {
+// write — and anything else as the value itself. failure is the message of the
+// error a marshaler failed with, which zap writes under the field's name
+// followed by "Error".
+func encodedValue(field zapcore.Field) (value any, failure string, ok bool) {
 	if field.Type == zapcore.ReflectType {
-		return field.Interface, true
+		return field.Interface, "", true
 	}
 	encoder := zapcore.NewMapObjectEncoder()
 	field.AddTo(encoder)
-	value, ok := encoder.Fields[field.Key]
-	return value, ok
+	value, ok = encoder.Fields[field.Key]
+	failure, _ = encoder.Fields[field.Key+"Error"].(string)
+	return value, failure, ok
+}
+
+// failedEncodingOf returns the masked partial value of a marshaler that failed,
+// as a marshaler failing in turn with message, so zap writes both the way it
+// wrote the original's.
+func failedEncodingOf(value any, message string) any {
+	if elements, ok := value.([]any); ok {
+		return failedArray{elements: elements, message: message}
+	}
+	fields, _ := value.(map[string]any)
+	return failedObject{fields: fields, message: message}
 }
 
 // base64EncodingOf returns the base64 encoding text has the shape of — the
@@ -819,27 +942,27 @@ func isAlphanumeric(char byte) bool {
 // []any, string, jsontext.Value for a number, bool or nil — in the encoding the
 // log writes it with, every []byte that is not UTF-8 text redacted on the way,
 // and whether any was: once encoded, those bytes cannot be told from a string.
-func jsonTree(value any) (tree any, redactedBinary, ok bool) {
+func jsonTree(value any) (tree any, redactedBinary bool, err error) {
 	redaction := binaryRedactions.Get().(*binaryRedaction)
 	defer binaryRedactions.Put(redaction)
 	redaction.redacted = false
 	encoded, err := json.Marshal(value, redaction.options)
 	if err != nil {
-		return nil, false, false
+		return nil, false, err
 	}
-	tree, ok = decodeJSON(encoded)
-	return tree, redaction.redacted, ok
+	tree, err = decodeJSON(encoded)
+	return tree, redaction.redacted, err
 }
 
 // decodeJSON returns the JSON value data holds as a tree, each number kept as
 // the jsontext.Value it was written as so none loses precision on the way back
 // out.
-func decodeJSON(data []byte) (any, bool) {
+func decodeJSON(data []byte) (any, error) {
 	var tree any
 	if err := json.Unmarshal(data, &tree, treeDecoding); err != nil {
-		return nil, false
+		return nil, err
 	}
-	return tree, true
+	return tree, nil
 }
 
 // binaryRedaction redacts, in one encoding at a time, every []byte that is not
@@ -867,11 +990,41 @@ func (b *binaryRedaction) marshalBytes(encoder *jsontext.Encoder, data []byte) e
 	return encoder.WriteToken(jsontext.String(redacted))
 }
 
-// firstValue returns the first JSON value data starts with, and false when it
-// starts with none; whatever follows that value is left out.
-func firstValue(data []byte) (jsontext.Value, bool) {
-	value, err := jsontext.NewDecoder(bytes.NewReader(data), treeDecoding).ReadValue()
-	return value, err == nil
+// mayHoldToken reports whether text holds what the header of a JWT or JWE
+// starts with: "{" followed by a quote, a space or a line break, in base64url.
+// It spares the token pattern to most text.
+func mayHoldToken(text string) bool {
+	for rest := text; ; {
+		index := strings.IndexByte(rest, 'e')
+		if index < 0 || index+2 >= len(rest) {
+			return false
+		}
+		switch rest[index+1 : index+3] {
+		case "yJ", "yI", "yA", "wo", "wk", "w0":
+			return true
+		}
+		rest = rest[index+1:]
+	}
+}
+
+// redactToken returns redacted for a JWT or JWE, and candidate unchanged when
+// it only has the shape of one: a token's header is a JSON object naming its
+// algorithm, as every JOSE header does.
+func redactToken(candidate string) string {
+	header, _, _ := strings.Cut(candidate, ".")
+	decoded, err := base64.RawURLEncoding.DecodeString(header)
+	if err != nil {
+		return candidate
+	}
+	tree, err := decodeJSON(decoded)
+	if err != nil {
+		return candidate
+	}
+	fields, _ := tree.(map[string]any)
+	if _, ok := fields["alg"]; !ok {
+		return candidate
+	}
+	return redacted
 }
 
 // piiPatternInfo holds the regex and mask for a PII pattern.
@@ -879,6 +1032,9 @@ type piiPatternInfo struct {
 	name  PIIPattern
 	regex *regexp.Regexp
 	mask  string
+	// custom marks a pattern from [PIIConfig.CustomPatterns], which may match
+	// what no built-in one needs.
+	custom bool
 }
 
 // piiPatterns maps pattern types to their regexes and masks.
@@ -909,9 +1065,10 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 	},
 }
 
-// tokenPattern matches a JWT: a header and a payload, both base64url JSON
-// objects and so both starting with "ey", and a signature, empty when unsigned.
-var tokenPattern = regexp.MustCompile(`ey[A-Za-z0-9_-]+\.ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`)
+// tokenPattern matches the shape of a JWT — header, payload and signature, the
+// last empty when unsigned — or of a JWE, five segments long. Every segment is
+// base64url, and the header, a JSON object, starts as [mayHoldToken] expects.
+var tokenPattern = regexp.MustCompile(`\b(?:eyJ|eyI|eyA|ewo|ewk|ew0)[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}(?:(?:\.[A-Za-z0-9_-]*){2})?`)
 
 // binaryRedactions holds the binaryRedaction of every encoding not in progress.
 var binaryRedactions = sync.Pool{New: func() any { return newBinaryRedaction() }}

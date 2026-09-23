@@ -3,7 +3,6 @@ package axio
 import (
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,12 +40,7 @@ func (o OutputType) Validate() error {
 
 // UnmarshalText implements [encoding.TextUnmarshaler] for validation during parsing.
 func (o *OutputType) UnmarshalText(text []byte) error {
-	value := OutputType(strings.TrimSpace(string(text)))
-	if err := value.Validate(); err != nil {
-		return err
-	}
-	*o = value
-	return nil
+	return unmarshalEnum(text, o)
 }
 
 // Output defines a log output destination with its format and type.

@@ -204,8 +204,8 @@ func TestLogger_With(t *testing.T) {
 	defer logger.Close()
 
 	logger.With(
-		Annotate("user_id", "usr_123"),
-		Annotate("tenant", "acme"),
+		Field("user_id", "usr_123"),
+		Field("tenant", "acme"),
 	).Info(context.Background(), "with annotations")
 
 	content := readFile(t, path)
@@ -239,7 +239,7 @@ func TestLogger_WithHTTP(t *testing.T) {
 		LatencyMS:  45,
 	}
 
-	logger.With(Annotate("http", httpAnnotation)).Info(context.Background(), "http request")
+	logger.With(Field("http", httpAnnotation)).Info(context.Background(), "http request")
 
 	content := readFile(t, path)
 	if !strings.Contains(content, "POST") {
@@ -250,27 +250,83 @@ func TestLogger_WithHTTP(t *testing.T) {
 	}
 }
 
-func TestLogger_MessageFormatting(t *testing.T) {
-	path := tempFile(t, "format.log")
-	config := Config{
-		ServiceName: "test",
-		Environment: EnvironmentDevelopment,
-		Level:       LevelInfo,
-		Outputs: []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		},
+func TestLogger_LevelAnnotations(t *testing.T) {
+	ctx := context.Background()
+	newLogger := func(t *testing.T, options ...Option) (Logger, *bufferOutput) {
+		t.Helper()
+		output := newBufferOutput(FormatJSON)
+		config := minimalConfig()
+		config.Level = LevelDebug
+		loggerUnderTest, err := New(config, append([]Option{WithOutputs(output)}, options...)...)
+		assertNoError(t, err)
+		t.Cleanup(func() { _ = loggerUnderTest.Close() })
+		return loggerUnderTest, output
 	}
 
-	logger, err := New(config)
-	assertNoError(t, err)
-	defer logger.Close()
+	t.Run("written_as_fields_at_every_level", func(t *testing.T) {
+		loggerUnderTest, output := newLogger(t)
+		cause := errors.New("declined")
+		loggerUnderTest.Debug(ctx, "order created", Field("user_id", "usr_1"))
+		loggerUnderTest.Info(ctx, "order created", Field("user_id", "usr_1"))
+		loggerUnderTest.Warn(ctx, cause, "order created", Field("user_id", "usr_1"))
+		loggerUnderTest.Error(ctx, cause, "order created", Field("user_id", "usr_1"))
 
-	logger.Info(context.Background(), "processed %d items in %s", 42, "100ms")
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, len(records), 4)
+		for _, record := range records {
+			assertEqual(t, record["message"], any("order created"))
+			assertEqual(t, record["user_id"], any("usr_1"))
+		}
+	})
 
-	content := readFile(t, path)
-	if !strings.Contains(content, "processed 42 items in 100ms") {
-		t.Error("log should contain formatted message")
-	}
+	t.Run("message_written_as_given", func(t *testing.T) {
+		loggerUnderTest, output := newLogger(t)
+		loggerUnderTest.Info(ctx, "rate at 100%d", Field("rate", 5))
+
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, records[0]["message"], any("rate at 100%d"))
+	})
+
+	t.Run("written_after_the_logger_own", func(t *testing.T) {
+		loggerUnderTest, output := newLogger(t)
+		loggerUnderTest.With(Field("request_id", "req_1")).Info(ctx, "order created", Field("user_id", "usr_1"))
+
+		line := output.String()
+		requestAt, userAt := strings.Index(line, `"request_id"`), strings.Index(line, `"user_id"`)
+		if requestAt < 0 || userAt < 0 || requestAt > userAt {
+			t.Errorf("want request_id before user_id, got %s", line)
+		}
+	})
+
+	t.Run("not_kept_by_the_logger", func(t *testing.T) {
+		loggerUnderTest, output := newLogger(t)
+		child := loggerUnderTest.With(Field("request_id", "req_1"))
+		child.Info(ctx, "first", Field("user_id", "usr_1"))
+		child.Info(ctx, "second")
+
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, len(records), 2)
+		assertEqual(t, records[0]["user_id"], any("usr_1"))
+		if _, ok := records[1]["user_id"]; ok {
+			t.Error("an annotation passed to one call reached the next")
+		}
+		assertEqual(t, records[1]["request_id"], any("req_1"))
+	})
+
+	t.Run("masked_by_pii", func(t *testing.T) {
+		loggerUnderTest, output := newLogger(t, WithPII(nil, nil))
+		loggerUnderTest.Info(ctx, "order created", Field("document", "123.456.789-01"))
+
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, records[0]["document"], any("***.***.***-**"))
+	})
+	t.Run("caller_slice_not_changed_by_hooks", func(t *testing.T) {
+		loggerUnderTest, _ := newLogger(t, WithPII(nil, nil))
+		annotations := []Annotation{Field("document", "123.456.789-01")}
+		loggerUnderTest.Info(ctx, "order created", annotations...)
+
+		assertEqual(t, annotations[0].Data(), any("123.456.789-01"))
+	})
 }
 
 func TestLogger_WithNilAnnotation(t *testing.T) {
@@ -355,30 +411,6 @@ func TestLogger_OmitsEmptyTraceAndError(t *testing.T) {
 			t.Error("error value should appear in log")
 		}
 	})
-}
-
-func TestLogger_MessageWithExtraArgs(t *testing.T) {
-	path := tempFile(t, "extra.log")
-	config := Config{
-		ServiceName: "test",
-		Environment: EnvironmentDevelopment,
-		Level:       LevelInfo,
-		Outputs: []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		},
-	}
-
-	logger, _ := New(config)
-	defer logger.Close()
-
-	// Extra arguments are formatted normally by fmt.Sprintf
-	// This test verifies there is no crash
-	logger.Info(context.Background(), "value: %d extra: %s", 42, "test")
-
-	content := readFile(t, path)
-	if !strings.Contains(content, "value: 42 extra: test") {
-		t.Error("message should be formatted correctly")
-	}
 }
 
 func TestLogger_ServiceMetadataOnlyInJSON(t *testing.T) {
@@ -466,7 +498,7 @@ func TestAnnotationsToFields_ReservedKeyIsRenamed(t *testing.T) {
 	}
 	annotations := make([]Annotation, len(reserved))
 	for index, key := range reserved {
-		annotations[index] = Annotate(key, "user")
+		annotations[index] = Field(key, "user")
 	}
 	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
 
@@ -508,8 +540,8 @@ func TestLogger_With_AccumulatesAcrossChain(t *testing.T) {
 	defer logger.Close()
 
 	logger.
-		With(Annotate("first", "A")).
-		With(Annotate("second", "B")).
+		With(Field("first", "A")).
+		With(Field("second", "B")).
 		Info(context.Background(), "chained")
 
 	content := readFile(t, path)
@@ -533,9 +565,9 @@ func TestLogger_With_DoesNotMutateParent(t *testing.T) {
 	assertNoError(t, err)
 	defer logger.Close()
 
-	parent := logger.With(Annotate("a", 1))
-	child1 := parent.With(Annotate("b", 2))
-	child2 := parent.With(Annotate("c", 3))
+	parent := logger.With(Field("a", 1))
+	child1 := parent.With(Field("b", 2))
+	child2 := parent.With(Field("c", 3))
 
 	ctx := context.Background()
 	parent.Info(ctx, "parent_first")
@@ -574,7 +606,7 @@ func TestLogger_Named_PreservesAnnotations(t *testing.T) {
 	defer logger.Close()
 
 	logger.
-		With(Annotate("user_id", "u-1")).
+		With(Field("user_id", "u-1")).
 		Named("sub").
 		Info(context.Background(), "after named")
 
@@ -650,7 +682,7 @@ func TestLogger_CloseOnFork_DoesNotAffectRoot(t *testing.T) {
 
 	ctx := context.Background()
 
-	forkWith := root.With(Annotate("scope", "with"))
+	forkWith := root.With(Field("scope", "with"))
 	if err := forkWith.Close(); !errors.Is(err, ErrLoggerNotRoot) {
 		t.Errorf("With-fork Close should return ErrLoggerNotRoot, got %v", err)
 	}
@@ -683,7 +715,7 @@ func TestLogger_CloseOnFork_DoesNotCloseSharedOutputs(t *testing.T) {
 	root, err := New(config, WithOutputs(out))
 	assertNoError(t, err)
 
-	fork := root.With(Annotate("scope", "fork"))
+	fork := root.With(Field("scope", "fork"))
 	if err := fork.Close(); !errors.Is(err, ErrLoggerNotRoot) {
 		t.Fatalf("fork Close should return ErrLoggerNotRoot, got %v", err)
 	}

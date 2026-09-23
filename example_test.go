@@ -17,13 +17,13 @@ func ExampleLogger_With_http() {
 	})
 	defer logger.Close()
 
-	logger.With(
-		axio.Annotate("http", axio.HTTP{
+	logger.Info(context.Background(), "order created",
+		axio.Field("http", axio.HTTP{
 			Method:     "POST",
 			URL:        "/api/v1/orders",
 			StatusCode: 201,
 			LatencyMS:  45,
 		}),
-		axio.Annotate("user_id", "usr_123"),
-	).Info(context.Background(), "order created")
+		axio.Field("user_id", "usr_123"),
+	)
 }

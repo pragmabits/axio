@@ -130,7 +130,7 @@ func eventWithAnnotable(ctx context.Context) {
 	}
 	defer event.Close()
 
-	event.With(axio.Annotate("http", axio.HTTP{
+	event.With(axio.Field("http", axio.HTTP{
 		Method:     "POST",
 		URL:        "/api/v1/orders",
 		StatusCode: 201,
@@ -232,9 +232,9 @@ func eventWithDetailedError(ctx context.Context) {
 	event.Add("payment_provider", "stripe")
 
 	event.SetError(errors.New("card declined by issuer"),
-		axio.Annotate("error_code", "card_declined"),
-		axio.Annotate("error_retriable", false),
-		axio.Annotate("stripe_decline_code", "insufficient_funds"),
+		axio.Field("error_code", "card_declined"),
+		axio.Field("error_retriable", false),
+		axio.Field("stripe_decline_code", "insufficient_funds"),
 	)
 
 	event.Emit(ctx)

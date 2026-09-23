@@ -98,11 +98,38 @@ func TestWithPIIMaxDepth(t *testing.T) {
 		output := newBufferOutput(FormatJSON)
 		logger, err := New(minimalConfig(), WithOutputs(output), WithPII(nil, nil), WithPIIMaxDepth(1))
 		assertNoError(t, err)
-		logger.With(Annotate("order", map[string]any{"customer": map[string]any{"name": "alice"}})).Info(context.Background(), "order created")
+		logger.With(Field("order", map[string]any{"customer": map[string]any{"name": "alice"}})).Info(context.Background(), "order created")
 		assertNoError(t, logger.Close())
 
 		if !strings.Contains(output.String(), `"order":{"customer":"[REDACTED]"}`) {
 			t.Errorf("expected the map at depth 2 redacted with depth 1, got %s", output.String())
+		}
+	})
+}
+
+func TestWithPIIOmitErrorVerbose(t *testing.T) {
+	t.Run("sets_the_flag", func(t *testing.T) {
+		config := minimalConfig()
+		assertNoError(t, WithPIIOmitErrorVerbose()(&config))
+		assertEqual(t, config.PIIOmitErrorVerbose, true)
+	})
+
+	t.Run("omits_the_verbose_form_the_logger_writes", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), WithOutputs(output), WithPII(nil, nil), WithPIIOmitErrorVerbose())
+		assertNoError(t, err)
+		logger.Error(context.Background(), piiVerboseError{message: "rejected 123.456.789-01", stack: "at lookup"}, "registration failed")
+		logger.Error(context.Background(), piiVerboseError{message: "rejected", stack: "at lookup"}, "registration failed")
+		assertNoError(t, logger.Close())
+
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, len(records), 2)
+		assertEqual(t, records[0]["error"], any("rejected ***.***.***-**"))
+		assertEqual(t, records[1]["error"], any("rejected"))
+		for _, record := range records {
+			if verbose, ok := record["errorVerbose"]; ok {
+				t.Errorf("errorVerbose written: %v", verbose)
+			}
 		}
 	})
 }

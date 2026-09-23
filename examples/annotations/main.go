@@ -22,17 +22,17 @@ func main() {
 
 	fmt.Println("=== Key-Value Annotations ===")
 
-	logger.With(
-		axio.Annotate("user_id", "usr_12345"),
-		axio.Annotate("tenant", "acme-corp"),
-		axio.Annotate("action", "checkout"),
-	).Info(ctx, "User initiated checkout")
+	logger.Info(ctx, "User initiated checkout",
+		axio.Field("user_id", "usr_12345"),
+		axio.Field("tenant", "acme-corp"),
+		axio.Field("action", "checkout"),
+	)
 
 	fmt.Println()
 	fmt.Println("=== HTTP Annotation ===")
 
-	logger.With(
-		axio.Annotate("http", axio.HTTP{
+	logger.Info(ctx, "Request processed successfully",
+		axio.Field("http", axio.HTTP{
 			Method:     "POST",
 			URL:        "/api/v1/orders",
 			StatusCode: 201,
@@ -40,6 +40,6 @@ func main() {
 			UserAgent:  "Mozilla/5.0",
 			ClientIP:   "192.168.1.100",
 		}),
-	).Info(ctx, "Request processed successfully")
+	)
 	fmt.Println()
 }

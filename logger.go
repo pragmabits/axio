@@ -137,20 +137,20 @@ func (l logger) With(annotations ...Annotation) Logger {
 	return &l
 }
 
-func (l logger) Debug(ctx context.Context, message string, arguments ...any) {
-	l.log(ctx, LevelDebug, nil, message, arguments...)
+func (l logger) Debug(ctx context.Context, message string, annotations ...Annotation) {
+	l.log(ctx, LevelDebug, nil, message, annotations)
 }
 
-func (l logger) Info(ctx context.Context, message string, arguments ...any) {
-	l.log(ctx, LevelInfo, nil, message, arguments...)
+func (l logger) Info(ctx context.Context, message string, annotations ...Annotation) {
+	l.log(ctx, LevelInfo, nil, message, annotations)
 }
 
-func (l logger) Warn(ctx context.Context, err error, message string, arguments ...any) {
-	l.log(ctx, LevelWarn, err, message, arguments...)
+func (l logger) Warn(ctx context.Context, err error, message string, annotations ...Annotation) {
+	l.log(ctx, LevelWarn, err, message, annotations)
 }
 
-func (l logger) Error(ctx context.Context, err error, message string, arguments ...any) {
-	l.log(ctx, LevelError, err, message, arguments...)
+func (l logger) Error(ctx context.Context, err error, message string, annotations ...Annotation) {
+	l.log(ctx, LevelError, err, message, annotations)
 }
 
 // Close releases all resources associated with the logger.
@@ -206,13 +206,13 @@ func (l *logger) log(
 	level Level,
 	err error,
 	message string,
-	arguments ...any,
+	annotations []Annotation,
 ) {
 	if l.closed.Load() {
 		return
 	}
 
-	log := l.engine.Check(toZapLevel(level), l.formatMessage(message, arguments...))
+	log := l.engine.Check(toZapLevel(level), message)
 	if log == nil {
 		return
 	}
@@ -228,7 +228,7 @@ func (l *logger) log(
 	entry.Error = err
 	entry.TraceID = trace
 	entry.SpanID = span
-	entry.Annotations = expandAnnotable(cloneAnnotations(l.annotations))
+	entry.Annotations = expandAnnotable(cloneAnnotations(l.annotations, annotations))
 
 	defer func() {
 		*entry = Entry{}
@@ -267,28 +267,6 @@ func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
 	}
 
 	return fields
-}
-
-// formatMessage formats the message with the arguments.
-// When no arguments are provided, the format string is returned directly
-// without defer overhead.
-func (l *logger) formatMessage(format string, arguments ...any) string {
-	if len(arguments) == 0 {
-		return format
-	}
-	return l.sprintfRecover(format, arguments)
-}
-
-// sprintfRecover calls fmt.Sprintf recovering from panics caused by
-// incompatible format/arguments combinations.
-func (l *logger) sprintfRecover(format string, arguments []any) (formatted string) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			formatted = fmt.Sprintf("[INVALID FORMAT] format=%q args=%v panic=%v", format, arguments, recovered)
-			fmt.Fprintf(os.Stderr, "axio: panic in message formatting: %v\n", recovered)
-		}
-	}()
-	return fmt.Sprintf(format, arguments...)
 }
 
 // buildEngine builds the zap logger behind a Logger: an audited core when
@@ -413,16 +391,23 @@ func toZapLevel[T ~string | ~[]byte](level T) zapcore.Level {
 	return parsed
 }
 
-// cloneAnnotations returns a fresh slice containing the same annotations.
-// Used when forking a logger to break aliasing with the parent's backing array
-// so subsequent mutations (e.g. by hooks) don't leak across loggers.
-func cloneAnnotations(source []Annotation) []Annotation {
-	if len(source) == 0 {
+// cloneAnnotations returns a fresh slice holding the annotations of every
+// source, in order. Used when forking a logger and when handing annotations to
+// hooks, to break aliasing with the backing arrays of the parent and of the
+// caller, so mutations (e.g. by hooks) reach neither.
+func cloneAnnotations(sources ...[]Annotation) []Annotation {
+	length := 0
+	for _, source := range sources {
+		length += len(source)
+	}
+	if length == 0 {
 		return nil
 	}
-	out := make([]Annotation, len(source))
-	copy(out, source)
-	return out
+	clone := make([]Annotation, 0, length)
+	for _, source := range sources {
+		clone = append(clone, source...)
+	}
+	return clone
 }
 
 // annotationsToFields returns the fields the annotations are written as, each

@@ -3,7 +3,6 @@ package axio
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,8 +78,8 @@ func BenchmarkLogger_Info_WithAnnotations(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		loggerUnderTest.With(
-			Annotate("user_id", "usr_12345"),
-			Annotate("tenant", "acme-corp"),
+			Field("user_id", "usr_12345"),
+			Field("tenant", "acme-corp"),
 		).Info(ctx, "annotated message")
 	}
 }
@@ -100,7 +99,7 @@ func BenchmarkLogger_Info_WithHTTP(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("http", httpData)).Info(ctx, "request processed")
+		loggerUnderTest.With(Field("http", httpData)).Info(ctx, "request processed")
 	}
 }
 
@@ -116,14 +115,17 @@ func BenchmarkLogger_Error_WithError(b *testing.B) {
 	}
 }
 
-func BenchmarkLogger_Info_Formatted(b *testing.B) {
+func BenchmarkLogger_Info_CallAnnotations(b *testing.B) {
 	loggerUnderTest := benchLogger(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.Info(ctx, "processed %d items in %dms", 42, 150)
+		loggerUnderTest.Info(ctx, "annotated message",
+			Field("user_id", "usr_12345"),
+			Field("tenant", "acme-corp"),
+		)
 	}
 }
 
@@ -154,8 +156,8 @@ func BenchmarkLogger_PII_Strings(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		loggerUnderTest.With(
-			Annotate("user_id", "usr_12345"),
-			Annotate("document", "123.456.789-01"),
+			Field("user_id", "usr_12345"),
+			Field("document", "123.456.789-01"),
 		).Info(ctx, "customer registered")
 	}
 }
@@ -168,10 +170,10 @@ func BenchmarkLogger_PII_Words(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		loggerUnderTest.With(
-			Annotate("status", "done"),
-			Annotate("tenant", "acme"),
-			Annotate("plan", "premium1"),
-			Annotate("region", "saopaulo"),
+			Field("status", "done"),
+			Field("tenant", "acme"),
+			Field("plan", "premium1"),
+			Field("region", "saopaulo"),
 		).Info(ctx, "order settled")
 	}
 }
@@ -184,7 +186,7 @@ func BenchmarkLogger_PII_Map(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("customer", customer)).Info(ctx, "customer registered")
+		loggerUnderTest.With(Field("customer", customer)).Info(ctx, "customer registered")
 	}
 }
 
@@ -196,7 +198,7 @@ func BenchmarkLogger_PII_Struct(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("customer", customer)).Info(ctx, "customer registered")
+		loggerUnderTest.With(Field("customer", customer)).Info(ctx, "customer registered")
 	}
 }
 
@@ -208,7 +210,7 @@ func BenchmarkLogger_PII_Bytes(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("body", body)).Info(ctx, "request received")
+		loggerUnderTest.With(Field("body", body)).Info(ctx, "request received")
 	}
 }
 
@@ -223,7 +225,7 @@ func BenchmarkLogger_PII_StructWithBytes(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("request", request)).Info(ctx, "request received")
+		loggerUnderTest.With(Field("request", request)).Info(ctx, "request received")
 	}
 }
 
@@ -242,7 +244,7 @@ func BenchmarkLogger_PII_HTTP(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		loggerUnderTest.With(Annotate("http", httpData)).Info(ctx, "request processed")
+		loggerUnderTest.With(Field("http", httpData)).Info(ctx, "request processed")
 	}
 }
 
@@ -279,9 +281,9 @@ func BenchmarkFieldsFromEntry_Full(b *testing.B) {
 		"abc123def456789012345678901234aa",
 		"span1234567890ab",
 		errors.New("timeout"),
-		Annotate("request_id", "req-001"),
-		Annotate("user_id", "usr-999"),
-		Annotate("region", "us-east-1"),
+		Field("request_id", "req-001"),
+		Field("user_id", "usr-999"),
+		Field("region", "us-east-1"),
 	)
 
 	b.ReportAllocs()
@@ -297,11 +299,11 @@ func BenchmarkFieldsFromEntry_Full(b *testing.B) {
 
 func BenchmarkAnnotationsToFields(b *testing.B) {
 	annotations := Annotations{
-		Annotate("user_id", "usr_12345"),
-		Annotate("tenant", "acme-corp"),
-		Annotate("action", "create_order"),
-		Annotate("region", "us-east-1"),
-		Annotate("version", "2.1.0"),
+		Field("user_id", "usr_12345"),
+		Field("tenant", "acme-corp"),
+		Field("action", "create_order"),
+		Field("region", "us-east-1"),
+		Field("version", "2.1.0"),
 	}
 
 	b.ReportAllocs()
@@ -356,6 +358,25 @@ func BenchmarkPIIMasker_MaskString(b *testing.B) {
 	}
 }
 
+func BenchmarkPIIMasker_MaskString_Identifiers(b *testing.B) {
+	masker := MustPIIMasker(DefaultPIIConfig())
+	identifiers := []string{
+		"user",
+		"request",
+		"550e8400-e29b-41d4-a716-446655440000",
+		"4bf92f3577b34da6a3ce929d0e0e4736",
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		for _, identifier := range identifiers {
+			masker.MaskString(identifier)
+		}
+	}
+}
+
 func BenchmarkPIIMasker_NoMatch(b *testing.B) {
 	masker := MustPIIMasker(PIIConfig{
 		Patterns: []PIIPattern{PatternCPF, PatternCNPJ, PatternCreditCard},
@@ -373,16 +394,16 @@ func BenchmarkPIIMasker_MaskFields_NoMap(b *testing.B) {
 	masker := MustPIIMasker(DefaultPIIConfig())
 
 	annotations := Annotations{
-		Annotate("user_id", "usr_12345"),
-		Annotate("tenant", "acme-corp"),
-		Annotate("route", "/api/v1/orders"),
-		Annotate("method", "POST"),
-		Annotate("status", "ok"),
-		Annotate("region", "us-east-1"),
-		Annotate("service", "checkout"),
-		Annotate("version", "2.1.0"),
-		Annotate("environment", "production"),
-		Annotate("correlation_id", "corr_98765"),
+		Field("user_id", "usr_12345"),
+		Field("tenant", "acme-corp"),
+		Field("route", "/api/v1/orders"),
+		Field("method", "POST"),
+		Field("status", "ok"),
+		Field("region", "us-east-1"),
+		Field("service", "checkout"),
+		Field("version", "2.1.0"),
+		Field("environment", "production"),
+		Field("correlation_id", "corr_98765"),
 	}
 
 	b.ReportAllocs()
@@ -396,7 +417,7 @@ func BenchmarkPIIMasker_MaskFields_ShallowMap(b *testing.B) {
 	masker := MustPIIMasker(DefaultPIIConfig())
 
 	annotations := Annotations{
-		Annotate("context", map[string]any{
+		Field("context", map[string]any{
 			"user_id":     "usr_12345",
 			"tenant":      "acme-corp",
 			"route":       "/api/v1/orders",
@@ -421,7 +442,7 @@ func BenchmarkPIIMasker_MaskFields_DeepMap_AtCap(b *testing.B) {
 	masker := MustPIIMasker(DefaultPIIConfig())
 
 	annotations := Annotations{
-		Annotate("payload", map[string]any{
+		Field("payload", map[string]any{
 			"password": "outer-secret",
 			"profile": map[string]any{
 				"name":     "alice",
@@ -452,30 +473,6 @@ func BenchmarkNoopTracer_Extract(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Component benchmarks: formatMessage
-// ---------------------------------------------------------------------------
-
-func BenchmarkFormatMessage_NoArgs(b *testing.B) {
-	loggerUnderTest := benchLogger(b)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		loggerUnderTest.formatMessage("simple message without formatting")
-	}
-}
-
-func BenchmarkFormatMessage_WithArgs(b *testing.B) {
-	loggerUnderTest := benchLogger(b)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		loggerUnderTest.formatMessage("processed %d items in %s for user %s", 42, "150ms", "usr_123")
-	}
-}
-
 // Ensure benchOutput satisfies Output at compile time.
 var _ Output = benchOutput{}
 
@@ -484,5 +481,4 @@ var benchSink any
 
 func init() {
 	_ = benchSink
-	_ = fmt.Sprint // keep fmt import for formatMessage benchmarks
 }

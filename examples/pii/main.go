@@ -57,11 +57,11 @@ func piiHook(ctx context.Context) {
 
 	logger.Info(ctx, "Customer CPF 123.456.789-01 purchased with card 4111-1111-1111-1111")
 
-	logger.With(
-		axio.Annotate("cpf", "987.654.321-00"),
-		axio.Annotate("email", "cliente@empresa.com.br"),
-		axio.Annotate("password", "super_secret"),
-	).Info(ctx, "Customer data processed")
+	logger.Info(ctx, "Customer data processed",
+		axio.Field("cpf", "987.654.321-00"),
+		axio.Field("email", "cliente@empresa.com.br"),
+		axio.Field("password", "super_secret"),
+	)
 	logger.Close()
 
 	// Print file content to show masking in JSON output

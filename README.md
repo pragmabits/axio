@@ -168,7 +168,6 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `InstanceID`        | `string`         | No          | `""`                       | any                                    | -                                         |
 | `Level`             | `Level`          | No          | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` if invalid              |
 | `CallerSkip`        | `int`            | No          | `0`                        | `>= 0`                                 | -                                         |
-| `DisableSample`     | `bool`           | No          | `false`                    | `true`, `false`                        | -                                         |
 | `AgentMode`         | `bool`           | No          | `false`                    | `true`, `false`                        | If `true`, outputs must be stdout+json    |
 | `Outputs`           | `[]OutputConfig` | No          | auto                       | see OutputConfig                       | Validated individually                    |
 | `PIIEnabled`        | `bool`           | No          | `false`                    | `true`, `false`                        | -                                         |
@@ -580,7 +579,8 @@ PII masking covers every value a line carries:
 - **Annotation names matching `PIIConfig.Fields`** — the whole value becomes `[REDACTED]`, whatever its type.
 - **Strings, errors and `fmt.Stringer` values**, by their text.
 - **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`.
-- **Base64 text.** Any string with the shape of standard base64 — the message, the error, an annotation, a value inside a map or struct, and a struct's `[]byte` field, which its JSON encoding carries as base64 — is also decoded, and masked when the text it decodes to carries PII. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape.
+- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct, and a struct's `[]byte` field, which its JSON encoding carries as base64 — is also decoded, and masked when the text it decodes to carries PII. A string that decodes to something other than text passes as it is: nothing tells the base64 of binary data from any other string of that shape.
+- **JWTs.** The payload of a JWT anywhere in a text — a message, a URL query, an annotation — is decoded and masked as the JSON it is: a claim whose name is sensitive becomes `[REDACTED]` and every string in it is pattern-scanned. The logged token's signature then no longer matches.
 - **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as their JSON encoding: at every level, keys are checked against `Fields` and strings against the patterns.
 - **`Annotable` values** such as `HTTP`, expanded into their fields before any hook runs.
 

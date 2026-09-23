@@ -166,7 +166,6 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `InstanceID`        | `string`         | Não         | `""`                       | qualquer                               | -                                        |
 | `Level`             | `Level`          | Não         | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` se inválido            |
 | `CallerSkip`        | `int`            | Não         | `0`                        | `>= 0`                                 | -                                        |
-| `DisableSample`     | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
 | `AgentMode`         | `bool`           | Não         | `false`                    | `true`, `false`                        | Se `true`, outputs devem ser stdout+json |
 | `Outputs`           | `[]OutputConfig` | Não         | auto                       | ver OutputConfig                       | Validados individualmente                |
 | `PIIEnabled`        | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
@@ -545,7 +544,8 @@ O mascaramento de PII cobre todo valor que uma linha carrega:
 - **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro vira `[REDACTED]`, qualquer que seja o tipo.
 - **Strings, erros e valores `fmt.Stringer`**, pelo texto.
 - **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`.
-- **Texto em base64.** Toda string com forma de base64 padrão — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct, e o campo `[]byte` de um struct, que a codificação JSON carrega em base64 — também é decodificada, e mascarada quando o texto decodificado tem PII. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma.
+- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct, e o campo `[]byte` de um struct, que a codificação JSON carrega em base64 — também é decodificada, e mascarada quando o texto decodificado tem PII. Uma string que decodifica para algo que não é texto passa como está: nada distingue o base64 de dados binários de outra string com a mesma forma.
+- **JWTs.** O payload de um JWT em qualquer ponto de um texto — mensagem, query de URL, anotação — é decodificado e mascarado como o JSON que é: uma claim com nome sensível vira `[REDACTED]` e toda string nele passa pelos padrões. A assinatura do token registrado deixa de conferir.
 - **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
 - **Valores `Annotable`** como o `HTTP`, expandidos nos seus campos antes de qualquer hook rodar.
 

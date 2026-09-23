@@ -83,7 +83,6 @@ type Config struct {
     InstanceID       string
     Level            Level
     CallerSkip       int
-    DisableSample    bool
     Outputs          []OutputConfig
     AgentMode        bool
     PIIEnabled       bool
@@ -311,10 +310,12 @@ errors and `fmt.Stringer` annotations, by their text; `[]byte`, by the text it
 holds, bytes that are not UTF-8 text becoming `[REDACTED]`; and structured values —
 maps, slices, structs, pointers, `http.Header` — walked as their JSON
 encoding, keys checked against `Fields` and strings against the patterns at
-every level. Any string with the shape of standard base64 — the message, the
-error, an annotation, a nested value, a struct's `[]byte` field as its JSON
-encoding carries it — is also decoded and masked when the text it decodes to
-carries PII; one that decodes to binary passes. A structured value that needed masking is written as its masked
+every level. Any string with the shape of base64 — standard or URL alphabet,
+padded or not: the message, the error, an annotation, a nested value, a
+struct's `[]byte` field as its JSON encoding carries it — is also decoded and
+masked when the text it decodes to carries PII; one that decodes to binary
+passes. The payload of a JWT anywhere in a text is decoded and masked as the
+JSON it is, sensitive claims included. A structured value that needed masking is written as its masked
 JSON tree, object keys in alphabetical order; one with nothing to mask keeps
 its original form. A container nested deeper than `MaxDepth` becomes
 `[REDACTED]` whole.

@@ -3,6 +3,7 @@ package axio
 import (
 	"bytes"
 	"context"
+	"encoding"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -79,9 +81,10 @@ const (
 	RedactionField PIIRedaction = "field"
 	// RedactionDepth is a container nested deeper than [PIIConfig.MaxDepth].
 	RedactionDepth PIIRedaction = "depth"
-	// RedactionToken is a JWT or JWE.
+	// RedactionToken is a JWT or JWE, compact or in JSON serialization.
 	RedactionToken PIIRedaction = "token"
-	// RedactionBinary is a []byte that is not UTF-8 text.
+	// RedactionBinary is a []byte, a byte array or a named byte-slice type that
+	// is not UTF-8 text.
 	RedactionBinary PIIRedaction = "binary"
 )
 
@@ -191,7 +194,7 @@ type PIIMaskResult struct {
 // Recommended usage is via [PIIHook], which applies masking
 // automatically to all log entries:
 //
-//	hook := axio.NewPIIHook(axio.DefaultPIIConfig())
+//	hook := axio.MustPIIHook(axio.DefaultPIIConfig())
 //	logger, _ := axio.New(config, axio.WithHooks(hook))
 //
 //	// Sensitive data is masked automatically
@@ -208,6 +211,8 @@ type PIIMasker struct {
 	fields           map[string]bool
 	maxDepth         int
 	omitErrorVerbose bool
+	// byteKindTypes holds, per type, what mayHoldByteKinds reported for it.
+	byteKindTypes sync.Map
 }
 
 // NewPIIMasker creates a new masker with the specified configuration.
@@ -315,20 +320,22 @@ func (m *PIIMasker) MaskString(input string) string {
 //   - Text is scanned for PII patterns via [PIIMasker.MaskString].
 //
 // Every value is covered as it will be written: a string; an error, by its
-// message; a fmt.Stringer, by its text; a []byte, which is written as base64,
-// by the text it holds — bytes that are not UTF-8 text cannot be inspected and
-// become "[REDACTED]", inside a structured value too; and a structured value —
-// map, slice, struct or pointer — walked as the JSON encoding the log writes
-// for it.
+// message; a fmt.Stringer, by its text; a []byte, a byte array or a named
+// byte-slice type, which are written as base64, by the text they hold — bytes
+// that are not UTF-8 text cannot be inspected and become "[REDACTED]", inside a
+// structured value too; and a structured value — map, slice, struct or pointer
+// — walked as the JSON encoding the log writes for it.
 //
 // A string with the shape of base64 — the standard or the URL alphabet, padded
 // or not — is also decoded, and masked when the text it decodes to carries PII:
-// that is how a []byte of text, a byte array or a named byte-slice type arrives
-// in the JSON encoding of a structured value, and how a caller may have encoded
-// bytes itself. A string that decodes to something other than text passes as
-// it is, since nothing tells the base64 of binary data from any other string of
-// that shape. A JWT or JWE, anywhere in a text, becomes "[REDACTED]" whole: it
-// is a credential, and its claims may carry what no pattern knows. A structured
+// that is how bytes of text arrive in the JSON encoding of a structured value,
+// and how a caller may have encoded bytes itself. A string that decodes to
+// something other than text passes as it is, since nothing tells the base64 of
+// binary data from any other string of that shape. A JWT or JWE, anywhere in a
+// text, becomes "[REDACTED]" whole: it is a credential, and its claims may
+// carry what no pattern knows. So does a JWS or JWE in JSON serialization — an
+// object with a payload and its signature or signatures, or with a ciphertext
+// and its iv — inside a structured value; written as text, it passes. A structured
 // value that needed masking is replaced by its masked JSON tree, objects as
 // map[string]any, so its keys are then written in alphabetical order; one that
 // did not keeps its original type. A container nested deeper than
@@ -456,6 +463,10 @@ func (m *PIIMasker) maskValue(value any, depth int, counter *piiCounter) (any, b
 	case []byte:
 		return m.maskBytes(typed, counter)
 	case map[string]any:
+		if isJOSEObject(typed) {
+			counter.redacted(RedactionToken, 1)
+			return redacted, true
+		}
 		if depth > m.maxDepth {
 			counter.redacted(RedactionDepth, 1)
 			return redacted, true
@@ -476,7 +487,7 @@ func (m *PIIMasker) maskValue(value any, depth int, counter *piiCounter) (any, b
 // encoding had nothing to mask. A value that fails to encode becomes an
 // [encodingFailure] carrying the error masked.
 func (m *PIIMasker) maskEncoded(value any, depth int, counter *piiCounter) (any, bool) {
-	tree, redactedBinary, err := jsonTree(value)
+	tree, redactedBinary, err := jsonTree(value, m.mayHoldByteKinds(reflect.TypeOf(value)))
 	if err != nil {
 		message, _ := m.maskString(err.Error(), counter)
 		return encodingFailure{message: message}, true
@@ -487,6 +498,22 @@ func (m *PIIMasker) maskEncoded(value any, depth int, counter *piiCounter) (any,
 		return value, false
 	}
 	return masked, true
+}
+
+// mayHoldByteKinds reports whether a value of valueType may hold bytes that the
+// encoding writes as base64 and that are not a []byte — a byte array, a named
+// byte slice, or anything behind an interface — working it out once per type.
+func (m *PIIMasker) mayHoldByteKinds(valueType reflect.Type) bool {
+	if valueType == nil {
+		return false
+	}
+	if held, ok := m.byteKindTypes.Load(valueType); ok {
+		// Only this method stores into byteKindTypes, and always a bool.
+		return held.(bool)
+	}
+	held := holdsByteKinds(valueType, map[reflect.Type]bool{})
+	m.byteKindTypes.Store(valueType, held)
+	return held
 }
 
 // maskObject returns a copy of object with its sensitive entries masked. The
@@ -553,13 +580,13 @@ func (m *PIIMasker) maskBytes(data []byte, counter *piiCounter) (any, bool) {
 // data is left alone, since nothing tells the base64 of binary data from any
 // other string of that shape.
 func (m *PIIMasker) maskBase64(text string, counter *piiCounter) (string, bool) {
-	encoding := base64EncodingOf(text)
-	if encoding == nil {
+	base64Encoding := base64EncodingOf(text)
+	if base64Encoding == nil {
 		return "", false
 	}
 	// Short strings, which most values are, decode on the stack.
 	var buffer [128]byte
-	decoded, err := encoding.AppendDecode(buffer[:0], []byte(text))
+	decoded, err := base64Encoding.AppendDecode(buffer[:0], []byte(text))
 	if err != nil {
 		return "", false
 	}
@@ -574,7 +601,7 @@ func (m *PIIMasker) maskBase64(text string, counter *piiCounter) (string, bool) 
 	if masked == plain {
 		return "", false
 	}
-	return encoding.EncodeToString([]byte(masked)), true
+	return base64Encoding.EncodeToString([]byte(masked)), true
 }
 
 // maskError returns err with the PII in its message masked, or nil when there
@@ -700,7 +727,8 @@ type PIIHook struct {
 
 // NewPIIHook creates a new [PIIHook] with the specified configuration.
 //
-// Returns an error if any CustomPattern has an invalid regex.
+// Returns an error if any CustomPattern has an invalid regex, and
+// [ErrInvalidPIIMaxDepth] for a negative MaxDepth.
 //
 // Use [DefaultPIIConfig] for a default configuration with the most
 // common patterns enabled.
@@ -744,7 +772,8 @@ func (p *PIIHook) Name() string {
 // SetMetrics implements [MetricsAware].
 //
 // When configured, the hook reports each PII pattern it masks in an entry,
-// once, with the number of occurrences.
+// once, with the number of occurrences, and each value it redacts whole, by
+// [PIIRedaction].
 func (p *PIIHook) SetMetrics(metrics Metrics) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
@@ -758,7 +787,8 @@ func (p *PIIHook) SetMetrics(metrics Metrics) {
 // [PIIMasker.MaskFields] describes.
 //
 // If metrics is configured via [PIIHook.SetMetrics], reports each pattern
-// found once per entry, with how many occurrences of it were masked.
+// found once per entry, with how many occurrences of it were masked, and each
+// value redacted whole, by [PIIRedaction].
 func (p *PIIHook) Process(ctx context.Context, entry *Entry) error {
 	p.mutex.RLock()
 	metrics := p.metrics
@@ -1027,13 +1057,19 @@ func isAlphanumeric(char byte) bool {
 
 // jsonTree returns value as the JSON tree it encodes to — map[string]any,
 // []any, string, jsontext.Value for a number, bool or nil — in the encoding the
-// log writes it with, every []byte that is not UTF-8 text redacted on the way,
-// and whether any was: once encoded, those bytes cannot be told from a string.
-func jsonTree(value any) (tree any, redactedBinary int, err error) {
+// log writes it with, the bytes that are not UTF-8 text redacted on the way,
+// and how many were: once encoded, those bytes cannot be told from a string. A
+// []byte is always redacted; a byte array or a named byte slice only when
+// byteKinds is set, which costs an allocation for every value encoded.
+func jsonTree(value any, byteKinds bool) (tree any, redactedBinary int, err error) {
 	redaction := binaryRedactions.Get().(*binaryRedaction)
 	defer binaryRedactions.Put(redaction)
 	redaction.redacted = 0
-	encoded, err := json.Marshal(value, redaction.options)
+	options := redaction.options
+	if byteKinds {
+		options = redaction.byteKindOptions
+	}
+	encoded, err := json.Marshal(value, options)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1052,11 +1088,16 @@ func decodeJSON(data []byte) (any, error) {
 	return tree, nil
 }
 
-// binaryRedaction redacts, in one encoding at a time, every []byte that is not
-// UTF-8 text, and records whether it did.
+// binaryRedaction redacts, in one encoding at a time, the bytes that are not
+// UTF-8 text, and records how many it did.
 type binaryRedaction struct {
-	options  json.Options
-	redacted int
+	// options redact a []byte.
+	options json.Options
+	// byteKindOptions redact any bytes the encoding writes as base64. The
+	// encoding hands their marshaler every value, each converted to an
+	// interface, which allocates.
+	byteKindOptions json.Options
+	redacted        int
 }
 
 // newBinaryRedaction returns a binaryRedaction with its options built, once
@@ -1064,6 +1105,7 @@ type binaryRedaction struct {
 func newBinaryRedaction() *binaryRedaction {
 	redaction := &binaryRedaction{}
 	redaction.options = logline.ValueOptions(json.MarshalToFunc(redaction.marshalBytes))
+	redaction.byteKindOptions = logline.ValueOptions(json.MarshalToFunc(redaction.marshalByteKinds))
 	return redaction
 }
 
@@ -1075,6 +1117,89 @@ func (b *binaryRedaction) marshalBytes(encoder *jsontext.Encoder, data []byte) e
 	}
 	b.redacted++
 	return encoder.WriteToken(jsontext.String(redacted))
+}
+
+// marshalByteKinds writes the value pointer points to as [binaryRedaction.marshalBytes]
+// does when it is bytes the encoding writes as base64, and leaves anything else
+// to the default encoding.
+func (b *binaryRedaction) marshalByteKinds(encoder *jsontext.Encoder, pointer any) error {
+	if data, ok := pointer.(*[]byte); ok {
+		return b.marshalBytes(encoder, *data)
+	}
+	value := reflect.ValueOf(pointer).Elem()
+	if !isBase64Bytes(value.Type()) {
+		return errors.ErrUnsupported
+	}
+	return b.marshalBytes(encoder, value.Bytes())
+}
+
+// holdsByteKinds reports whether a value of valueType may hold bytes the
+// encoding writes as base64 other than a []byte, which the cheaper options
+// already redact. seen holds the types already on the way down, so a recursive
+// type ends.
+func holdsByteKinds(valueType reflect.Type, seen map[reflect.Type]bool) bool {
+	if seen[valueType] || hasMarshalingMethod(valueType) {
+		return false
+	}
+	seen[valueType] = true
+	switch valueType.Kind() {
+	case reflect.Interface:
+		return true
+	case reflect.Pointer, reflect.Map:
+		return holdsByteKinds(valueType.Elem(), seen)
+	case reflect.Slice, reflect.Array:
+		if isBase64Bytes(valueType) {
+			return valueType != reflect.TypeFor[[]byte]()
+		}
+		return holdsByteKinds(valueType.Elem(), seen)
+	case reflect.Struct:
+		return fieldsHoldByteKinds(valueType, seen)
+	default:
+		return false
+	}
+}
+
+// fieldsHoldByteKinds reports whether a field of structType that the encoding
+// writes may hold bytes, as [holdsByteKinds] does. An unexported field is never
+// written, but an embedded one's fields are.
+func fieldsHoldByteKinds(structType reflect.Type, seen map[reflect.Type]bool) bool {
+	for index := range structType.NumField() {
+		field := structType.Field(index)
+		if !field.IsExported() && !field.Anonymous {
+			continue
+		}
+		if holdsByteKinds(field.Type, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBase64Bytes reports whether the encoding writes a value of valueType as
+// base64: a slice or an array of byte, named or not, with no marshaling method
+// of its own. A slice or an array of a named byte type is written as numbers.
+func isBase64Bytes(valueType reflect.Type) bool {
+	kind := valueType.Kind()
+	if kind != reflect.Slice && kind != reflect.Array {
+		return false
+	}
+	element := valueType.Elem()
+	if element.Kind() != reflect.Uint8 || element.PkgPath() != "" {
+		return false
+	}
+	return !hasMarshalingMethod(valueType)
+}
+
+// hasMarshalingMethod reports whether valueType encodes itself, which the
+// encoding prefers to its default for the kind.
+func hasMarshalingMethod(valueType reflect.Type) bool {
+	methods := reflect.PointerTo(valueType)
+	for _, method := range marshalingMethods {
+		if methods.Implements(method) {
+			return true
+		}
+	}
+	return false
 }
 
 // mayHoldToken reports whether text holds what the header of a JWT or JWE
@@ -1135,6 +1260,21 @@ func isToken(candidate string) bool {
 	return ok
 }
 
+// isJOSEObject reports whether object is a JWS — a payload beside its signature
+// or signatures — or a JWE — a ciphertext beside its initialization vector — in
+// JSON serialization, the form of a token that is an object rather than a
+// string of dots.
+func isJOSEObject(object map[string]any) bool {
+	if _, ok := object["payload"]; ok {
+		_, flattened := object["signature"]
+		_, general := object["signatures"]
+		return flattened || general
+	}
+	_, ciphertext := object["ciphertext"]
+	_, vector := object["iv"]
+	return ciphertext && vector
+}
+
 // piiPatternInfo holds the regex and mask for a PII pattern.
 type piiPatternInfo struct {
 	name  PIIPattern
@@ -1175,11 +1315,21 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 
 // tokenPattern matches the shape of a JWT — header, payload and signature, the
 // last empty when unsigned — or of a JWE, five segments long. Every segment is
-// base64url, and the header, a JSON object, starts as [mayHoldToken] expects.
-var tokenPattern = regexp.MustCompile(`\b(?:eyJ|eyI|eyA|ewo|ewk|ew0)[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}(?:(?:\.[A-Za-z0-9_-]*){2})?`)
+// base64url, and the header, a JSON object, starts as [mayHoldToken] expects,
+// wherever it starts: a token glued to a word, as in "session_eyJ…", is
+// matched too.
+var tokenPattern = regexp.MustCompile(`(?:eyJ|eyI|eyA|ewo|ewk|ew0)[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}(?:(?:\.[A-Za-z0-9_-]*){2})?`)
 
 // binaryRedactions holds the binaryRedaction of every encoding not in progress.
 var binaryRedactions = sync.Pool{New: func() any { return newBinaryRedaction() }}
+
+// marshalingMethods are the interfaces through which a type encodes itself.
+var marshalingMethods = []reflect.Type{
+	reflect.TypeFor[json.MarshalerTo](),
+	reflect.TypeFor[json.Marshaler](),
+	reflect.TypeFor[encoding.TextAppender](),
+	reflect.TypeFor[encoding.TextMarshaler](),
+}
 
 // treeDecoding decodes JSON under the options the log writes it with, each
 // number into an any kept as the jsontext.Value it was written as.

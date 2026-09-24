@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -371,6 +373,21 @@ type piiRecord struct {
 	Document [19]byte `json:"document"`
 }
 
+// piiBlob is a named byte-slice type, which v2 writes as base64.
+type piiBlob []byte
+
+// piiNode is a recursive type holding no bytes.
+type piiNode struct {
+	Name string   `json:"name"`
+	Next *piiNode `json:"next"`
+}
+
+// piiHidden holds a byte array in an unexported field, which is never encoded.
+type piiHidden struct {
+	Name   string `json:"name"`
+	secret [4]byte
+}
+
 // piiVisit is a struct annotation carrying a CPF beside a duration and a number
 // a float64 cannot hold exactly.
 type piiVisit struct {
@@ -406,6 +423,7 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 	binaryWithCPF := append([]byte{0xff, 0xfe, 0x00, 0x01, ' '}, "123.456.789-01"...)
 	token := piiToken(`{"sub":"42","cpf":"123.456.789-01","password":"x"}`)
 	encode := base64.RawURLEncoding.EncodeToString
+	joseHeader := encode([]byte(`{"alg":"HS256"}`))
 	unpadded := []byte(`{"cpf":"123.456.789-01","ok":1}`)
 	urlSafe := []byte(`{"cpf":"123.456.789-01","note":"~~~"}`)
 
@@ -478,6 +496,36 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			name:  "binary_bytes_inside_struct",
 			value: piiRequest{Body: binary},
 			want:  `{"body":"[REDACTED]"}`,
+		},
+		{
+			name:  "binary_byte_array",
+			value: [4]byte(binary),
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "binary_named_bytes",
+			value: piiBlob(binary),
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "binary_byte_array_inside_struct",
+			value: piiRecord{Document: [19]byte{0xff, 0xfe}},
+			want:  `{"document":"[REDACTED]"}`,
+		},
+		{
+			name:  "binary_byte_array_behind_an_interface",
+			value: map[string]any{"blob": [4]byte(binary)},
+			want:  `{"blob":"[REDACTED]"}`,
+		},
+		{
+			name:  "unexported_binary_byte_array_is_not_written",
+			value: piiHidden{Name: "alice", secret: [4]byte(binary)},
+			want:  `{"name":"alice"}`,
+		},
+		{
+			name:  "binary_named_bytes_with_a_text_form",
+			value: net.ParseIP("fe80::1"),
+			want:  `"fe80::1"`,
 		},
 		{
 			name:  "base64_of_binary_carrying_pii",
@@ -555,6 +603,31 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 			want:  `"Bearer [REDACTED] expired"`,
 		},
 		{
+			name:  "jwt_glued_to_a_word",
+			value: "session_" + token,
+			want:  `"session_[REDACTED]"`,
+		},
+		{
+			name:  "jws_in_json_serialization",
+			value: map[string]any{"payload": encode([]byte(`{"sub":"42"}`)), "signatures": []any{map[string]any{"protected": joseHeader, "signature": "c2ln"}}},
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "jws_in_flattened_json_serialization",
+			value: map[string]any{"payload": encode([]byte(`{"sub":"42"}`)), "protected": joseHeader, "signature": "c2ln"},
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "jwe_in_json_serialization",
+			value: map[string]any{"protected": joseHeader, "iv": "aXY", "ciphertext": "Y2lwaGVy", "tag": "dGFn"},
+			want:  `"[REDACTED]"`,
+		},
+		{
+			name:  "object_with_a_payload_is_not_a_token",
+			value: map[string]any{"payload": "order created"},
+			want:  `{"payload":"order created"}`,
+		},
+		{
 			name:  "json_header_without_alg_is_not_a_token",
 			value: encode([]byte(`{"sub":"42"}`)) + ".c2Vn.c2Vn",
 			want:  `"` + encode([]byte(`{"sub":"42"}`)) + `.c2Vn.c2Vn"`,
@@ -609,6 +682,36 @@ func TestPIIMasker_MaskFields_EveryValue(t *testing.T) {
 		assertNoError(t, err)
 		assertEqual(t, string(encoded), `{"customer":"[REDACTED]"}`)
 	})
+}
+
+func TestPIIMasker_MayHoldByteKinds(t *testing.T) {
+	tests := []struct {
+		name      string
+		valueType reflect.Type
+		want      bool
+	}{
+		{"string", reflect.TypeFor[string](), false},
+		{"bytes", reflect.TypeFor[[]byte](), false},
+		{"byte_array", reflect.TypeFor[[16]byte](), true},
+		{"named_bytes", reflect.TypeFor[piiBlob](), true},
+		{"named_bytes_with_a_text_form", reflect.TypeFor[net.IP](), false},
+		{"time", reflect.TypeFor[time.Time](), false},
+		{"struct_without_bytes", reflect.TypeFor[piiOrder](), false},
+		{"struct_with_a_byte_array", reflect.TypeFor[piiRecord](), true},
+		{"pointer_to_a_struct_with_a_byte_array", reflect.TypeFor[*piiRecord](), true},
+		{"slice_of_structs_with_a_byte_array", reflect.TypeFor[[]piiRecord](), true},
+		{"map_of_strings", reflect.TypeFor[map[string]string](), false},
+		{"interface", reflect.TypeFor[map[string]any](), true},
+		{"recursive_struct_without_bytes", reflect.TypeFor[piiNode](), false},
+		{"unexported_byte_array", reflect.TypeFor[piiHidden](), false},
+	}
+
+	masker := MustPIIMasker(DefaultPIIConfig())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertEqual(t, masker.mayHoldByteKinds(test.valueType), test.want)
+		})
+	}
 }
 
 func TestMayHoldBuiltInPattern(t *testing.T) {
@@ -1130,6 +1233,8 @@ func TestPIIHook_ReportsOrigin(t *testing.T) {
 			Field("session", piiToken(`{"sub":"42"}`)),
 			Field("blob", []byte{0xff, 0xfe}),
 			Field("request", piiRequest{Body: []byte{0xff, 0xfe}}),
+			Field("record", piiRecord{Document: [19]byte{0xff, 0xfe}}),
+			Field("signed", map[string]any{"payload": "e30", "signature": "c2ln"}),
 			Field("customer", map[string]any{"address": map[string]any{"city": "Recife"}}),
 		},
 	}
@@ -1146,6 +1251,8 @@ func TestPIIHook_ReportsOrigin(t *testing.T) {
 		{redaction: RedactionToken, origin: at("session"), count: 1},
 		{redaction: RedactionBinary, origin: at("blob"), count: 1},
 		{redaction: RedactionBinary, origin: at("request"), count: 1},
+		{redaction: RedactionBinary, origin: at("record"), count: 1},
+		{redaction: RedactionToken, origin: at("signed"), count: 1},
 		{redaction: RedactionDepth, origin: at("customer"), count: 1},
 	}
 	got := make(map[piiMetricCall]int)

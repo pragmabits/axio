@@ -68,6 +68,9 @@ type Config struct {
 	Level Level `json:"level" yaml:"level" toml:"level" mapstructure:"level"`
 	// CallerSkip adjusts the caller depth for wrapper libraries.
 	CallerSkip int `json:"callerSkip" yaml:"callerSkip" toml:"callerSkip" mapstructure:"callerSkip"`
+	// OmitCaller writes lines without the caller, sparing the lookup of the
+	// source location on every entry. [Entry.Caller] is then empty for hooks.
+	OmitCaller bool `json:"omitCaller,omitempty" yaml:"omitCaller,omitempty" toml:"omitCaller,omitempty" mapstructure:"omitCaller,omitempty"`
 
 	// Outputs defines the log output destinations.
 	// If empty and no output is specified via Options, the default is:

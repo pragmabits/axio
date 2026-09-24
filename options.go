@@ -18,6 +18,7 @@ import (
 // Available options:
 //   - [WithOutputs]: configures output destinations
 //   - [WithAgentMode]: optimizes for collection by external agents
+//   - [WithOmitCaller]: writes lines without the caller
 //   - [WithHooks]: configures custom processing hooks
 //   - [WithPII]: configures PII masking
 //   - [WithPIIMaxDepth]: sets how deep PII masking walks into structured values
@@ -202,6 +203,21 @@ func WithPIIMaxDepth(depth int) Option {
 func WithPIIOmitErrorVerbose() Option {
 	return func(config *Config) error {
 		config.PIIOmitErrorVerbose = true
+		return nil
+	}
+}
+
+// WithOmitCaller writes lines without the caller, as [Config.OmitCaller] does
+// from a file. Finding the caller walks the stack on every entry, and it can
+// cost about half of writing a line; without it, [Entry.Caller] is empty for
+// hooks and [Config.CallerSkip] has no effect.
+//
+// Example:
+//
+//	logger, err := axio.New(config, axio.WithOmitCaller())
+func WithOmitCaller() Option {
+	return func(config *Config) error {
+		config.OmitCaller = true
 		return nil
 	}
 }

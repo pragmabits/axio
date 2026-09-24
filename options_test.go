@@ -134,6 +134,47 @@ func TestWithPIIOmitErrorVerbose(t *testing.T) {
 	})
 }
 
+func TestWithOmitCaller(t *testing.T) {
+	writeCapturingCaller := func(t *testing.T, options ...Option) (map[string]any, string) {
+		t.Helper()
+		output := newBufferOutput(FormatJSON)
+		var seen string
+		hook := &testHook{name: "caller", process: func(_ context.Context, entry *Entry) error {
+			seen = entry.Caller
+			return nil
+		}}
+		logger, err := New(minimalConfig(), append([]Option{WithOutputs(output), WithHooks(hook)}, options...)...)
+		assertNoError(t, err)
+		logger.Info(context.Background(), "order created")
+		assertNoError(t, logger.Close())
+		return parseJSONLines(t, output.String())[0], seen
+	}
+
+	t.Run("sets_the_flag", func(t *testing.T) {
+		config := minimalConfig()
+		assertNoError(t, WithOmitCaller()(&config))
+		assertEqual(t, config.OmitCaller, true)
+	})
+
+	t.Run("lines_and_hooks_carry_no_caller", func(t *testing.T) {
+		record, seen := writeCapturingCaller(t, WithOmitCaller())
+		if caller, ok := record["caller"]; ok {
+			t.Errorf("caller written: %v", caller)
+		}
+		assertEqual(t, seen, "")
+	})
+
+	t.Run("caller_written_by_default", func(t *testing.T) {
+		record, seen := writeCapturingCaller(t)
+		if caller, _ := record["caller"].(string); !strings.Contains(caller, "/options_test.go:") {
+			t.Errorf("caller = %q, want this test file", caller)
+		}
+		if !strings.Contains(seen, "options_test.go:") {
+			t.Errorf("hook saw caller %q, want this test file", seen)
+		}
+	})
+}
+
 func TestWithAudit(t *testing.T) {
 	config := minimalConfig()
 	option := WithAudit("/tmp/audit.json")

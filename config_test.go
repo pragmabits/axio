@@ -204,6 +204,12 @@ level: info
 		assertEqual(t, config.PIIMaxDepth, 4)
 	})
 
+	t.Run("omit_caller", func(t *testing.T) {
+		config, err := LoadConfigFrom(strings.NewReader("omitCaller: true\n"), "yaml")
+		assertNoError(t, err)
+		assertEqual(t, config.OmitCaller, true)
+	})
+
 	t.Run("pii_omit_error_verbose", func(t *testing.T) {
 		reader := strings.NewReader("piiEnabled: true\npiiOmitErrorVerbose: true\n")
 

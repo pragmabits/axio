@@ -222,7 +222,9 @@ func (l *logger) log(
 	entry := entryPool.Get().(*Entry)
 	entry.Timestamp = log.Time
 	entry.Logger = log.LoggerName
-	entry.Caller = log.Caller.String()
+	if log.Caller.Defined {
+		entry.Caller = log.Caller.String()
+	}
 	entry.Level = level
 	entry.Message = log.Message
 	entry.Error = err
@@ -283,9 +285,9 @@ func buildEngine(config Config, outputs []Output, chain *HashChain, metrics Metr
 	}
 	core = &reportingCore{Core: core}
 
-	options := []zap.Option{
-		zap.AddCaller(),
-		zap.AddCallerSkip(config.CallerSkip + minimumCallerSkip),
+	var options []zap.Option
+	if !config.OmitCaller {
+		options = append(options, zap.AddCaller(), zap.AddCallerSkip(config.CallerSkip+minimumCallerSkip))
 	}
 	if config.Environment != EnvironmentDevelopment {
 		options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))

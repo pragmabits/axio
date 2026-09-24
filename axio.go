@@ -1,4 +1,4 @@
-// package axio provides a high-performance structured logger for Go applications.
+// Package axio provides a high-performance structured logger for Go applications.
 //
 // Axio offers enterprise-grade features such as PII masking, hash chain auditing,
 // and integration with OpenTelemetry for distributed tracing, exposed through a
@@ -44,7 +44,9 @@
 //
 // # PII Masking
 //
-// Axio automatically detects and masks sensitive personal data:
+// Axio detects and masks sensitive personal data. CPF, CNPJ and credit cards are
+// masked by default; e-mails ([PatternEmail]) and phones ([PatternPhone]) are
+// masked when their patterns are listed:
 //
 //   - CPF: 123.456.789-01 → ***.***.***-**
 //   - CNPJ: 12.345.678/0001-90 → **.***.***/****-**
@@ -59,8 +61,8 @@
 //	logger.Info(ctx, "Customer CPF: 123.456.789-01")
 //	// Output: "Customer CPF: ***.***.***-**"
 //
-// Masking covers every value a line carries — the message, the error and each
-// annotation, structs and maps included; see [PIIMasker.MaskFields].
+// Masking covers every value the caller hands a line — the message, the error
+// and each annotation, structs and maps included; see [PIIMasker.MaskFields].
 //
 // # Hash Chain Auditing
 //

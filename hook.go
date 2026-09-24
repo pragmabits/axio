@@ -9,22 +9,25 @@ import (
 
 // Entry represents a log entry passed to hooks for processing.
 //
-// Hooks can modify fields in-place before the entry is written to outputs.
-// All fields are populated by the logger before calling hooks. With auditing
-// on, the hash is computed when the entry is written, after every hook, so it
-// covers whatever the hooks changed.
+// A hook changes what is written through Message, Error, TraceID, SpanID and
+// Annotations, in place, before the entry is written to outputs. Timestamp,
+// Level, Logger and Caller describe the entry and are read only: changing them
+// changes nothing written. With auditing on, the hash is computed when the
+// entry is written, after every hook, so it covers whatever the hooks changed.
 type Entry struct {
 	// Timestamp is the moment when the log was created.
 	Timestamp time.Time
 	// Level is the log severity.
 	Level Level
-	// Message is the formatted log message.
+	// Message is the log message, or the name of an [Event].
 	Message string
 	// Error is the error associated with the log, if any.
 	Error error
 	// Logger is the logger name (defined via Named).
 	Logger string
-	// Caller is the source code location (file:line).
+	// Caller is the source code location as the line writes it: the file's
+	// directory, the file and the line, as in "checkout/handler.go:42". It is
+	// empty with [WithOmitCaller] and for an [Event].
 	Caller string
 	// TraceID is the distributed trace identifier (if available).
 	TraceID string

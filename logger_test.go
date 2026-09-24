@@ -433,6 +433,21 @@ func TestLogger_ServiceMetadataOnlyInJSON(t *testing.T) {
 	}
 }
 
+func TestLogger_HookSeesCallerAsWritten(t *testing.T) {
+	output := newBufferOutput(FormatJSON)
+	var seen string
+	hook := &testHook{name: "caller", process: func(_ context.Context, entry *Entry) error {
+		seen = entry.Caller
+		return nil
+	}}
+	logger, err := New(minimalConfig(), WithOutputs(output), WithHooks(hook))
+	assertNoError(t, err)
+	logger.Info(context.Background(), "order created")
+	assertNoError(t, logger.Close())
+
+	assertEqual(t, any(seen), parseJSONLines(t, output.String())[0]["caller"])
+}
+
 func TestReportingCore_Write(t *testing.T) {
 	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
 	failingChain, err := NewHashChain(nil)

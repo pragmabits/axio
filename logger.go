@@ -223,7 +223,7 @@ func (l *logger) log(
 	entry.Timestamp = log.Time
 	entry.Logger = log.LoggerName
 	if log.Caller.Defined {
-		entry.Caller = log.Caller.String()
+		entry.Caller = log.Caller.TrimmedPath()
 	}
 	entry.Level = level
 	entry.Message = log.Message

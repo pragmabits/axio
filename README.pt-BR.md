@@ -458,6 +458,8 @@ Hooks processam entradas de log antes da escrita. Executados em ordem fixa:
 
 Auditoria não é um hook: o hash é calculado quando a entrada é escrita, depois de todos os hooks, e por isso cobre o que eles mudaram.
 
+Um hook muda o que é escrito pelos campos `Message`, `Error`, `TraceID`, `SpanID` e `Annotations` do `*Entry` que recebe. `Timestamp`, `Level`, `Logger` e `Caller` são só leitura, e `Caller` vem na forma que a linha escreve: `checkout/handler.go:42`.
+
 #### Interface Hook
 
 ```go

@@ -493,6 +493,8 @@ Hooks process log entries before writing. Executed in fixed order:
 
 Auditing is not a hook: the hash is computed when the entry is written, after every hook, so it covers whatever the hooks changed.
 
+A hook changes what is written through the `Message`, `Error`, `TraceID`, `SpanID` and `Annotations` of the `*Entry` it receives. `Timestamp`, `Level`, `Logger` and `Caller` are read only, and `Caller` comes in the form the line writes: `checkout/handler.go:42`.
+
 #### Hook Interface
 
 ```go

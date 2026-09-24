@@ -369,6 +369,8 @@ type Entry struct {
 }
 ```
 
+A hook changes what is written through `Message`, `Error`, `TraceID`, `SpanID` and `Annotations`. `Timestamp`, `Level`, `Logger` and `Caller` are read only. `Caller` is in the form the line writes (`checkout/handler.go:42`), and empty with `WithOmitCaller` and for an `Event`.
+
 ### Hook Interface
 
 ```go

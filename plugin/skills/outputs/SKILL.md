@@ -14,7 +14,7 @@ Axio supports multiple simultaneous output destinations with independent formats
 - `RotatingFile(path, format, rotation)` — file with rotation
 
 ## Rotation
-RotationConfig: MaxSize (MB), MaxAge (days), MaxBackups, Compress, LocalTime, Interval (Duration)
+RotationConfig: MaxSize (MB; 0 = no size rotation), MaxAge (days), MaxBackups, Compress, LocalTime, Interval (Duration)
 - Size-based, time-based, or both
 - Uses lumberjack internally
 

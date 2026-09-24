@@ -143,7 +143,7 @@ For each package/directory:
 | Before | After |
 |--------|-------|
 | `zap.L().Info("msg", zap.String("k", v))` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
-| `zap.NewProduction()` | `axio.New(config)` with Production environment |
+| `zap.NewProduction()` | `axio.New(config)` with `Environment: axio.EnvironmentProduction` |
 | `sugar.Infow("msg", "k", v)` | `logger.Info(ctx, "msg", axio.Field("k", v))` |
 
 Key differences to highlight:

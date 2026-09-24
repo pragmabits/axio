@@ -185,7 +185,7 @@ func MustRotatingFile(path string, format Format, rotation RotationConfig) Outpu
 
 ```go
 type RotationConfig struct {
-    MaxSize    int       // MB before rotation
+    MaxSize    int       // MB before rotation; 0 = no size rotation
     MaxAge     int       // days to retain
     MaxBackups int       // old files to retain
     Compress   bool      // gzip rotated files
@@ -224,9 +224,13 @@ func (a Annotations) Data() []any
 func (a *Annotations) Add[T any](key string, value T) Annotations
 ```
 
-A struct, slice or map is written as its `encoding/json/v2` encoding: nil
-slices and maps as `null`, map keys sorted, a `time.Duration` in nanoseconds, a
-byte array as base64. `omitempty` omits a value that encodes as empty (`""`,
+A struct, a map, or a slice zap has no encoder of its own for is written as its
+`encoding/json/v2` encoding: nil slices and maps as `null`, map keys sorted, a
+`time.Duration` in nanoseconds, a byte array as base64. A slice of a basic type
+given as the annotation's own value (`[]string`, `[]int`, `[]bool`,
+`[]time.Duration`, `[]time.Time`, `[]error`, …) is written by zap instead: nil
+as `[]`, durations in milliseconds. `Data` and `Value` return it as the slice
+given. `omitempty` omits a value that encodes as empty (`""`,
 `null`, `[]`, `{}`); `omitzero` omits `false`, `0` and every other zero value. A
 tag option the encoding rejects, such as `,string` on a slice, makes the value
 fail, and the line carries `<key>Error` instead.
@@ -319,21 +323,24 @@ type PIIMaskResult struct {
 }
 ```
 
-Masking covers every value a line carries: the message; the entry's error,
+Masking covers every value the caller hands a line: the message; the entry's error,
 by its message and its verbose form (a masked error still unwraps to the
 original); the error of a value that fails to encode; strings,
-errors and `fmt.Stringer` annotations, by their text; `[]byte`, by the text it
-holds, bytes that are not UTF-8 text becoming `[REDACTED]`, inside a structured
-value too; and structured values — maps, slices, structs, pointers,
+errors and `fmt.Stringer` annotations, by their text; a `[]byte`, a byte array
+or a named byte-slice type, by the text it holds, bytes that are not UTF-8 text
+becoming `[REDACTED]`, inside a structured value too; and structured values — maps, slices, structs, pointers,
 `http.Header` — walked as the JSON encoding the log writes for them, keys
 checked against `Fields` and strings against the patterns at every level. Any
 string with the shape of base64 — standard or URL alphabet, padded or not: the
-message, the error, an annotation, a nested value, and a `[]byte` of text, a
-byte array or a named byte-slice type inside a structured value, as its JSON
-encoding carries them — is also decoded and masked when the text it decodes to
+message, the error, an annotation, a nested value, and bytes of text inside a
+structured value, as its JSON encoding carries them — is also decoded and masked when the text it decodes to
 carries PII; one that decodes to binary data becomes `[REDACTED]` when a
 pattern matches inside it, and passes otherwise. A JWT or JWE anywhere in a text
-becomes `[REDACTED]` whole. `MaskString` and `MaskStringWithCounts` cover a
+becomes `[REDACTED]` whole, and so does a JWS or JWE in JSON serialization (an
+object with `payload` and `signature` or `signatures`, or with `ciphertext` and
+`iv`) inside a structured value. A byte array or a named byte-slice type is
+looked for only in a value whose type may hold one or an interface, at one more
+allocation per field or element. `MaskString` and `MaskStringWithCounts` cover a
 string the same way. A structured value that needed masking is written as its
 masked JSON tree, object keys in alphabetical order; one with nothing to mask
 keeps its original form. A container nested deeper than `MaxDepth` becomes
@@ -394,8 +401,10 @@ type MetricsAware interface {
 func NoopHook() Hook
 ```
 
-Hooks supplied via [`WithHooks`](#withhooks) execute in a fixed order:
-`PIIHook` -> custom hooks. Custom hooks observe the already-masked entry.
+The chain runs in a fixed order: the `PIIHook` that `WithPII` or `piiEnabled`
+turns on, then the hooks passed to `WithHooks`, in the order passed, so custom
+hooks observe the already-masked entry. A `PIIHook` passed to `WithHooks` is one
+of those hooks and runs where it was passed.
 Auditing is not a hook: the hash is computed when the entry is written,
 after every hook, so it covers what the hooks changed. The chain itself is
 an unexported implementation detail.
@@ -430,9 +439,12 @@ func (s *FileStore) Save(sequence uint64, lastHash string) error
 func (s *FileStore) Load() (uint64, string, error)
 ```
 
-The first `Save` takes an exclusive `flock` on `path + ".lock"` and holds it
-while the process runs; a second process saving to the same store gets
-`ErrChainStoreLocked`, and `WithAudit` on a store in use fails in `New`.
+`New` and `NewEvent` take an exclusive `flock` on `path + ".lock"` — for the
+`WithAudit` path, and for a `FileStore` passed through `WithAuditChain`, whose
+chain is then loaded from the store again — and hold it while the process runs;
+a second process on the same store fails in `New` with `ErrChainStoreLocked`
+(wrapped in `ErrBuildAudit`). A `FileStore` used on its own takes the lock at its
+first `Save`.
 `Load` takes no lock. Windows, Solaris and AIX have no lock.
 
 ### HashChain
@@ -451,9 +463,10 @@ func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err er
 
 `Add` hashes `sha256(previousHash ‖ data)`. An audited Logger or Event writes
 every JSON line with `previous_hash` and `hash` as its last two keys, hashing
-exactly the bytes before them; encoding, hashing and writing happen under the
-chain's lock, so the file's order is the chain's order. Text outputs show the
-first 6 characters of the hash, for reference only.
+exactly the bytes before them; hashing, saving the state and writing happen
+under the chain's lock, so the file's order is the chain's order. A Logger's
+text outputs show the first 6 characters of the hash, for reference only; an
+audited Event writes its JSON line to every output.
 
 `Verify` reads audited JSON lines and returns `ErrHashMismatch` (a line
 changed), `ErrChainBroken` (a line removed, moved, inserted or without
@@ -498,13 +511,13 @@ type PIIOrigin struct {
     Logger     string // the Named logger; empty for the root logger and events
 }
 
-type PIIRedaction string // why a value became [REDACTED] whole
+type PIIRedaction string // declared in pii.go: why a value became [REDACTED] whole
 
 const (
     RedactionField  PIIRedaction = "field"  // its name matches PIIConfig.Fields
     RedactionDepth  PIIRedaction = "depth"  // nested deeper than MaxDepth
-    RedactionToken  PIIRedaction = "token"  // a JWT or JWE
-    RedactionBinary PIIRedaction = "binary" // a []byte that is not text
+    RedactionToken  PIIRedaction = "token"  // a JWT or JWE, compact or JSON
+    RedactionBinary PIIRedaction = "binary" // bytes that are not text
 )
 
 type NoopMetrics struct{}

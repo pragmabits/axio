@@ -34,7 +34,7 @@ If `$ARGUMENTS` is exactly `--resolve-root`:
 Otherwise, invoke the axio agent with the resolved plugin root.
 
 Use the Agent tool with:
-- **subagent_type**: `axio`
+- **subagent_type**: `axio:axio`
 - **description**: "Axio logging expert guidance"
 - **prompt**: Include the plugin root and user context, then instruct the agent to look up source and answer.
 

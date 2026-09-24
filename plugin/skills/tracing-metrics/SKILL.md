@@ -20,7 +20,7 @@ Axio integrates with OpenTelemetry for distributed tracing and metrics collectio
 
 ## Custom Implementations
 Implement Tracer interface for non-OTel tracing systems.
-Implement Metrics interface for non-OTel metrics backends.
+For a non-OTel metrics backend, pass `WithMetrics` a MeterProvider backed by its OpenTelemetry exporter: no option takes a Metrics implementation. The Metrics interface is what MetricsAware hooks receive.
 
 ## Usage
 Use `/axio` command for detailed tracing and metrics guidance.

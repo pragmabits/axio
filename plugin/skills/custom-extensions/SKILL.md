@@ -16,8 +16,8 @@ Axio provides interfaces for extending every major subsystem.
 - `Annotable` — complex types that produce multiple annotations (Append)
 
 ## Important Notes
-- New Output implementations must be handled in WithOutputs (type assertions in options.go)
-- Hook execution order is fixed: PIIHook → Custom hooks; auditing hashes the line at write time, after every hook
+- A custom Output goes to `WithOutputs` as it is; its `Type()` must return `OutputConsole` or `OutputStdout` (any other value fails `New` with `ErrInvalidOutputType`, `OutputFile` with `ErrFileOutputNoPath`)
+- Hook execution order is fixed: the PIIHook from `WithPII` → hooks passed to `WithHooks`, in the order passed (a PIIHook passed through `WithHooks` runs where it was passed); auditing hashes the line at write time, after every hook
 - Hooks implementing MetricsAware receive the Metrics object automatically
 - Annotable types are expanded into their fields before any hook runs, so PII masking and custom hooks see each field
 

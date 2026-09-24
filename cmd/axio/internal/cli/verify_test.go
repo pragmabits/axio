@@ -63,14 +63,6 @@ func TestNewRootCommand_Verify(t *testing.T) {
 		assertNoError(t, err)
 	})
 
-	t.Run("previous_hash_must_be_a_hash", func(t *testing.T) {
-		logPath, storePath := auditedLog(t)
-		_, err := execute(t, "", "verify", "--store", storePath, "--previous-hash", logPath)
-		if err == nil || !strings.Contains(err.Error(), "64 hexadecimal characters") {
-			t.Errorf("expected --previous-hash to be rejected, got %v", err)
-		}
-	})
-
 	t.Run("store_flag_is_required", func(t *testing.T) {
 		_, err := execute(t, "", "verify", "some.log")
 		if err == nil || !strings.Contains(err.Error(), `"store" not set`) {

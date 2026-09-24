@@ -170,6 +170,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `InstanceID`          | `string`         | No       | `""`                       | any                                    | -                                      |
 | `Level`               | `Level`          | No       | `info`                     | `debug`, `info`, `warn`, `error`       | `ErrInvalidLevel` if invalid           |
 | `CallerSkip`          | `int`            | No       | `0`                        | `>= 0`                                 | -                                      |
+| `OmitCaller`          | `bool`           | No       | `false`                    | `true`, `false`                        | -                                      |
 | `AgentMode`           | `bool`           | No       | `false`                    | `true`, `false`                        | If `true`, outputs must be stdout+json |
 | `Outputs`             | `[]OutputConfig` | No       | auto                       | see OutputConfig                       | Validated individually                 |
 | `PIIEnabled`          | `bool`           | No       | `false`                    | `true`, `false`                        | -                                      |
@@ -241,6 +242,7 @@ environment: production
 instanceId: pod-abc123
 level: info
 callerSkip: 0
+omitCaller: false
 agentMode: false
 
 outputs:
@@ -789,12 +791,15 @@ Axio emits metrics about the logging process itself, allowing monitoring of volu
 
 #### Emitted Metrics
 
-| Metric          | Type      | Labels               | Description                    |
-| --------------- | --------- | -------------------- | ------------------------------ |
-| `logs.total`    | Counter   | `level`              | Total logs emitted             |
-| `pii.masked`    | Counter   | `pattern`            | PII occurrences masked         |
-| `audit.records` | Counter   | -                    | Audit records created          |
-| `hook.duration` | Histogram | `hook.name`, `error` | Hook execution duration        |
+| Metric          | Type      | Labels                            | Description             |
+| --------------- | --------- | --------------------------------- | ----------------------- |
+| `logs.total`    | Counter   | `level`                           | Total logs emitted      |
+| `pii.masked`    | Counter   | `pattern`, `annotation`, `logger` | PII occurrences masked  |
+| `pii.redacted`  | Counter   | `reason`, `annotation`, `logger`  | Values redacted whole   |
+| `audit.records` | Counter   | -                                 | Audit records created   |
+| `hook.duration` | Histogram | `hook.name`, `error`              | Hook execution duration |
+
+`annotation` is where in the entry the PII was: `message`, `error`, or an annotation's key as the line writes it. `logger` is the name given with `Named`, empty for the root logger and for events. `reason` is why a value was redacted whole: `field` (its name is sensitive), `depth` (nested deeper than the limit), `token` (a JWT or JWE) or `binary` (bytes that are not text). A series exists only for a combination that occurred, so with annotation keys fixed in code there are a few hundred at most; keys built at runtime multiply them.
 
 #### Configuration
 
@@ -815,7 +820,8 @@ logger, _ := axio.New(config, axio.WithMetrics(provider))
 ```go
 type Metrics interface {
     LogsTotal(ctx context.Context, level Level)
-    PIIMasked(ctx context.Context, pattern PIIPattern)
+    PIIMasked(ctx context.Context, pattern PIIPattern, origin PIIOrigin, count int)
+    PIIRedacted(ctx context.Context, reason PIIRedaction, origin PIIOrigin, count int)
     AuditRecords(ctx context.Context)
     HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
@@ -1010,6 +1016,7 @@ Always pass `context.Context` and add identifiers:
 - Avoid logs in hot loops; prefer aggregation
 - Don't build large strings/maps unnecessarily
 - In production: JSON + agent collection
+- Finding the caller costs about half of writing a line; where the source location is not needed, `omitCaller: true` or `axio.WithOmitCaller()` drops it
 
 ### 6. Controlled cardinality
 

@@ -14,7 +14,7 @@ Axio integrates with OpenTelemetry for distributed tracing and metrics collectio
 
 ## Metrics
 - `WithMetrics(provider)` — uses metric.MeterProvider
-- Emitted metrics: logs.total, pii.masked, audit.records, hook.duration
+- Emitted metrics: logs.total, pii.masked (pattern, annotation, logger), pii.redacted (reason, annotation, logger), audit.records, hook.duration
 - MetricsAware interface for hooks to receive metrics object
 - NoopMetrics used when metrics not configured
 

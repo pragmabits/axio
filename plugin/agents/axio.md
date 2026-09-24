@@ -169,7 +169,7 @@ Note: New Output implementations must be handled in `WithOutputs` which converts
 
 ### OpenTelemetry
 - `WithTracer(axio.Otel())` — adds trace_id and span_id from OTel spans
-- `WithMetrics(provider)` — emits logs.total, pii.masked, audit.records, hook.duration
+- `WithMetrics(provider)` — emits logs.total, pii.masked (pattern, annotation, logger), pii.redacted (reason, annotation, logger), audit.records, hook.duration
 
 ## 3. Rules
 

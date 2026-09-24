@@ -86,6 +86,7 @@ type Config struct {
     InstanceID       string
     Level            Level
     CallerSkip       int
+    OmitCaller       bool        // write lines without the caller
     Outputs          []OutputConfig
     AgentMode        bool
     PIIEnabled       bool
@@ -129,6 +130,7 @@ type Option func(*Config) error
 
 func WithOutputs(outputs ...Output) Option
 func WithAgentMode() Option
+func WithOmitCaller() Option
 func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
 func WithPIIMaxDepth(depth int) Option
@@ -483,10 +485,25 @@ func Otel() Tracer
 ```go
 type Metrics interface {
     LogsTotal(ctx context.Context, level Level)
-    PIIMasked(ctx context.Context, pattern PIIPattern)
+    PIIMasked(ctx context.Context, pattern PIIPattern, origin PIIOrigin, count int)
+    PIIRedacted(ctx context.Context, reason PIIRedaction, origin PIIOrigin, count int)
     AuditRecords(ctx context.Context)
     HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool)
 }
+
+type PIIOrigin struct {
+    Annotation string // "message", "error", or an annotation's key as written
+    Logger     string // the Named logger; empty for the root logger and events
+}
+
+type PIIRedaction string // why a value became [REDACTED] whole
+
+const (
+    RedactionField  PIIRedaction = "field"  // its name matches PIIConfig.Fields
+    RedactionDepth  PIIRedaction = "depth"  // nested deeper than MaxDepth
+    RedactionToken  PIIRedaction = "token"  // a JWT or JWE
+    RedactionBinary PIIRedaction = "binary" // a []byte that is not text
+)
 
 type NoopMetrics struct{}
 ```

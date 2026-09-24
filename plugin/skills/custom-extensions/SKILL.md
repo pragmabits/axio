@@ -12,7 +12,7 @@ Axio provides interfaces for extending every major subsystem.
 - `Hook` — custom entry processing (Name, Process)
 - `ChainStore` — custom audit persistence (Save, Load)
 - `Tracer` — custom trace extraction (Extract)
-- `Metrics` — custom metrics backends (LogsTotal, PIIMasked, AuditRecords, HookDuration, HookDurationWithError)
+- `Metrics` — custom metrics backends (LogsTotal, PIIMasked, PIIRedacted, AuditRecords, HookDuration)
 - `Annotable` — complex types that produce multiple annotations (Append)
 
 ## Important Notes

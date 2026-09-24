@@ -21,7 +21,7 @@ new ones).
 
 ## Recurring code patterns
 
-- **Functional options.** New configuration entry points are `func WithX(...) Option` closures that mutate `*Config`. See `options.go:52` (`WithOutputs`), `:128` (`WithHooks`), `:151` (`WithPII`), `:178` (`WithPIIMaxDepth`), `:202` (`WithPIIOmitErrorVerbose`), `:228` (`WithAudit`), `:249` (`WithAuditChain`), `:275` (`WithMetrics`), `:306` (`WithTracer`). Don't add public setters, build-time flags, or package-level state — extend `Option` instead.
+- **Functional options.** New configuration entry points are `func WithX(...) Option` closures that mutate `*Config`. See `options.go:53` (`WithOutputs`), `:129` (`WithHooks`), `:152` (`WithPII`), `:179` (`WithPIIMaxDepth`), `:203` (`WithPIIOmitErrorVerbose`), `:218` (`WithOmitCaller`), `:244` (`WithAudit`), `:265` (`WithAuditChain`), `:291` (`WithMetrics`), `:322` (`WithTracer`). Don't add public setters, build-time flags, or package-level state — extend `Option` instead.
 
 - **Sentinel errors grouped by concern.** `errors.go` defines `var (...)` blocks per concern (validation, building, audit, metrics, lifecycle). New error cases declare a sentinel and wrap at the call site with `fmt.Errorf("%w: %w", ErrX, err)` so callers can `errors.Is`. Don't inline `errors.New(...)` at the call site.
 
@@ -29,4 +29,4 @@ new ones).
 
 - **Fixed hook chain ordering.** The internal `hookChain` runs hooks in a deliberate order — PII → custom — documented at `hook.go:81-95` and enforced by the append order in `buildHooks` (`hook.go:193`). Auditing is not a hook: it hashes the line at write time, after the whole chain, so PII is masked before hashing and the hash covers what custom hooks changed. Any new hook must slot in at the right position, not be appended unconditionally.
 
-- **`Validate()` chain.** Enum types each carry a `Validate() error` (`axio.go:213` `Environment`, `:253` `Level`, `:282` `Format`), and `Config.Validate` (`config.go:273`) composes them; `New` and `NewEvent` wrap its error with `ErrValidateConfig`. New enum-like types or config fields follow the same shape rather than scattering ad-hoc checks at construction.
+- **`Validate()` chain.** Enum types each carry a `Validate() error` (`axio.go:213` `Environment`, `:253` `Level`, `:282` `Format`), and `Config.Validate` (`config.go:276`) composes them; `New` and `NewEvent` wrap its error with `ErrValidateConfig`. New enum-like types or config fields follow the same shape rather than scattering ad-hoc checks at construction.

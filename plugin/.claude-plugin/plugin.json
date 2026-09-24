@@ -1,6 +1,6 @@
 {
   "name": "axio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deep expertise plugin for the axio Go structured logging library — covers full API usage, configuration, PII masking, audit chains, OpenTelemetry tracing, custom extensions, and autonomous migration from other Go logging libraries",
   "author": {
     "name": "pragmabits",

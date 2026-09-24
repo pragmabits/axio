@@ -168,6 +168,19 @@ func (c *hookChain) length() int {
 	return len(c.hooks)
 }
 
+// readsCaller reports whether a hook in the chain may read [Entry.Caller]:
+// any hook but a [PIIHook], which never does.
+func (c *hookChain) readsCaller() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	for _, hook := range c.hooks {
+		if _, masks := hook.(*PIIHook); !masks {
+			return true
+		}
+	}
+	return false
+}
+
 // noopHook is a hook that does nothing.
 type noopHook struct{}
 

@@ -222,7 +222,7 @@ func (l *logger) log(
 	entry := entryPool.Get().(*Entry)
 	entry.Timestamp = log.Time
 	entry.Logger = log.LoggerName
-	if log.Caller.Defined {
+	if log.Caller.Defined && l.hooks.readsCaller() {
 		entry.Caller = log.Caller.TrimmedPath()
 	}
 	entry.Level = level

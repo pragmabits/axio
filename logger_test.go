@@ -3,6 +3,7 @@ package axio
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -446,6 +447,41 @@ func TestLogger_HookSeesCallerAsWritten(t *testing.T) {
 	assertNoError(t, logger.Close())
 
 	assertEqual(t, any(seen), parseJSONLines(t, output.String())[0]["caller"])
+}
+
+func TestLogger_BuildsCallerOnlyForHooksThatReadIt(t *testing.T) {
+	if raceDetector {
+		t.Skip("regexp keeps its matchers in a sync.Pool, which the race detector drains at random")
+	}
+	allocations := func(t *testing.T, options ...Option) float64 {
+		t.Helper()
+		logger, err := New(minimalConfig(), append(options, WithOutputs(benchOutput{}))...)
+		assertNoError(t, err)
+		defer func() { assertNoError(t, logger.Close()) }()
+		return testing.AllocsPerRun(100, func() {
+			logger.Info(context.Background(), "order created")
+		})
+	}
+	callerCost := func(t *testing.T, options ...Option) float64 {
+		t.Helper()
+		return allocations(t, options...) - allocations(t, append(slices.Clone(options), WithOmitCaller())...)
+	}
+	read := callerCost(t, WithHooks(NoopHook()))
+
+	tests := []struct {
+		name    string
+		options []Option
+	}{
+		{name: "no_hooks"},
+		{name: "pii_hook", options: []Option{WithPII([]PIIPattern{PatternCPF}, nil)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if cost := callerCost(t, test.options...); cost >= read {
+				t.Errorf("the caller cost %v allocations, and %v with a hook that may read it: want fewer", cost, read)
+			}
+		})
+	}
 }
 
 func TestReportingCore_Write(t *testing.T) {

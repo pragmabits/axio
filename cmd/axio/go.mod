@@ -3,7 +3,7 @@ module github.com/pragmabits/axio/cmd/axio
 go 1.27.0
 
 require (
-	github.com/pragmabits/axio v0.1.0
+	github.com/pragmabits/axio v0.2.0
 	github.com/spf13/cobra v1.10.2
 )
 

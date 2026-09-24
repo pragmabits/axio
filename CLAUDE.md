@@ -45,7 +45,7 @@ go run ./examples/basic/              # Logger, levels, named, DefaultConfig
 go run ./examples/config/             # LoadConfig, LoadConfigFrom
 go run ./examples/outputs/            # Console+File, agent mode, production
 go run ./examples/annotations/        # Field, HTTP metadata
-go run ./examples/pii/                # MaskString API, PIIHook
+go run ./examples/pii/                # MaskString API, masking by default
 go run ./examples/audit/              # Audited logger, Verify, tamper detection
 go run ./examples/tracing/            # OpenTelemetry
 go run ./examples/rotation/           # Size + time rotation
@@ -69,7 +69,7 @@ cd cmd/axio && GOWORK=off go get github.com/pragmabits/axio@<commit> && GOWORK=o
 - `event.go` — Wide Event type (`Event`, `Emit`, error attachment)
 - `config.go` — Config loading (YAML, JSON, TOML)
 - `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig
-- `options.go` — Functional options (WithOutputs, WithPII, WithAudit, WithAuditChain, etc.)
+- `options.go` — Functional options (WithOutputs, WithPII, WithPIIDisabled, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
 - `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole
 - `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written

@@ -21,6 +21,7 @@ import (
 //   - [WithOmitCaller]: writes lines without the caller
 //   - [WithHooks]: configures custom processing hooks
 //   - [WithPII]: configures PII masking
+//   - [WithPIIDisabled]: turns PII masking off
 //   - [WithPIIMaxDepth]: sets how deep PII masking walks into structured values
 //   - [WithPIIOmitErrorVerbose]: omits the verbose form of errors instead of masking it
 //   - [WithAudit]: configures auditing with a hash chain stored in a file
@@ -133,7 +134,9 @@ func WithHooks(hooks ...Hook) Option {
 	}
 }
 
-// WithPII enables PII masking with the specified patterns and fields.
+// WithPII sets the patterns and fields PII masking uses. Masking is on by
+// default; WithPII also turns it back on over a [Config.PIIDisabled] loaded
+// from a file, as options override the file.
 //
 // If patterns is nil or empty, uses default patterns (CPF, CNPJ, CreditCard).
 // If fields is nil or empty, uses [DefaultSensitiveFields].
@@ -151,7 +154,7 @@ func WithHooks(hooks ...Hook) Option {
 //	)
 func WithPII(patterns []PIIPattern, fields []string) Option {
 	return func(config *Config) error {
-		config.PIIEnabled = true
+		config.PIIDisabled = false
 		if len(patterns) > 0 {
 			config.PIIPatterns = patterns
 		}
@@ -162,20 +165,31 @@ func WithPII(patterns []PIIPattern, fields []string) Option {
 	}
 }
 
+// WithPIIDisabled turns off PII masking, which is on by default, as
+// [Config.PIIDisabled] does from a file. The message, the error and every
+// annotation are then written as given, and no entry pays for the scan.
+//
+// Example:
+//
+//	logger, err := axio.New(config, axio.WithPIIDisabled())
+func WithPIIDisabled() Option {
+	return func(config *Config) error {
+		config.PIIDisabled = true
+		return nil
+	}
+}
+
 // WithPIIMaxDepth sets how deep PII masking walks into a structured
 // annotation value, as [Config.PIIMaxDepth] does from a file. A container
 // nested deeper is replaced by "[REDACTED]" whole; zero means
-// [DefaultPIIMaxDepth]. It takes effect with masking on, through [WithPII] or
-// [Config.PIIEnabled].
+// [DefaultPIIMaxDepth]. It has no effect with masking turned off by
+// [WithPIIDisabled] or [Config.PIIDisabled].
 //
 // Returns [ErrInvalidPIIMaxDepth] for a negative depth.
 //
 // Example:
 //
-//	logger, err := axio.New(config,
-//	    axio.WithPII(nil, nil),
-//	    axio.WithPIIMaxDepth(8),
-//	)
+//	logger, err := axio.New(config, axio.WithPIIMaxDepth(8))
 func WithPIIMaxDepth(depth int) Option {
 	return func(config *Config) error {
 		if depth < 0 {
@@ -191,15 +205,12 @@ func WithPIIMaxDepth(depth int) Option {
 // masking it, as [Config.PIIOmitErrorVerbose] does from a file. The error is
 // then written by its masked message only, and its verbose form is never read,
 // which spares scanning it: a stack of a couple of kilobytes costs about 250 µs
-// to mask. It takes effect with masking on, through [WithPII] or
-// [Config.PIIEnabled].
+// to mask. It has no effect with masking turned off by [WithPIIDisabled] or
+// [Config.PIIDisabled].
 //
 // Example:
 //
-//	logger, err := axio.New(config,
-//	    axio.WithPII(nil, nil),
-//	    axio.WithPIIOmitErrorVerbose(),
-//	)
+//	logger, err := axio.New(config, axio.WithPIIOmitErrorVerbose())
 func WithPIIOmitErrorVerbose() Option {
 	return func(config *Config) error {
 		config.PIIOmitErrorVerbose = true

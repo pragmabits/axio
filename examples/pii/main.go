@@ -1,4 +1,5 @@
-// Package main demonstrates PII masking: the MaskString API and PIIHook integration.
+// Package main demonstrates PII masking: the MaskString API and the masking
+// every logger does by default.
 //
 // Run with: go run ./examples/pii/
 package main
@@ -15,7 +16,7 @@ func main() {
 	ctx := context.Background()
 
 	maskStringAPI()
-	piiHook(ctx)
+	loggerMasking(ctx)
 }
 
 func maskStringAPI() {
@@ -38,8 +39,8 @@ func maskStringAPI() {
 	}
 }
 
-func piiHook(ctx context.Context) {
-	fmt.Println("=== PII Hook (Console + File) ===")
+func loggerMasking(ctx context.Context) {
+	fmt.Println("=== Logger Masking by Default (Console + File) ===")
 
 	logFile := "axio-pii-example.log"
 
@@ -52,7 +53,6 @@ func piiHook(ctx context.Context) {
 			axio.Console(axio.FormatText),
 			axio.MustFile(logFile, axio.FormatJSON),
 		),
-		axio.WithHooks(axio.MustPIIHook(axio.DefaultPIIConfig())),
 	)
 
 	logger.Info(ctx, "Customer CPF 123.456.789-01 purchased with card 4111-1111-1111-1111")

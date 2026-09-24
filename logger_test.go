@@ -92,6 +92,28 @@ func TestNew(t *testing.T) {
 	})
 }
 
+func TestNew_MasksPIIByDefault(t *testing.T) {
+	loaded, err := LoadConfigFrom(strings.NewReader("serviceName: payments\n"), "yaml")
+	assertNoError(t, err)
+
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{name: "default_config", config: DefaultConfig()},
+		{name: "zero_config", config: Config{}},
+		{name: "loaded_without_pii_keys", config: loaded},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := logCustomer(t, test.config)
+			assertEqual(t, record["message"], any("customer ***.***.***-** registered"))
+			assertEqual(t, record["password"], any("[REDACTED]"))
+		})
+	}
+}
+
 func TestLogger_Levels(t *testing.T) {
 	path := tempFile(t, "levels.log")
 	config := Config{

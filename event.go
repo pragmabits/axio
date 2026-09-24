@@ -69,7 +69,6 @@ type Event struct {
 //
 //	event, err := axio.NewEvent("http_request", config,
 //	    axio.WithOutputs(axio.Stdout(axio.FormatJSON)),
-//	    axio.WithPII(nil, nil),
 //	)
 func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 	for _, option := range options {

@@ -202,14 +202,14 @@ func (noopHook) Process(ctx context.Context, entry *Entry) error { return nil }
 // buildHooks creates hooks from configuration.
 //
 // Creation order follows the fixed execution order:
-//  1. PIIHook (if PIIEnabled)
+//  1. PIIHook (unless PIIDisabled)
 //  2. Custom hooks (from WithHooks)
 //
 // Custom hooks run after PII masking and observe the masked entry.
 func buildHooks(config Config) ([]Hook, error) {
 	var hooks []Hook
 
-	if config.PIIEnabled {
+	if !config.PIIDisabled {
 		piiConfig := PIIConfig{
 			Patterns:         config.PIIPatterns,
 			CustomPatterns:   config.PIICustomPatterns,

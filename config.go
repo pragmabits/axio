@@ -82,8 +82,11 @@ type Config struct {
 	// When true, forces output to stdout with JSON format.
 	AgentMode bool `json:"agentMode" yaml:"agentMode" toml:"agentMode" mapstructure:"agentMode"`
 
-	// PIIEnabled enables masking of sensitive personal data.
-	PIIEnabled bool `json:"piiEnabled" yaml:"piiEnabled" toml:"piiEnabled" mapstructure:"piiEnabled"`
+	// PIIDisabled turns off masking of sensitive personal data. Masking is on
+	// whenever it is false, so a Config written by hand, one from
+	// [DefaultConfig] and one loaded from a file without the key all mask.
+	// See [WithPIIDisabled].
+	PIIDisabled bool `json:"piiDisabled,omitempty" yaml:"piiDisabled,omitempty" toml:"piiDisabled,omitempty" mapstructure:"piiDisabled,omitempty"`
 	// PIIPatterns defines which builtin PII patterns to detect (cpf, cnpj, email, etc).
 	PIIPatterns []PIIPattern `json:"piiPatterns,omitempty" yaml:"piiPatterns,omitempty" toml:"piiPatterns,omitempty" mapstructure:"piiPatterns,omitempty"`
 	// PIICustomPatterns allows defining additional PII patterns via regex.
@@ -130,7 +133,7 @@ type Config struct {
 //   - Level: LevelInfo
 //   - CallerSkip: 0
 //   - TracerType: "noop"
-//   - PIIEnabled: false
+//   - PIIDisabled: false, so PII masking is on
 //   - Audit.Enabled: false
 //   - Metrics.Enabled: false
 //   - AgentMode: false
@@ -147,7 +150,7 @@ func DefaultConfig() Config {
 		Level:       LevelInfo,
 		CallerSkip:  0,
 		TracerType:  "noop",
-		PIIEnabled:  false,
+		PIIDisabled: false,
 		AgentMode:   false,
 		Audit: AuditConfig{
 			Enabled: false,
@@ -417,13 +420,9 @@ func applyOutputDefaults(config *Config) {
 	}
 }
 
-// applyPIIDefaults fills the builtin patterns and sensitive fields when PII
-// masking is enabled without them.
+// applyPIIDefaults fills the builtin patterns and sensitive fields PII masking
+// uses when none were given.
 func applyPIIDefaults(config *Config) {
-	if !config.PIIEnabled {
-		return
-	}
-
 	if len(config.PIIPatterns) == 0 {
 		config.PIIPatterns = []PIIPattern{PatternCPF, PatternCNPJ, PatternCreditCard}
 	}

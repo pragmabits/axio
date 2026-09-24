@@ -59,9 +59,6 @@ func TestWithPII(t *testing.T) {
 	err := option(&config)
 	assertNoError(t, err)
 
-	if !config.PIIEnabled {
-		t.Error("PIIEnabled should be true")
-	}
 	assertEqual(t, len(config.PIIPatterns), 2)
 	assertEqual(t, len(config.PIIFields), 2)
 }
@@ -72,12 +69,32 @@ func TestWithPII_Defaults(t *testing.T) {
 	err := option(&config)
 	assertNoError(t, err)
 
-	if !config.PIIEnabled {
-		t.Error("PIIEnabled should be true")
-	}
 	// nil patterns/fields means defaults will be applied by applyDefaults
 	assertEqual(t, len(config.PIIPatterns), 0)
 	assertEqual(t, len(config.PIIFields), 0)
+}
+
+func TestWithPII_OverridesDisabledConfig(t *testing.T) {
+	config := minimalConfig()
+	config.PIIDisabled = true
+
+	record := logCustomer(t, config, WithPII(nil, nil))
+	assertEqual(t, record["message"], any("customer ***.***.***-** registered"))
+	assertEqual(t, record["password"], any("[REDACTED]"))
+}
+
+func TestWithPIIDisabled(t *testing.T) {
+	t.Run("sets_the_flag", func(t *testing.T) {
+		config := minimalConfig()
+		assertNoError(t, WithPIIDisabled()(&config))
+		assertEqual(t, config.PIIDisabled, true)
+	})
+
+	t.Run("writes_personal_data_as_given", func(t *testing.T) {
+		record := logCustomer(t, minimalConfig(), WithPIIDisabled())
+		assertEqual(t, record["message"], any("customer 123.456.789-01 registered"))
+		assertEqual(t, record["password"], any("hunter2"))
+	})
 }
 
 func TestWithPIIMaxDepth(t *testing.T) {

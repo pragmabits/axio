@@ -21,7 +21,6 @@ func main() {
 		Level:       axio.LevelInfo,
 	},
 		axio.WithOutputs(axio.Console(axio.FormatText)),
-		axio.WithPII(nil, nil),
 		axio.WithTracer(axio.Otel()),
 	)
 	defer logger.Close()

@@ -2,6 +2,7 @@ package axio
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -160,6 +161,18 @@ func parseJSONLines(t *testing.T, content string) []map[string]any {
 		records = append(records, record)
 	}
 	return records
+}
+
+// logCustomer logs a line carrying a CPF and a password through a logger built
+// from config and options, and returns the record it wrote.
+func logCustomer(t *testing.T, config Config, options ...Option) map[string]any {
+	t.Helper()
+	output := newBufferOutput(FormatJSON)
+	logger, err := New(config, append([]Option{WithOutputs(output)}, options...)...)
+	assertNoError(t, err)
+	logger.Info(context.Background(), "customer 123.456.789-01 registered", Field("password", "hunter2"))
+	assertNoError(t, logger.Close())
+	return parseJSONLines(t, output.String())[0]
 }
 
 // bufferOutput is an Output that keeps everything written to it in memory.

@@ -26,7 +26,6 @@
 //
 //	logger, err := axio.New(config,
 //	    axio.WithOutputs(axio.Stdout(axio.FormatJSON)),
-//	    axio.WithHooks(axio.MustPIIHook(axio.DefaultPIIConfig())),
 //	    axio.WithTracer(axio.Otel()),
 //	)
 //
@@ -44,9 +43,10 @@
 //
 // # PII Masking
 //
-// Axio detects and masks sensitive personal data. CPF, CNPJ and credit cards are
+// Every Logger and Event masks sensitive personal data unless [WithPIIDisabled]
+// or [Config.PIIDisabled] turns masking off. CPF, CNPJ and credit cards are
 // masked by default; e-mails ([PatternEmail]) and phones ([PatternPhone]) are
-// masked when their patterns are listed:
+// masked when [WithPII] lists their patterns:
 //
 //   - CPF: 123.456.789-01 → ***.***.***-**
 //   - CNPJ: 12.345.678/0001-90 → **.***.***/****-**
@@ -56,8 +56,7 @@
 //
 // Example:
 //
-//	piiHook := axio.MustPIIHook(axio.DefaultPIIConfig())
-//	logger, _ := axio.New(config, axio.WithHooks(piiHook))
+//	logger, _ := axio.New(config)
 //	logger.Info(ctx, "Customer CPF: 123.456.789-01")
 //	// Output: "Customer CPF: ***.***.***-**"
 //

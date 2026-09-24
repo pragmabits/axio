@@ -48,6 +48,20 @@ func TestNewEvent(t *testing.T) {
 	})
 }
 
+func TestNewEvent_MasksPIIByDefault(t *testing.T) {
+	output := newBufferOutput(FormatJSON)
+	event, err := NewEvent("registration", DefaultConfig(), WithOutputs(output))
+	assertNoError(t, err)
+	event.Add("document", "123.456.789-01")
+	event.Add("password", "hunter2")
+	event.Emit(context.Background())
+	assertNoError(t, event.Close())
+
+	record := parseJSONLines(t, output.String())[0]
+	assertEqual(t, record["document"], any("***.***.***-**"))
+	assertEqual(t, record["password"], any("[REDACTED]"))
+}
+
 func TestEvent_ContextPropagation(t *testing.T) {
 	t.Run("round_trip_through_context", func(t *testing.T) {
 		config := minimalConfig()

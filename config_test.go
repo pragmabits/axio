@@ -125,7 +125,6 @@ outputs:
 serviceName: pii-service
 environment: production
 level: info
-piiEnabled: true
 piiPatterns:
   - cpf
   - email
@@ -134,9 +133,6 @@ piiPatterns:
 		config, err := LoadConfig(path)
 		assertNoError(t, err)
 
-		if !config.PIIEnabled {
-			t.Error("PIIEnabled should be true")
-		}
 		if len(config.PIIPatterns) != 2 {
 			t.Errorf("expected 2 patterns, got %d", len(config.PIIPatterns))
 		}
@@ -197,11 +193,20 @@ level: info
 	})
 
 	t.Run("pii_max_depth", func(t *testing.T) {
-		reader := strings.NewReader("piiEnabled: true\npiiMaxDepth: 4\n")
+		reader := strings.NewReader("piiMaxDepth: 4\n")
 
 		config, err := LoadConfigFrom(reader, "yaml")
 		assertNoError(t, err)
 		assertEqual(t, config.PIIMaxDepth, 4)
+	})
+
+	t.Run("pii_disabled_writes_personal_data_as_given", func(t *testing.T) {
+		config, err := LoadConfigFrom(strings.NewReader("piiDisabled: true\n"), "yaml")
+		assertNoError(t, err)
+
+		record := logCustomer(t, config)
+		assertEqual(t, record["message"], any("customer 123.456.789-01 registered"))
+		assertEqual(t, record["password"], any("hunter2"))
 	})
 
 	t.Run("omit_caller", func(t *testing.T) {
@@ -211,7 +216,7 @@ level: info
 	})
 
 	t.Run("pii_omit_error_verbose", func(t *testing.T) {
-		reader := strings.NewReader("piiEnabled: true\npiiOmitErrorVerbose: true\n")
+		reader := strings.NewReader("piiOmitErrorVerbose: true\n")
 
 		config, err := LoadConfigFrom(reader, "yaml")
 		assertNoError(t, err)
@@ -355,8 +360,8 @@ func TestDefaultConfig(t *testing.T) {
 	assertEqual(t, config.Environment, EnvironmentDevelopment)
 	assertEqual(t, config.Level, LevelInfo)
 	assertEqual(t, config.TracerType, "noop")
-	if config.PIIEnabled {
-		t.Error("PIIEnabled should be false by default")
+	if config.PIIDisabled {
+		t.Error("PIIDisabled should be false by default")
 	}
 	if config.Audit.Enabled {
 		t.Error("Audit.Enabled should be false by default")
@@ -407,8 +412,8 @@ func TestApplyDefaults(t *testing.T) {
 		assertEqual(t, config.Outputs[0].Format, FormatJSON)
 	})
 
-	t.Run("pii_enabled_sets_default_patterns", func(t *testing.T) {
-		config := Config{PIIEnabled: true}
+	t.Run("sets_default_pii_patterns", func(t *testing.T) {
+		config := Config{}
 		applyDefaults(&config)
 
 		if len(config.PIIPatterns) == 0 {

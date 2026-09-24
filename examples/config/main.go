@@ -42,7 +42,7 @@ func loadFromFile(ctx context.Context) {
 	fmt.Printf("  ServiceName:   %s\n", config.ServiceName)
 	fmt.Printf("  Environment:   %s\n", config.Environment)
 	fmt.Printf("  Level:         %s\n", config.Level)
-	fmt.Printf("  PIIEnabled:    %v\n", config.PIIEnabled)
+	fmt.Printf("  PIIDisabled:   %v\n", config.PIIDisabled)
 	fmt.Printf("  Audit.Enabled: %v\n", config.Audit.Enabled)
 
 	for index, output := range config.Outputs {

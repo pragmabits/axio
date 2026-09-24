@@ -134,15 +134,16 @@ type PIIConfig struct {
 	OmitErrorVerbose bool `json:"omitErrorVerbose,omitempty" yaml:"omitErrorVerbose,omitempty" toml:"omitErrorVerbose,omitempty" mapstructure:"omitErrorVerbose,omitempty"`
 }
 
-// DefaultPIIConfig returns a configuration with common patterns enabled.
+// DefaultPIIConfig returns a configuration with common patterns enabled: the
+// one a Logger masks with when [WithPII] names no patterns or fields.
 //
 // Enabled patterns: CPF, CNPJ, credit card.
 // Sensitive fields: password, token, secret, api_key, etc.
 //
 // Example:
 //
-//	hook := axio.MustPIIHook(axio.DefaultPIIConfig())
-//	logger, _ := axio.New(settings, axio.WithHooks(hook))
+//	masker := axio.MustPIIMasker(axio.DefaultPIIConfig())
+//	masked := masker.MaskString("CPF: 123.456.789-01")
 func DefaultPIIConfig() PIIConfig {
 	return PIIConfig{
 		Patterns: []PIIPattern{
@@ -191,11 +192,10 @@ type PIIMaskResult struct {
 // In addition to regex patterns, the masker also redacts fields whose names
 // contain sensitive terms like "password", "token", "api_key", etc.
 //
-// Recommended usage is via [PIIHook], which applies masking
-// automatically to all log entries:
+// Every Logger and Event masks its entries through one by default, configured
+// by [WithPII] and turned off by [WithPIIDisabled]:
 //
-//	hook := axio.MustPIIHook(axio.DefaultPIIConfig())
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
+//	logger, _ := axio.New(config)
 //
 //	// Sensitive data is masked automatically
 //	logger.Info(ctx, "Customer CPF 123.456.789-01")
@@ -711,12 +711,20 @@ func (m *PIIMasker) isSensitiveField(fieldName string) bool {
 //
 // PIIHook implements [MetricsAware] to emit metrics for masked PII.
 //
+// Every Logger and Event runs one before any custom hook unless
+// [WithPIIDisabled] turns it off. Passed through [WithHooks], a PIIHook is a
+// custom hook and runs in the order passed: with the default one turned off,
+// that masks what an earlier hook adds.
+//
 // Example:
 //
 //	hook := axio.MustPIIHook(axio.DefaultPIIConfig())
-//	logger, _ := axio.New(settings, axio.WithHooks(hook))
+//	logger, _ := axio.New(settings,
+//	    axio.WithPIIDisabled(),
+//	    axio.WithHooks(enricher, hook),
+//	)
 //
-//	// The message will be masked automatically
+//	// The message and what enricher added are masked
 //	logger.Info(ctx, "User with CPF 123.456.789-01 authenticated")
 //	// Output: "User with CPF ***.***.***-** authenticated"
 type PIIHook struct {
@@ -739,7 +747,7 @@ type PIIHook struct {
 //	if err != nil {
 //	    return err
 //	}
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
+//	logger, _ := axio.New(config, axio.WithPIIDisabled(), axio.WithHooks(enricher, hook))
 func NewPIIHook(config PIIConfig) (*PIIHook, error) {
 	masker, err := NewPIIMasker(config)
 	if err != nil {
@@ -755,7 +763,7 @@ func NewPIIHook(config PIIConfig) (*PIIHook, error) {
 // Example:
 //
 //	hook := axio.MustPIIHook(axio.DefaultPIIConfig())
-//	logger, _ := axio.New(config, axio.WithHooks(hook))
+//	logger, _ := axio.New(config, axio.WithPIIDisabled(), axio.WithHooks(enricher, hook))
 func MustPIIHook(config PIIConfig) *PIIHook {
 	hook, err := NewPIIHook(config)
 	if err != nil {

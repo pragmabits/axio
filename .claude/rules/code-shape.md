@@ -83,9 +83,11 @@ file that fails to close does not leave the others open: `Logger.Close`,
 **The log path has no one to return an error to.** `Info`, `Error`, `Emit` and
 the rest return nothing and must not panic in the caller's code. A failure there
 is reported on stderr, one line prefixed `axio:`, and the call goes on: a hook
-error, metrics enabled without a provider. Anything that can fail *before* the
-first entry — options, validation, opening outputs — fails in `New` with a
-sentinel instead, where the caller can still act on it.
+error, a write that fails. (Metrics enabled without a provider are a warning
+`New` prints the same way before going on with the global provider.) Anything
+that can fail *before* the first entry — options, validation, opening outputs,
+the audit store's lock — fails in `New` with a sentinel instead, where the
+caller can still act on it.
 
 Concurrency is verified, not trusted: `datarace`, `forbidden-call-in-wg-go`, and
 `defer` restricted to loop, recover and immediate-recover in `.golangci.yml`,

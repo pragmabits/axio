@@ -31,11 +31,12 @@ carrying the package's name, and a `doc.go` is a file with no subject of its
 own. Decided by the developer.
 
 **Sentinel errors are not in this order: they live in `errors.go`**, in `var`
-blocks grouped by concern — validation, building, audit, metrics, lifecycle (see
-[patterns.md](patterns.md)). A caller reaches for a sentinel with `errors.Is`,
-and in a single-package library the whole vocabulary of failure is one list read
-once; spread over the files that return them, it has to be collected before it
-can be read. `errors.go` is the one file whose subject is that vocabulary.
+blocks grouped by concern — validation, building, outputs, audit, metrics and
+tracing, lifecycle (see [patterns.md](patterns.md)). A caller reaches for a
+sentinel with `errors.Is`, and in a single-package library the whole vocabulary
+of failure is one list read once; spread over the files that return them, it has
+to be collected before it can be read. `errors.go` is the one file whose subject
+is that vocabulary.
 
 ## A panicking twin sits under its original
 
@@ -65,8 +66,8 @@ are about. So the question is what the interface is to the file, and there are
 three answers, taken in this order:
 
 1. **It is the subject.** It goes where the subject goes. `Tracer` opens
-   `tracing.go` and `Metrics` opens `metrics.go`, with their implementations
-   after them.
+   `tracing.go` and `Metrics` opens `metrics.go` — after `PIIOrigin`, which its
+   signatures name — with their implementations after them.
 2. **It is an optional capability of another interface.** It goes right after
    the interface it extends, because it only means something to a reader who
    has just met that one: `RotationErrorReporter` right after `Output`,

@@ -3,7 +3,7 @@
 ![English](https://img.shields.io/badge/lang-en-blue.svg)
 [Português](./README.pt-BR.md) | **English**
 
-![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-0BSD-blue.svg)
 
 ## What is Axio
@@ -108,7 +108,6 @@ Complete HTTP handler with context, annotations, and cleanup:
 package main
 
 import (
-    "context"
     "log"
     "net/http"
     "time"
@@ -408,7 +407,7 @@ logger.Info(ctx, "order created",
 
 An annotation named like a key axio writes itself — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (with `errorVerbose` and `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — is written behind an underscore, as `_message`, so a line never carries the same key twice.
 
-A struct, a slice or a map is written as its JSON encoding, in `encoding/json/v2`: nil slices and maps as `null`, map keys in sorted order, a `time.Duration` as its nanoseconds and a byte array as base64. `omitempty` omits a field whose value encodes as empty — `""`, `null`, `[]`, `{}` — and `omitzero` omits `false`, `0` and every other zero value. A tag option the encoding does not accept, such as `,string` on a slice, makes the value fail: the line carries `<key>Error` in its place.
+A struct, a map, or a slice zap has no encoder of its own for is written as its JSON encoding, in `encoding/json/v2`: nil slices and maps as `null`, map keys in sorted order, a `time.Duration` as its nanoseconds and a byte array as base64. A slice of a basic type given as the annotation's own value — `[]string`, `[]int`, `[]bool`, `[]time.Duration`, `[]time.Time`, `[]error` and the like — is written by zap instead: a nil one as `[]`, and durations in milliseconds, as a `time.Duration` annotation is. `omitempty` omits a field whose value encodes as empty — `""`, `null`, `[]`, `{}` — and `omitzero` omits `false`, `0` and every other zero value. A tag option the encoding does not accept, such as `,string` on a slice, makes the value fail: the line carries `<key>Error` in its place.
 
 #### With
 
@@ -488,8 +487,10 @@ dbLogger.Info(ctx, "query executed")      // logger: "db"
 
 Hooks process log entries before writing. Executed in fixed order:
 
-1. **PIIHook** - masks sensitive data
+1. **PIIHook** - the one `WithPII` or `piiEnabled` turns on, which masks sensitive data
 2. **Custom hooks** - in the order passed to `WithHooks`
+
+A `PIIHook` passed to `WithHooks` is one of the custom hooks and runs where it was passed; turn masking on with `WithPII` for every custom hook to see the masked entry.
 
 Auditing is not a hook: the hash is computed when the entry is written, after every hook, so it covers whatever the hooks changed.
 
@@ -595,18 +596,20 @@ config := axio.PIIConfig{
 
 #### Coverage
 
-PII masking covers every value a line carries:
+PII masking covers every value the caller hands a line — the message, the error and every annotation:
 
 - **The message.**
 - **The error** passed to `Warn`, `Error` or `Event.SetError`, by its message and, for an error that formats itself, its verbose form (`errorVerbose`). A masked error still unwraps to the original, so `errors.Is` keeps working in later hooks.
 - **Annotation names matching `PIIConfig.Fields`** — the whole value becomes `[REDACTED]`, whatever its type.
 - **Strings, errors and `fmt.Stringer` values**, by their text.
-- **Bytes (`[]byte`)**, which are written as base64, by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`, whether an annotation of their own or a field or element of a structured value.
-- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct — is also decoded, and masked when the text it decodes to carries PII. That is how a `[]byte` of text, a byte array or a named byte-slice type inside a structured value arrives, its JSON encoding carrying it as base64. A string that decodes to binary data becomes `[REDACTED]` when a pattern matches inside it, and passes as it is otherwise: nothing tells the base64 of other binary data from any other string of that shape.
-- **JWTs and JWEs.** A token anywhere in a text — a message, a URL query, an annotation — becomes `[REDACTED]` whole: it is a credential, and its claims may carry what no pattern knows. A string is taken for a token when it has a token's shape and its header decodes to a JSON object naming an algorithm (`alg`), as every JOSE header does.
+- **Bytes** — a `[]byte`, a byte array or a named byte-slice type, which are written as base64 — by the text they hold: masked text stays bytes, and bytes that are not UTF-8 text cannot be inspected and become `[REDACTED]`, whether an annotation of their own or a field or element of a structured value. A byte array or a named byte-slice type is looked for only in a structured value whose type may hold one, or holds an interface: encoding such a value costs one more allocation per field or element, and any other type pays nothing.
+- **Base64 text.** Any string with the shape of base64, in the standard or the URL alphabet, padded or not — the message, the error, an annotation, a value inside a map or struct — is also decoded, and masked when the text it decodes to carries PII. That is how bytes of text inside a structured value arrive, its JSON encoding carrying them as base64. A string that decodes to binary data becomes `[REDACTED]` when a pattern matches inside it, and passes as it is otherwise: nothing tells the base64 of other binary data from any other string of that shape.
+- **JWTs and JWEs.** A token anywhere in a text — a message, a URL query, an annotation — becomes `[REDACTED]` whole: it is a credential, and its claims may carry what no pattern knows. A string is taken for a token when it has a token's shape and its header decodes to a JSON object naming an algorithm (`alg`), as every JOSE header does. A JWS or JWE in JSON serialization — an object with a `payload` and its `signature` or `signatures`, or with a `ciphertext` and its `iv` — becomes `[REDACTED]` whole inside a structured value; written as text in a message, it passes.
 - **Encoding failures.** A value whose encoding fails — a `MarshalJSON`, `MarshalLogObject` or `MarshalLogArray` that returns an error — has that error masked where it is written, under `<key>Error`, and the part it did write masked like any value.
 - **Structured values** — maps, slices, structs, pointers, `http.Header` — walked as the JSON encoding the log writes for them: at every level, keys are checked against `Fields` and strings against the patterns.
 - **`Annotable` values** such as `HTTP`, expanded into their fields before any hook runs.
+
+What axio writes itself — the logger name, the service metadata, the caller and the stack trace — is written as it is, never scanned.
 
 A structured value that needed masking is written as its masked JSON tree, object keys in alphabetical order; one with nothing to mask keeps its original form. A container nested deeper than the depth limit (default `32`) is replaced by `[REDACTED]` whole, never written unmasked. Set the limit with `axio.WithPIIMaxDepth(n)`, `piiMaxDepth` in the config file, or `PIIConfig.MaxDepth` when building a `PIIMasker` or `PIIHook` yourself.
 
@@ -646,13 +649,13 @@ Each audited JSON line ends with two fields, always last:
 | `previous_hash` | Hash of the previous line; empty on the first line of the chain      |
 | `hash`          | SHA-256 of `previous_hash` followed by every byte before the trailer |
 
-The hash covers exactly what was written: message, error, stacktrace, service metadata, annotations and whatever custom hooks changed. Encoding, hashing and writing happen under one lock, so the order of the chain is the order of the file, even with many goroutines logging at once.
+The hash covers exactly what was written: message, error, stacktrace, service metadata, annotations and whatever custom hooks changed. Hashing, saving the chain state and writing happen under one lock, so the order of the chain is the order of the file, even with many goroutines logging at once.
 
 ```json
 {"level":"info","timestamp":"2026-09-23T15:16:24.230105632Z","logger":"orders","caller":"app/main.go:26","message":"order created","order_id":"ord_8812","previous_hash":"","hash":"28d41c7b24128b63eed1ed71b77bc63e3f9b9b463af820a3171a0a1927b3f3a8"}
 ```
 
-Only JSON outputs can be verified. A text output shows the first 6 characters of the hash, for finding the same entry in the JSON output.
+Only JSON outputs can be verified. A Logger's text output shows the first 6 characters of the hash, for finding the same entry in the JSON output; an audited Event writes its JSON line, trailer included, to every output.
 
 #### Configuration
 
@@ -668,7 +671,7 @@ Every Logger and Event audited with the same path in a process extends **one** c
 
 An audited Logger needs a JSON output: only JSON lines carry the hashes a log is verified against, so `New` returns `ErrAuditWithoutJSON` when every output is text. An Event writes JSON to every output and has no such requirement.
 
-The first write takes an exclusive lock on a file beside the store (`chain.json.lock`) and holds it while the process runs: a second process using the same path fails in `New` with `ErrChainStoreLocked` instead of forking the chain. Reading the store, as verifying does, takes no lock. The lock uses `flock`, so Windows, Solaris and AIX have none.
+`New` (or `NewEvent`) takes an exclusive lock on a file beside the store (`chain.json.lock`) and holds it while the process runs: a second process using the same store fails in `New` with `ErrChainStoreLocked` instead of forking the chain. A `FileStore` passed through `WithAuditChain` is locked the same way, and the chain is then loaded from it again, so what another process saved after `NewHashChain` loaded it is continued rather than forked. Reading the store, as verifying does, takes no lock. The lock uses `flock`, so Windows, Solaris and AIX have none.
 
 #### Verifying a log
 
@@ -801,7 +804,7 @@ Axio emits metrics about the logging process itself, allowing monitoring of volu
 | `audit.records` | Counter   | -                                 | Audit records created   |
 | `hook.duration` | Histogram | `hook.name`, `error`              | Hook execution duration |
 
-`annotation` is where in the entry the PII was: `message`, `error`, or an annotation's key as the line writes it. `logger` is the name given with `Named`, empty for the root logger and for events. `reason` is why a value was redacted whole: `field` (its name is sensitive), `depth` (nested deeper than the limit), `token` (a JWT or JWE) or `binary` (bytes that are not text). A series exists only for a combination that occurred, so with annotation keys fixed in code there are a few hundred at most; keys built at runtime multiply them.
+`annotation` is where in the entry the PII was: `message`, `error`, or an annotation's key as the line writes it. `logger` is the name given with `Named`, empty for the root logger and for events. `reason` is why a value was redacted whole: `field` (its name is sensitive), `depth` (nested deeper than the limit), `token` (a JWT or JWE, compact or in JSON serialization) or `binary` (bytes that are not text). A series exists only for a combination that occurred, so with annotation keys fixed in code there are a few hundred at most; keys built at runtime multiply them.
 
 #### Configuration
 
@@ -817,7 +820,9 @@ logger, _ := axio.New(config, axio.WithMetrics(provider))
 //   meterVersion: 1.0.0
 ```
 
-#### Metrics Interface (custom)
+#### Metrics Interface
+
+The interface a hook implementing `MetricsAware` receives through `SetMetrics`. `New` and `NewEvent` build axio's own implementation from the `MeterProvider` given to `WithMetrics`, and no option takes another one: to reach another backend, pass a `MeterProvider` backed by its OpenTelemetry exporter.
 
 ```go
 type Metrics interface {
@@ -937,7 +942,7 @@ The command is a module of its own, `github.com/pragmabits/axio/cmd/axio`, so im
 
 ### axio render
 
-Logs meant for machines are JSON. `axio render` turns them back into the text a person reads on a terminal — the same text the `Console` output writes, byte for byte, colors included.
+Logs meant for machines are JSON. `axio render` turns them back into the text a person reads on a terminal — the same text the `Console` output writes, colors included, except where JSON holds a field differently: a `time.Duration` annotation shows as the milliseconds JSON holds (`1500`, where the Console writes `"1.5s"`), and a `time.Time` one as its JSON timestamp (`"2026-01-02T03:04:05Z"`, where the Console writes `"2026-01-02T03:04:05.000Z"`). JSON does not say what type a value was.
 
 ```bash
 kubectl logs -f deploy/checkout | axio render
@@ -1066,7 +1071,7 @@ logger.Info(ctx, "request completed",
 
 | Event              | Level      | Suggested fields                              |
 | ------------------ | ---------- | --------------------------------------------- |
-| Request completed  | Info       | `http.*`, `request_id`, `user_id`, `trace_id` |
+| Request completed  | Info       | `method`, `url`, `status_code`, `latency`, `user_agent`, `client_ip` (from `axio.HTTP`), `request_id`, `user_id`, `trace_id` |
 | Domain error       | Warn/Error | `+operation`, `+entity`, `+error`             |
 
 ```go

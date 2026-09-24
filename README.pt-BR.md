@@ -3,7 +3,7 @@
 ![Português](https://img.shields.io/badge/lang-pt--BR-green.svg)
 **Português** | [English](./README.md)
 
-![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-0BSD-blue.svg)
 
 ## O que é o Axio
@@ -64,6 +64,7 @@ Axio funciona como uma camada de abstração com interface estável (`Logger`). 
 - [Configuração](#configuração)
   - [Config Principal](#config-principal)
   - [OutputConfig](#outputconfig)
+  - [RotationConfig](#rotationconfig)
   - [AuditConfig](#auditconfig)
   - [MetricsConfig](#metricsconfig)
   - [Carregamento de Arquivo](#carregamento-de-arquivo)
@@ -76,6 +77,7 @@ Axio funciona como uma camada de abstração com interface estável (`Logger`). 
   - [Auditoria (Hash Chain)](#auditoria-hash-chain)
   - [Tracing Distribuído (OpenTelemetry)](#tracing-distribuído-opentelemetry)
   - [Métricas](#métricas)
+  - [Wide Events](#wide-events)
 - [Linha de Comando: axio render e axio verify](#linha-de-comando-axio-render-e-axio-verify)
 - [Boas Práticas de Logging](#boas-práticas-de-logging)
 - [Guia por Tipo de Serviço](#guia-por-tipo-de-serviço)
@@ -106,7 +108,6 @@ Handler HTTP completo com contexto, anotações e cleanup:
 package main
 
 import (
-    "context"
     "log"
     "net/http"
     "time"
@@ -333,6 +334,39 @@ logger, _ := axio.New(config, axio.WithAgentMode())
 
 As options vencem o arquivo de config: o primeiro `WithOutputs` substitui os `outputs` do arquivo, que então não são abertos nem validados, e as chamadas seguintes acrescentam.
 
+#### Rotação de Logs
+
+Outputs de arquivo suportam rotação automática por tamanho, por intervalo de tempo ou pelos dois:
+
+```go
+// Rotação por tamanho (rotaciona quando o arquivo passa de 100 MB)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    MaxSize:    100,
+    MaxBackups: 5,
+    Compress:   true,
+})
+
+// Rotação por tempo (rotaciona a cada 24 horas)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    Interval: axio.Duration(24 * time.Hour),
+    MaxAge:   30,
+})
+
+// Combinada (o que disparar primeiro)
+out, _ := axio.RotatingFile("/var/log/app.log", axio.FormatJSON, axio.RotationConfig{
+    MaxSize:    100,
+    Interval:   axio.Duration(24 * time.Hour),
+    MaxBackups: 10,
+    MaxAge:     30,
+    Compress:   true,
+})
+
+logger, _ := axio.New(config, axio.WithOutputs(out))
+defer logger.Close()
+```
+
+`MustRotatingFile` está disponível para inicializações em que a falha deve ser fatal.
+
 ---
 
 ### Níveis de Log
@@ -373,7 +407,7 @@ logger.Info(ctx, "pedido criado",
 
 Uma anotação com o nome de uma chave que o próprio axio escreve — `timestamp`, `level`, `message`, `logger`, `caller`, `stacktrace`, `service`, `deployment`, `trace_id`, `span_id`, `error` (com `errorVerbose` e `errorCauses`), `event`, `duration_ms`, `previous_hash`, `hash` — sai com um sublinhado na frente, como `_message`, para que uma linha nunca repita uma chave.
 
-Um struct, um slice ou um mapa sai como a sua codificação JSON, em `encoding/json/v2`: slices e mapas nil como `null`, chaves de mapa em ordem, um `time.Duration` em nanossegundos e um array de bytes em base64. `omitempty` omite um campo cujo valor codifica como vazio — `""`, `null`, `[]`, `{}` — e `omitzero` omite `false`, `0` e todo outro valor zero. Uma opção de tag que a codificação não aceita, como `,string` num slice, faz o valor falhar: a linha leva `<chave>Error` no lugar dele.
+Um struct, um mapa ou um slice para o qual o zap não tem codificador próprio sai como a sua codificação JSON, em `encoding/json/v2`: slices e mapas nil como `null`, chaves de mapa ordenadas, um `time.Duration` em nanossegundos e um array de bytes em base64. Um slice de tipo básico dado como o próprio valor da anotação — `[]string`, `[]int`, `[]bool`, `[]time.Duration`, `[]time.Time`, `[]error` e afins — sai pelo zap: um nil como `[]`, e durações em milissegundos, como sai uma anotação `time.Duration`. `omitempty` omite um campo cujo valor codifica como vazio — `""`, `null`, `[]`, `{}` — e `omitzero` omite `false`, `0` e todo outro valor zero. Uma opção de tag que a codificação não aceita, como `,string` num slice, faz o valor falhar: a linha leva `<chave>Error` no lugar dele.
 
 #### With
 
@@ -453,8 +487,10 @@ dbLogger.Info(ctx, "query executada")        // logger: "db"
 
 Hooks processam entradas de log antes da escrita. Executados em ordem fixa:
 
-1. **PIIHook** - mascara dados sensíveis
+1. **PIIHook** - o que `WithPII` ou `piiEnabled` liga, que mascara dados sensíveis
 2. **Hooks customizados** - na ordem passada para `WithHooks`
+
+Um `PIIHook` passado a `WithHooks` é um dos hooks customizados e roda onde foi passado; ligue a máscara com `WithPII` para que todo hook customizado veja a entrada mascarada.
 
 Auditoria não é um hook: o hash é calculado quando a entrada é escrita, depois de todos os hooks, e por isso cobre o que eles mudaram.
 
@@ -560,18 +596,20 @@ config := axio.PIIConfig{
 
 #### Cobertura
 
-O mascaramento de PII cobre todo valor que uma linha carrega:
+O mascaramento de PII cobre todo valor que quem chama entrega a uma linha — a mensagem, o erro e cada anotação:
 
 - **A mensagem.**
 - **O erro** passado a `Warn`, `Error` ou `Event.SetError`, pela mensagem dele e, num erro que se formata sozinho, pela forma verbosa (`errorVerbose`). Um erro mascarado continua desembrulhando no original, então `errors.Is` segue funcionando nos hooks seguintes.
 - **Nomes de anotação que casam com `PIIConfig.Fields`** — o valor inteiro vira `[REDACTED]`, qualquer que seja o tipo.
 - **Strings, erros e valores `fmt.Stringer`**, pelo texto.
-- **Bytes (`[]byte`)**, que saem em base64, pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`, sejam uma anotação própria, sejam campo ou elemento de um valor estruturado.
-- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct — também é decodificada, e mascarada quando o texto decodificado tem PII. É assim que chegam um `[]byte` de texto, um array de bytes ou um tipo nomeado de slice de bytes dentro de um valor estruturado, que a codificação JSON carrega em base64. Uma string que decodifica para dados binários vira `[REDACTED]` quando algum padrão casa dentro deles, e passa como está caso contrário: nada distingue o base64 de outros dados binários de outra string com a mesma forma.
-- **JWTs e JWEs.** Um token em qualquer ponto de um texto — mensagem, query de URL, anotação — vira `[REDACTED]` inteiro: é uma credencial, e as claims podem carregar o que nenhum padrão reconhece. Uma string é tomada por token quando tem a forma de um e o header decodifica para um objeto JSON que nomeia um algoritmo (`alg`), como todo header JOSE.
+- **Bytes** — um `[]byte`, um array de bytes ou um tipo nomeado de slice de bytes, que saem em base64 — pelo texto que carregam: texto mascarado continua bytes, e bytes que não são texto UTF-8 não podem ser inspecionados e viram `[REDACTED]`, sejam uma anotação própria, sejam campo ou elemento de um valor estruturado. Um array de bytes ou um tipo nomeado de slice de bytes só é procurado num valor estruturado cujo tipo pode conter um, ou contém uma interface: codificar esse valor custa uma alocação a mais por campo ou elemento, e qualquer outro tipo não paga nada.
+- **Texto em base64.** Toda string com forma de base64, no alfabeto padrão ou no de URL, com ou sem padding — a mensagem, o erro, uma anotação, um valor dentro de mapa ou struct — também é decodificada, e mascarada quando o texto decodificado tem PII. É assim que chegam bytes de texto dentro de um valor estruturado, que a codificação JSON carrega em base64. Uma string que decodifica para dados binários vira `[REDACTED]` quando algum padrão casa dentro deles, e passa como está caso contrário: nada distingue o base64 de outros dados binários de outra string com a mesma forma.
+- **JWTs e JWEs.** Um token em qualquer ponto de um texto — mensagem, query de URL, anotação — vira `[REDACTED]` inteiro: é uma credencial, e as claims podem carregar o que nenhum padrão reconhece. Uma string é tomada por token quando tem a forma de um e o header decodifica para um objeto JSON que nomeia um algoritmo (`alg`), como todo header JOSE. Um JWS ou JWE em serialização JSON — um objeto com `payload` e sua `signature` ou `signatures`, ou com `ciphertext` e seu `iv` — vira `[REDACTED]` inteiro dentro de um valor estruturado; escrito como texto numa mensagem, passa.
 - **Falhas de codificação.** Um valor cuja codificação falha — um `MarshalJSON`, `MarshalLogObject` ou `MarshalLogArray` que devolve erro — tem esse erro mascarado onde é escrito, em `<chave>Error`, e a parte que chegou a escrever mascarada como qualquer valor.
 - **Valores estruturados** — mapas, slices, structs, ponteiros, `http.Header` — percorridos pela codificação JSON que o log escreve para eles: em cada nível, as chaves são checadas contra `Fields` e as strings contra os padrões.
 - **Valores `Annotable`** como o `HTTP`, expandidos nos seus campos antes de qualquer hook rodar.
+
+O que o próprio axio escreve — o nome do logger, os metadados do serviço, o caller e o stacktrace — sai como está, sem passar pela máscara.
 
 Um valor estruturado que precisou de máscara é escrito como a árvore JSON mascarada, com as chaves dos objetos em ordem alfabética; um que não tinha nada a mascarar mantém a forma original. Um contêiner aninhado além do limite de profundidade (padrão `32`) vira `[REDACTED]` inteiro, nunca sai sem máscara. O limite se ajusta com `axio.WithPIIMaxDepth(n)`, com `piiMaxDepth` no arquivo de config, ou com `PIIConfig.MaxDepth` ao montar um `PIIMasker` ou `PIIHook` à mão.
 
@@ -609,15 +647,15 @@ Cada linha JSON auditada termina com dois campos, sempre por último:
 | Campo           | Descrição                                                          |
 | --------------- | ------------------------------------------------------------------ |
 | `previous_hash` | Hash da linha anterior; vazio na primeira linha da cadeia          |
-| `hash`          | SHA-256 de `previous_hash` seguido de todos os bytes antes do fim  |
+| `hash`          | SHA-256 de `previous_hash` seguido de todos os bytes antes do trailer |
 
-O hash cobre exatamente o que foi escrito: mensagem, erro, stacktrace, metadados do serviço, anotações e o que os hooks customizados mudaram. Codificar, calcular o hash e escrever acontecem sob um único lock, então a ordem da cadeia é a ordem do arquivo, mesmo com várias goroutines escrevendo ao mesmo tempo.
+O hash cobre exatamente o que foi escrito: mensagem, erro, stacktrace, metadados do serviço, anotações e o que os hooks customizados mudaram. Calcular o hash, salvar o estado da cadeia e escrever acontecem sob um único lock, então a ordem da cadeia é a ordem do arquivo, mesmo com várias goroutines escrevendo ao mesmo tempo.
 
 ```json
 {"level":"info","timestamp":"2026-09-23T15:16:24.230105632Z","logger":"orders","caller":"app/main.go:26","message":"order created","order_id":"ord_8812","previous_hash":"","hash":"28d41c7b24128b63eed1ed71b77bc63e3f9b9b463af820a3171a0a1927b3f3a8"}
 ```
 
-Só saídas JSON são verificáveis. Uma saída de texto mostra os 6 primeiros caracteres do hash, para achar a mesma entrada no JSON.
+Só saídas JSON são verificáveis. A saída de texto de um Logger mostra os 6 primeiros caracteres do hash, para achar a mesma entrada no JSON; um Event auditado escreve a sua linha JSON, com o trailer, em toda saída.
 
 #### Configuração
 
@@ -633,7 +671,7 @@ Todo Logger e Event auditado com o mesmo caminho num processo estende **uma** ca
 
 Um Logger auditado precisa de uma saída JSON: só as linhas JSON carregam os hashes contra os quais o log é verificado, então `New` devolve `ErrAuditWithoutJSON` quando todas as saídas são de texto. Um Event escreve JSON em toda saída e não tem essa exigência.
 
-A primeira escrita toma um lock exclusivo num arquivo ao lado do store (`chain.json.lock`) e o segura enquanto o processo roda: um segundo processo com o mesmo caminho falha no `New` com `ErrChainStoreLocked`, em vez de bifurcar a cadeia. Ler o store, como a verificação faz, não toma lock. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
+O `New` (ou o `NewEvent`) toma um lock exclusivo num arquivo ao lado do store (`chain.json.lock`) e o segura enquanto o processo roda: um segundo processo com o mesmo store falha no `New` com `ErrChainStoreLocked`, em vez de bifurcar a cadeia. Um `FileStore` passado por `WithAuditChain` é travado do mesmo jeito, e a cadeia é então carregada dele de novo, para continuar, em vez de bifurcar, o que outro processo salvou depois que o `NewHashChain` a carregou. Ler o store, como a verificação faz, não toma lock. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
 
 #### Verificando um log
 
@@ -766,7 +804,7 @@ Axio emite métricas sobre o próprio processo de logging, permitindo monitorar 
 | `audit.records` | Counter   | -                                 | Registros de auditoria criados |
 | `hook.duration` | Histogram | `hook.name`, `error`              | Duração de execução de hooks   |
 
-`annotation` é onde o PII estava na entrada: `message`, `error`, ou a chave de uma anotação como a linha a escreve. `logger` é o nome dado com `Named`, vazio no logger raiz e nos eventos. `reason` é por que um valor foi redigido inteiro: `field` (o nome é sensível), `depth` (aninhado além do limite), `token` (um JWT ou JWE) ou `binary` (bytes que não são texto). Uma série só existe para uma combinação que aconteceu, então, com chaves de anotação fixas no código, são algumas centenas no máximo; chaves montadas em tempo de execução multiplicam esse número.
+`annotation` é onde o PII estava na entrada: `message`, `error`, ou a chave de uma anotação como a linha a escreve. `logger` é o nome dado com `Named`, vazio no logger raiz e nos eventos. `reason` é por que um valor foi redigido inteiro: `field` (o nome é sensível), `depth` (aninhado além do limite), `token` (um JWT ou JWE, compacto ou em serialização JSON) ou `binary` (bytes que não são texto). Uma série só existe para uma combinação que aconteceu, então, com chaves de anotação fixas no código, são algumas centenas no máximo; chaves montadas em tempo de execução multiplicam esse número.
 
 #### Configuração
 
@@ -782,7 +820,9 @@ logger, _ := axio.New(config, axio.WithMetrics(provider))
 //   meterVersion: 1.0.0
 ```
 
-#### Interface Metrics (customizada)
+#### Interface Metrics
+
+A interface que um hook que implementa `MetricsAware` recebe por `SetMetrics`. O `New` e o `NewEvent` montam a implementação do próprio axio a partir do `MeterProvider` dado a `WithMetrics`, e nenhuma option aceita outra: para chegar a outro backend, passe um `MeterProvider` apoiado no exporter OpenTelemetry dele.
 
 ```go
 type Metrics interface {
@@ -902,7 +942,7 @@ O comando é um módulo próprio, `github.com/pragmabits/axio/cmd/axio`, então 
 
 ### axio render
 
-Logs feitos para máquinas são JSON. O `axio render` transforma esses logs de volta no texto que uma pessoa lê no terminal: o mesmo texto que a saída `Console` escreve, byte a byte, com as cores.
+Logs feitos para máquinas são JSON. O `axio render` transforma esses logs de volta no texto que uma pessoa lê no terminal: o mesmo texto que a saída `Console` escreve, com as cores, exceto onde o JSON guarda um campo de outro jeito: uma anotação `time.Duration` aparece como os milissegundos que o JSON guarda (`1500`, onde o Console escreve `"1.5s"`), e uma `time.Time` como o timestamp do JSON (`"2026-01-02T03:04:05Z"`, onde o Console escreve `"2026-01-02T03:04:05.000Z"`). O JSON não diz de que tipo um valor era.
 
 ```bash
 kubectl logs -f deploy/checkout | axio render
@@ -1031,11 +1071,11 @@ logger.Info(ctx, "requisição concluída",
 
 | Evento               | Nível      | Campos sugeridos                              |
 | -------------------- | ---------- | --------------------------------------------- |
-| Requisição concluída | Info       | `http.*`, `request_id`, `user_id`, `trace_id` |
+| Requisição concluída | Info       | `method`, `url`, `status_code`, `latency`, `user_agent`, `client_ip` (de `axio.HTTP`), `request_id`, `user_id`, `trace_id` |
 | Erro de domínio      | Warn/Error | `+operation`, `+entity`, `+error`             |
 
 ```go
-logger.Info(ctx, "requisição finalizada", axio.Field("http", axio.HTTP{...}), axio.Field("request_id", id))
+logger.Info(ctx, "requisição concluída", axio.Field("http", axio.HTTP{...}), axio.Field("request_id", id))
 ```
 
 ### Workers e Jobs
@@ -1132,7 +1172,7 @@ if err != nil {
 ```go
 // repository
 if err != nil {
-    return fmt.Errorf("insert pedido: %w", err)
+    return fmt.Errorf("inserir pedido: %w", err)
 }
 
 // handler (limite do sistema)

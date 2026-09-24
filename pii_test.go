@@ -1051,6 +1051,115 @@ func TestPIIHook_OmitErrorVerbose(t *testing.T) {
 	assertEqual(t, fmt.Sprintf("%+v", entry.Error), "rejected")
 }
 
+// piiMetricCall is one call of Metrics.PIIMasked, with its pattern, or of
+// Metrics.PIIRedacted, with its reason.
+type piiMetricCall struct {
+	pattern   PIIPattern
+	redaction PIIRedaction
+	origin    PIIOrigin
+	count     int
+}
+
+// piiRecordingMetrics records every PIIMasked and PIIRedacted call.
+type piiRecordingMetrics struct {
+	NoopMetrics
+	calls []piiMetricCall
+}
+
+func (p *piiRecordingMetrics) PIIMasked(_ context.Context, pattern PIIPattern, origin PIIOrigin, count int) {
+	p.calls = append(p.calls, piiMetricCall{pattern: pattern, origin: origin, count: count})
+}
+
+func (p *piiRecordingMetrics) PIIRedacted(_ context.Context, reason PIIRedaction, origin PIIOrigin, count int) {
+	p.calls = append(p.calls, piiMetricCall{redaction: reason, origin: origin, count: count})
+}
+
+func TestPIIHook_ReportsEachPatternOnce(t *testing.T) {
+	hook := MustPIIHook(PIIConfig{Patterns: []PIIPattern{PatternCPF}})
+	recorded := &piiRecordingMetrics{}
+	hook.SetMetrics(recorded)
+	entry := &Entry{Logger: "orders", Message: "cpfs 123.456.789-01, 987.654.321-00 and 111.222.333-44"}
+
+	assertNoError(t, hook.Process(context.Background(), entry))
+
+	assertEqual(t, len(recorded.calls), 1)
+	assertEqual(t, recorded.calls[0], piiMetricCall{pattern: PatternCPF, origin: PIIOrigin{Annotation: "message", Logger: "orders"}, count: 3})
+}
+
+func TestPIIHook_Process_Allocations(t *testing.T) {
+	if raceDetector {
+		t.Skip("regexp keeps its matchers in a sync.Pool, which the race detector drains at random")
+	}
+	process := func(hook *PIIHook, message string) float64 {
+		entry := &Entry{Logger: "orders"}
+		return testing.AllocsPerRun(100, func() {
+			entry.Message = message
+			_ = hook.Process(context.Background(), entry)
+		})
+	}
+	withMetrics := MustPIIHook(PIIConfig{Patterns: []PIIPattern{PatternCPF}})
+	withMetrics.SetMetrics(NoopMetrics{})
+	withoutMetrics := MustPIIHook(PIIConfig{Patterns: []PIIPattern{PatternCPF}})
+
+	t.Run("clean_line_allocates_nothing", func(t *testing.T) {
+		assertEqual(t, process(withMetrics, "order created"), 0.0)
+		assertEqual(t, process(withoutMetrics, "order created"), 0.0)
+	})
+
+	t.Run("line_with_pii_counts_only_for_metrics", func(t *testing.T) {
+		counted := process(withMetrics, "customer 123.456.789-01 registered")
+		uncounted := process(withoutMetrics, "customer 123.456.789-01 registered")
+		if uncounted >= counted {
+			t.Errorf("without metrics allocated %v times, with metrics %v: want fewer without", uncounted, counted)
+		}
+	})
+}
+
+func TestPIIHook_ReportsOrigin(t *testing.T) {
+	hook := MustPIIHook(PIIConfig{Patterns: []PIIPattern{PatternCPF}, Fields: []string{"password"}, MaxDepth: 1})
+	recorded := &piiRecordingMetrics{}
+	hook.SetMetrics(recorded)
+	entry := &Entry{
+		Logger:  "orders.http",
+		Message: "customer 123.456.789-01 registered",
+		Error:   errors.New("lookup 123.456.789-01 failed"),
+		Annotations: Annotations{
+			Field("document", "123.456.789-01"),
+			Field("password", "hunter2"),
+			Field("profile", map[string]any{"password": "hunter2"}),
+			Field("session", piiToken(`{"sub":"42"}`)),
+			Field("blob", []byte{0xff, 0xfe}),
+			Field("request", piiRequest{Body: []byte{0xff, 0xfe}}),
+			Field("customer", map[string]any{"address": map[string]any{"city": "Recife"}}),
+		},
+	}
+
+	assertNoError(t, hook.Process(context.Background(), entry))
+
+	at := func(annotation string) PIIOrigin { return PIIOrigin{Annotation: annotation, Logger: "orders.http"} }
+	want := []piiMetricCall{
+		{pattern: PatternCPF, origin: at("message"), count: 1},
+		{pattern: PatternCPF, origin: at("error"), count: 1},
+		{pattern: PatternCPF, origin: at("document"), count: 1},
+		{redaction: RedactionField, origin: at("password"), count: 1},
+		{redaction: RedactionField, origin: at("profile"), count: 1},
+		{redaction: RedactionToken, origin: at("session"), count: 1},
+		{redaction: RedactionBinary, origin: at("blob"), count: 1},
+		{redaction: RedactionBinary, origin: at("request"), count: 1},
+		{redaction: RedactionDepth, origin: at("customer"), count: 1},
+	}
+	got := make(map[piiMetricCall]int)
+	for _, call := range recorded.calls {
+		got[call]++
+	}
+	assertEqual(t, len(recorded.calls), len(want))
+	for _, call := range want {
+		if got[call] != 1 {
+			t.Errorf("missing %+v; recorded %+v", call, recorded.calls)
+		}
+	}
+}
+
 func TestPIIHook_MasksEveryValueTheLogWrites(t *testing.T) {
 	const cpf = "123.456.789-01"
 	customer := piiCustomer{Name: "alice", Document: cpf, Password: "hunter2"}

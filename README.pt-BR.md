@@ -172,7 +172,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `OmitCaller`          | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
 | `AgentMode`           | `bool`           | Não         | `false`                    | `true`, `false`                        | Se `true`, outputs devem ser stdout+json |
 | `Outputs`             | `[]OutputConfig` | Não         | auto                       | ver OutputConfig                       | Validados individualmente                |
-| `PIIEnabled`          | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
+| `PIIDisabled`         | `bool`           | Não         | `false` (máscara ligada)   | `true`, `false`                        | -                                        |
 | `PIIPatterns`         | `[]PIIPattern`   | Não         | `[cpf, cnpj, credit_card]` | ver tabela PII                         | -                                        |
 | `PIIFields`           | `[]string`       | Não         | `DefaultSensitiveFields()` | qualquer                               | -                                        |
 | `PIIMaxDepth`         | `int`            | Não         | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` se negativo      |
@@ -257,7 +257,7 @@ outputs:
       compress: true
       interval: 24h
 
-piiEnabled: true
+piiDisabled: false
 piiPatterns:
   - cpf
   - cnpj
@@ -487,10 +487,10 @@ dbLogger.Info(ctx, "query executada")        // logger: "db"
 
 Hooks processam entradas de log antes da escrita. Executados em ordem fixa:
 
-1. **PIIHook** - o que `WithPII` ou `piiEnabled` liga, que mascara dados sensíveis
+1. **PIIHook** - o que todo logger roda, a menos que `WithPIIDisabled` ou `piiDisabled` o desligue, e que mascara dados sensíveis
 2. **Hooks customizados** - na ordem passada para `WithHooks`
 
-Um `PIIHook` passado a `WithHooks` é um dos hooks customizados e roda onde foi passado; ligue a máscara com `WithPII` para que todo hook customizado veja a entrada mascarada.
+Um `PIIHook` passado a `WithHooks` é um dos hooks customizados e roda onde foi passado: com `WithPIIDisabled`, isso mascara o que um hook customizado anterior acrescenta. Com a máscara padrão ligada, todo hook customizado vê a entrada mascarada.
 
 Auditoria não é um hook: o hash é calculado quando a entrada é escrita, depois de todos os hooks, e por isso cobre o que eles mudaram.
 
@@ -560,8 +560,13 @@ Campos cujos nomes contenham estes termos são automaticamente redigidos para `[
 
 #### Configuração
 
+Todo `Logger` e todo `Event` mascaram por padrão, com os padrões de CPF, CNPJ e cartão de crédito e os campos sensíveis acima, venha o `Config` de `DefaultConfig`, de um literal ou de um arquivo. A máscara varre cada entrada: uma linha custa cerca de 1,3× numa mensagem simples e até cerca de 2,8× numa struct ou num erro. Um serviço que não loga dado pessoal pode desligá-la.
+
 ```go
-// Via Options (recomendado)
+// Ligada por padrão
+logger, _ := axio.New(config)
+
+// Outros padrões ou campos; os padrões listados substituem os default
 logger, _ := axio.New(config,
     axio.WithPII(
         []axio.PIIPattern{axio.PatternCPF, axio.PatternEmail},
@@ -569,13 +574,16 @@ logger, _ := axio.New(config,
     ),
 )
 
-// Via Hook direto
+// Desligada
+logger, _ := axio.New(config, axio.WithPIIDisabled())
+
+// Como hook customizado, mascarando o que um hook anterior acrescenta
 hook := axio.MustPIIHook(axio.DefaultPIIConfig())
-logger, _ := axio.New(config, axio.WithHooks(hook))
+logger, _ := axio.New(config, axio.WithPIIDisabled(), axio.WithHooks(enricher, hook))
 
 // Via Config (arquivo YAML)
-// piiEnabled: true
 // piiPatterns: [cpf, cnpj, email]
+// piiDisabled: true   # desliga a máscara
 ```
 
 #### Padrões Customizados
@@ -914,10 +922,8 @@ event.SetError(err,
 Wide events suportam as mesmas Options do logger padrão:
 
 ```go
-// Com mascaramento de PII
-event, _ := axio.NewEvent("user_registration", config,
-    axio.WithPII(nil, nil),
-)
+// Com mascaramento de PII, ligado por padrão como no logger
+event, _ := axio.NewEvent("user_registration", config)
 
 // Com hash chain de auditoria
 event, _ := axio.NewEvent("access_grant", config,
@@ -1014,7 +1020,7 @@ Sempre passe `context.Context` e adicione identificadores:
 
 ### 4. PII e dados sensíveis
 
-- Use `PIIHook` como defesa padrão
+- Mantenha a máscara de PII ligada: ela é o padrão, e `WithPIIDisabled` é para serviços que não logam dado pessoal
 - Nunca logue: senha, token, segredo, chave privada
 - Se precisar do payload, logue hash ou ID, não o conteúdo
 

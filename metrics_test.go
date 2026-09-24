@@ -2,6 +2,7 @@ package axio
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -193,7 +194,33 @@ func TestOtelMetrics_ConcurrentKeys(t *testing.T) {
 	}
 	group.Wait()
 
-	assertEqual(t, len(*metrics.levels.options.Load()), len(levels))
-	assertEqual(t, len(*metrics.patterns.options.Load()), len(patterns))
-	assertEqual(t, len(*metrics.hooks.options.Load()), 2)
+	assertEqual(t, keyCount(&metrics.levels), len(levels))
+	assertEqual(t, keyCount(&metrics.patterns), len(patterns))
+	assertEqual(t, keyCount(&metrics.hooks), 2)
+}
+
+// keyCount returns how many keys cache holds options for, promoted or not.
+func keyCount[K comparable, O any](cache *optionCache[K, O]) int {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	count := len(cache.recent)
+	if promoted := cache.promoted.Load(); promoted != nil {
+		count += len(*promoted)
+	}
+	return count
+}
+
+func TestOptionCache_CopiesGrowLinearlyWithKeys(t *testing.T) {
+	cache := optionCache[int, int]{build: func(key int) []int { return []int{key} }}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for key := range 10_000 {
+		cache.get(key)
+	}
+	runtime.ReadMemStats(&after)
+
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 16<<20 {
+		t.Errorf("10000 keys allocated %d bytes, want the keys and a linear sum of copies", allocated)
+	}
 }

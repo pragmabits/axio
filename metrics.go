@@ -256,37 +256,62 @@ type hookOutcome struct {
 
 // optionCache holds the measurement options of each key's attributes, built the
 // first time the key is seen: building an attribute set costs more than the
-// measurement it is passed to. Reads take no lock. A new key copies the map,
-// which happens only as many times as there are keys — levels, patterns, hooks.
+// measurement it is passed to. A promoted key is read from a typed map without
+// a lock. A new key waits in recent, read under the mutex, until the misses
+// outnumber the promoted keys, and then recent is promoted into a new map. A
+// promotion copies the map after at least as many misses as it has keys, so
+// the copies cost a constant per miss however many keys arrive.
 type optionCache[K comparable, O any] struct {
-	options atomic.Pointer[map[K][]O]
-	mutex   sync.Mutex
-	build   func(K) []O
+	promoted atomic.Pointer[map[K][]O]
+	mutex    sync.Mutex
+	recent   map[K][]O
+	misses   int
+	build    func(K) []O
 }
 
 // get returns the options for key, building them the first time.
 func (o *optionCache[K, O]) get(key K) []O {
-	if options := o.options.Load(); options != nil {
-		if found, ok := (*options)[key]; ok {
+	if promoted := o.promoted.Load(); promoted != nil {
+		if found, ok := (*promoted)[key]; ok {
 			return found
 		}
 	}
-	return o.add(key)
+	return o.miss(key)
 }
 
-// add builds the options for key into a copy of the map, unless a concurrent
-// caller already has.
-func (o *optionCache[K, O]) add(key K) []O {
+// miss returns the options for a key not yet promoted, building them into
+// recent the first time, and promotes recent once the misses outnumber the
+// promoted keys.
+func (o *optionCache[K, O]) miss(key K) []O {
 	o.mutex.Lock()
 	defer o.mutex.Unlock()
-	next := make(map[K][]O)
-	if current := o.options.Load(); current != nil {
-		if found, ok := (*current)[key]; ok {
-			return found
-		}
-		maps.Copy(next, *current)
+	var promoted map[K][]O
+	if current := o.promoted.Load(); current != nil {
+		promoted = *current
 	}
-	next[key] = o.build(key)
-	o.options.Store(&next)
-	return next[key]
+	if found, ok := promoted[key]; ok {
+		return found
+	}
+	found, ok := o.recent[key]
+	if !ok {
+		found = o.build(key)
+		if o.recent == nil {
+			o.recent = make(map[K][]O)
+		}
+		o.recent[key] = found
+	}
+	o.misses++
+	if o.misses > len(promoted) {
+		o.promote(promoted)
+	}
+	return found
+}
+
+// promote replaces the promoted map with one holding its keys and recent's.
+func (o *optionCache[K, O]) promote(promoted map[K][]O) {
+	next := make(map[K][]O, len(promoted)+len(o.recent))
+	maps.Copy(next, promoted)
+	maps.Copy(next, o.recent)
+	o.promoted.Store(&next)
+	o.recent, o.misses = nil, 0
 }

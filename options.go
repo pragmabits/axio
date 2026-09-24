@@ -253,6 +253,11 @@ func WithAudit(storePath string) Option {
 // [ChainStore] other than a local file. Loggers and Events given the same
 // chain extend one chain.
 //
+// A chain over a [FileStore] is locked the way [WithAudit] locks its store:
+// [New] or [NewEvent] takes the store's lock and loads the chain from it again,
+// so a store another process holds fails there with [ErrChainStoreLocked], and
+// state another process saved after [NewHashChain] loaded it is continued.
+//
 // Returns [ErrNilAuditChain] if chain is nil.
 //
 // Example:
@@ -280,7 +285,8 @@ func WithAuditChain(chain *HashChain) Option {
 //
 // Emitted metrics include:
 //   - logs.total: Log counter by level
-//   - pii.masked: Masked PII counter by pattern
+//   - pii.masked: Masked PII counter by pattern and origin
+//   - pii.redacted: Counter of values redacted whole, by reason and origin
 //   - audit.records: Audit records counter
 //   - hook.duration: Hook duration histogram
 //

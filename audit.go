@@ -40,6 +40,12 @@ type ChainStore interface {
 	Load() (sequence uint64, lastHash string, err error)
 }
 
+// storeClaimer is a [ChainStore] one process holds at a time, which can be
+// claimed before its first Save, as [FileStore] is.
+type storeClaimer interface {
+	claim() error
+}
+
 // HashChain links audited log lines into a tamper-evident chain.
 //
 // Each line's hash is the SHA-256 of the previous line's hash followed by the
@@ -181,6 +187,29 @@ func (c *HashChain) appendAndWrite(data []byte, write func(previousHash, hash st
 	return write(previousHash, hash)
 }
 
+// claimStore claims a store that one process holds at a time and loads the
+// chain from it again, as [WithAudit] claims before it loads: a store another
+// process holds fails here, in New, and state another process saved after the
+// chain was loaded is continued rather than forked. The chain is locked while
+// it loads, so a line this process is writing is never loaded over.
+func (c *HashChain) claimStore() error {
+	claimer, ok := c.store.(storeClaimer)
+	if !ok {
+		return nil
+	}
+	if err := claimer.claim(); err != nil {
+		return err
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	sequence, lastHash, err := c.store.Load()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrLoadChainState, err)
+	}
+	c.sequence, c.lastHash = sequence, lastHash
+	return nil
+}
+
 // VerifyLines reads audited JSON lines from reader and checks each against the
 // one before it, starting from previousHash, and returns the hash of the last
 // line: the previousHash of whatever comes next.
@@ -229,9 +258,10 @@ func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err er
 
 // FileStore persists the hash chain state in a local JSON file.
 //
-// The first [FileStore.Save] takes an exclusive lock on a file beside the
-// store, the path with ".lock" appended, and holds it for the life of the
-// process: two processes saving to one store would each extend the chain from
+// The store takes an exclusive lock on a file beside it, the path with ".lock"
+// appended — in [New] or [NewEvent] when a Logger or Event audits through it,
+// or at the first [FileStore.Save] when it is used on its own — and holds it
+// for the life of the process: two processes saving to one store would each extend the chain from
 // the same last hash and fork it, so the second fails with
 // [ErrChainStoreLocked]. [FileStore.Load] takes no lock, so a store in use can
 // still be read and verified. The lock file stays on disk; the lock ends with
@@ -554,6 +584,9 @@ func buildAuditChain(config Config) (*HashChain, error) {
 	case !config.Audit.Enabled:
 		return nil, nil
 	case config.auditChain != nil:
+		if err := config.auditChain.claimStore(); err != nil {
+			return nil, err
+		}
 		return config.auditChain, nil
 	default:
 		return sharedChain(config.Audit.StorePath)

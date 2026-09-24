@@ -66,7 +66,6 @@ logger, err := axio.New(config)
 // With options
 logger, err := axio.New(config,
     axio.WithOutputs(axio.Stdout(axio.FormatJSON)),
-    axio.WithPII(nil, nil),
     axio.WithAudit("/var/lib/axio/chain.json"),
     axio.WithTracer(axio.Otel()),
 )
@@ -132,11 +131,11 @@ event.SetError(err, axio.Field("error_code", "declined"))
 ```
 
 ### PII Masking
-- Built-in patterns: `PatternCPF`, `PatternCNPJ`, `PatternCreditCard`, `PatternEmail`, `PatternPhone`, `PatternPhoneNoDDD`; `WithPII(nil, nil)` turns on only the first three, so list the others explicitly
+- Built-in patterns: `PatternCPF`, `PatternCNPJ`, `PatternCreditCard`, `PatternEmail`, `PatternPhone`, `PatternPhoneNoDDD`; the default masking uses only the first three, so list the others with `WithPII`, whose patterns replace the default ones
 - Custom patterns via `CustomPII{Name, Pattern, Mask}`
 - Sensitive field redaction (password, token, api_key, etc.)
 - Covers what the caller hands a line — the message, the error, strings, errors, Stringers, `[]byte`, byte arrays and named byte-slice types (non-text bytes become `[REDACTED]`, inside structs too), base64 strings (decoded and checked), JWTs and JWEs (redacted whole, compact in any text or in JSON serialization inside a structured value), the errors of values that fail to encode and structured values (maps, slices, structs) at every depth up to the limit (32, set with `WithPIIMaxDepth` or `piiMaxDepth`); deeper containers become `[REDACTED]`. The logger name, service metadata, caller and stack trace are written as they are
-- `WithPII(patterns, fields)`, whose hook runs before every custom hook. A `PIIHook` passed through `WithHooks` is a custom hook and runs in the order passed
+- On by default in every Logger and Event, whether the `Config` comes from `DefaultConfig`, a literal or a file. `WithPII(patterns, fields)` configures it and `WithPIIDisabled()` (or `piiDisabled: true`) turns it off. Its hook runs before every custom hook. A `PIIHook` passed through `WithHooks` is a custom hook and runs in the order passed
 
 ### Audit Hash Chain
 - SHA256 hash chain for tamper-proof logs (LGPD, SOX, PCI-DSS)

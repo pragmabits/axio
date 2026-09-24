@@ -89,7 +89,7 @@ type Config struct {
     OmitCaller       bool        // write lines without the caller
     Outputs          []OutputConfig
     AgentMode        bool
-    PIIEnabled       bool
+    PIIDisabled      bool        // masking is on unless true
     PIIPatterns      []PIIPattern
     PIICustomPatterns []CustomPII
     PIIFields        []string
@@ -133,6 +133,7 @@ func WithAgentMode() Option
 func WithOmitCaller() Option
 func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
+func WithPIIDisabled() Option
 func WithPIIMaxDepth(depth int) Option
 func WithPIIOmitErrorVerbose() Option
 func WithAudit(storePath string) Option
@@ -401,9 +402,10 @@ type MetricsAware interface {
 func NoopHook() Hook
 ```
 
-The chain runs in a fixed order: the `PIIHook` that `WithPII` or `piiEnabled`
-turns on, then the hooks passed to `WithHooks`, in the order passed, so custom
-hooks observe the already-masked entry. A `PIIHook` passed to `WithHooks` is one
+The chain runs in a fixed order: the `PIIHook` every logger runs unless
+`WithPIIDisabled` or `piiDisabled` turns it off, then the hooks passed to
+`WithHooks`, in the order passed, so custom hooks observe the already-masked
+entry. A `PIIHook` passed to `WithHooks` is one
 of those hooks and runs where it was passed.
 Auditing is not a hook: the hash is computed when the entry is written,
 after every hook, so it covers what the hooks changed. The chain itself is

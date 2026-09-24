@@ -16,7 +16,7 @@ Axio supports configuration via files (YAML, JSON, TOML) and programmatic functi
 Config (file) → Options (override) → Defaults (fill empty) → Validate
 
 ## Key Config Fields
-ServiceName, ServiceVersion, Environment, InstanceID, Level, CallerSkip, Outputs, AgentMode, PIIEnabled, PIIPatterns, PIICustomPatterns, PIIFields, Audit, TracerType, Metrics
+ServiceName, ServiceVersion, Environment, InstanceID, Level, CallerSkip, Outputs, AgentMode, PIIDisabled, PIIPatterns, PIICustomPatterns, PIIFields, Audit, TracerType, Metrics
 
 ## Usage
 Use `/axio` command for detailed configuration guidance.

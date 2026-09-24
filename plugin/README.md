@@ -1,69 +1,39 @@
-# axio Plugin
+# axio plugin
 
-Claude Code plugin providing deep expertise on the **axio** Go structured logging library.
-
-## Features
-
-- **Full API coverage** — guidance on every axio feature: logger creation, configuration, outputs, PII masking, audit chains, OpenTelemetry tracing/metrics, wide events, annotations, hooks, and custom extensions
-- **Autonomous migration** — scans codebases for logging usage (stdlib log, slog, logrus, zerolog, zap, apex/log), produces migration plans, and executes guided replacements
-- **Runtime source reading** — reads axio source code directly for always-current API knowledge, with bundled docs as fallback
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/axio` | General entry point for any axio question or task |
-| `/axio-migrate` | Scan a codebase and plan migration to axio |
-
-## Agents
-
-| Agent | Model | Purpose |
-|-------|-------|---------|
-| `axio` | sonnet | Expert on all axio features — API usage, config, extensions, debugging |
-| `migrate` | sonnet | Autonomous codebase scanner and migration executor |
+Claude Code plugin that teaches how to use **axio**, the Go structured logging library.
 
 ## Skills
 
-| Skill | Triggers |
-|-------|----------|
-| `core-api` | Logger interface, axio.New, levels, environments, formats |
-| `configuration` | LoadConfig, YAML/JSON/TOML, functional options, config precedence |
-| `outputs` | Console, Stdout, File, RotatingFile, rotation, agent mode |
-| `pii-masking` | PIIMasker, PIIHook, CPF/CNPJ/email/phone patterns, CustomPII |
-| `audit` | Hash chain, Verify, WithAudit, WithAuditChain, FileStore, ChainStore, compliance |
-| `tracing-metrics` | OpenTelemetry, trace_id/span_id, Metrics interface |
-| `migration-patterns` | Migrating from log, slog, logrus, zerolog, zap, apex/log |
-| `custom-extensions` | Implementing Output, Hook, ChainStore, Tracer, Metrics, Annotable |
+| Skill | Loaded when |
+|-------|-------------|
+| `axio` | Any work with axio. It is the entry point and covers the API end to end: creating a logger, the level methods, annotations, configuration, outputs and rotation, PII masking and its defaults, the audit chain, wide events, hooks and extensions, tracing and metrics, and the `axio` command. It tells the agent to check signatures with `go doc` against the version the project's `go.mod` requires. |
+| `migration` | Moving code from stdlib `log`, `log/slog`, logrus, zerolog, zap or apex/log. It says what to settle with the user first (PII masking on by default, Go 1.27, the output format), then gives the call and level mapping and the package-by-package rules. |
+
+## Installation
+
+From the pragmatic marketplace:
+
+```bash
+claude plugin marketplace add pragmabits/pragmarketplace
+claude plugin install axio@pragmatic
+```
+
+From a clone of axio, for one session:
+
+```bash
+claude --plugin-dir ./plugin
+```
 
 ## Structure
 
 ```
 plugin/
 ├── .claude-plugin/plugin.json
-├── agents/
-│   ├── axio.md
-│   └── migrate.md
-├── commands/
-│   ├── axio.md
-│   └── axio-migrate.md
 ├── skills/
-│   ├── core-api/SKILL.md
-│   ├── configuration/SKILL.md
-│   ├── outputs/SKILL.md
-│   ├── pii-masking/SKILL.md
-│   ├── audit/SKILL.md
-│   ├── tracing-metrics/SKILL.md
-│   ├── migration-patterns/SKILL.md
-│   └── custom-extensions/SKILL.md
-├── docs/
-│   └── api-reference.md
+│   ├── axio/SKILL.md
+│   └── migration/SKILL.md
+├── .stash/
 └── README.md
 ```
 
-## Installation
-
-```bash
-claude --plugin-dir /path/to/axio/plugin
-```
-
-Or add to your project's `.claude-plugin/` configuration.
+`.stash/` holds the agents, the `/axio` and `/axio-migrate` commands and the API reference the plugin shipped up to 0.3.0. Claude Code does not load them. `.stash/README.md` says what they need before they come back.

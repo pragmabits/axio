@@ -61,8 +61,12 @@ func pointToHelp(command *cobra.Command, err error) error {
 	return fmt.Errorf("%w\nRun '%s --help' for usage", err, command.CommandPath())
 }
 
-// version returns the module version axio was built from: the release tag
-// when installed with go install, "(devel)" when built from a checkout.
+// version returns the module version the go command recorded in the binary.
+// Installed with go install, it is the release, without the cmd/axio/ tag
+// prefix: v0.1.0 for the tag cmd/axio/v0.1.0. Built from a checkout, it is the
+// version git gives: the release at a clean tagged commit, a pseudo-version
+// after it, with "+dirty" for uncommitted changes. A build that records no
+// version, as go run does, reports "(devel)".
 func version() string {
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
 		return info.Main.Version

@@ -352,6 +352,28 @@ func TestRotationConfig_Enabled(t *testing.T) {
 }
 
 func TestRotatingFile(t *testing.T) {
+	maxSize := func(t *testing.T, rotation RotationConfig) int {
+		t.Helper()
+		output, err := RotatingFile(tempFile(t, "sized.log"), FormatJSON, rotation)
+		assertNoError(t, err)
+		defer func() { assertNoError(t, output.Close()) }()
+		file, ok := output.(*fileOutput)
+		if !ok {
+			t.Fatalf("expected a *fileOutput, got %T", output)
+		}
+		return file.lumberjack.MaxSize
+	}
+
+	t.Run("zero_max_size_never_rotates_by_size", func(t *testing.T) {
+		if size := maxSize(t, RotationConfig{Interval: Duration(time.Hour)}); size < 1<<30 {
+			t.Errorf("lumberjack got MaxSize %d MB, want a size no file reaches; 0 is its 100 MB default", size)
+		}
+	})
+
+	t.Run("max_size_is_kept", func(t *testing.T) {
+		assertEqual(t, maxSize(t, RotationConfig{MaxSize: 50}), 50)
+	})
+
 	t.Run("creates_with_size_rotation", func(t *testing.T) {
 		path := tempFile(t, "rotating.log")
 

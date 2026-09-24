@@ -2,6 +2,7 @@ package axio
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,11 @@ import (
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+// unlimitedMegabytes is the size lumberjack is given for a [RotationConfig]
+// with no MaxSize: it reads zero as 100 MB, so no size-based rotation takes a
+// size no file reaches, the largest whose bytes fit an int64.
+const unlimitedMegabytes = int(min(int64(math.MaxInt), math.MaxInt64>>20))
 
 // OutputType defines the log output destination.
 type OutputType string
@@ -52,6 +58,7 @@ func (o *OutputType) UnmarshalText(text []byte) error {
 //   - [Console]: writes to stderr (development)
 //   - [Stdout]: writes to stdout (containers)
 //   - [File]: writes to local file
+//   - [RotatingFile]: writes to a local file, rotated by size, by time or both
 //
 // Example:
 //
@@ -225,9 +232,13 @@ func MustFile(path string, format Format) Output {
 //	    Interval:   axio.Duration(24 * time.Hour),
 //	})
 func RotatingFile(path string, format Format, rotation RotationConfig) (Output, error) {
+	maxSize := rotation.MaxSize
+	if maxSize == 0 {
+		maxSize = unlimitedMegabytes
+	}
 	lumber := &lumberjack.Logger{
 		Filename:   path,
-		MaxSize:    rotation.MaxSize,
+		MaxSize:    maxSize,
 		MaxAge:     rotation.MaxAge,
 		MaxBackups: rotation.MaxBackups,
 		Compress:   rotation.Compress,

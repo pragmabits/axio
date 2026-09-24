@@ -81,7 +81,7 @@ func timeRotation(ctx context.Context) {
 	},
 		axio.WithOutputs(
 			axio.MustRotatingFile(testFile, axio.FormatJSON, axio.RotationConfig{
-				MaxSize:    100, // large enough to never trigger size rotation
+				// MaxSize left at zero: only the interval rotates.
 				MaxBackups: 3,
 				Compress:   false,
 				Interval:   axio.Duration(200 * time.Millisecond),

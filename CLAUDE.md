@@ -30,6 +30,11 @@ the library's `go.mod`. A local `go.work`, which `.gitignore` keeps out of git,
 joins the two; create it once per clone. `./...` from the root does not reach
 `cmd/axio`, hence the second pattern.
 
+The `Makefile` wraps these: `make help` lists the targets and `make check` runs
+every gate (format, vet, lint, tests, race detector, vulnerabilities). A target
+creates the `go.work` when missing and installs the tools it runs, pinned, into
+`bin/tools`; Go, git and the C compiler are only checked.
+
 ```bash
 go work init . ./cmd/axio             # Once per clone: join the library and the command
 go build ./... ./cmd/axio/...         # Build
@@ -59,6 +64,7 @@ command at it, or `go install .../cmd/axio@latest` builds against the old one:
 
 ```bash
 cd cmd/axio && GOWORK=off go get github.com/pragmabits/axio@<commit> && GOWORK=off go mod tidy
+make pin-library LIBRARY_VERSION=<version>   # the same, through the Makefile
 ```
 
 ## Architecture

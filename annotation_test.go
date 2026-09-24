@@ -1,6 +1,9 @@
 package axio
 
 import (
+	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -30,6 +33,28 @@ func TestAnnotation_Data(t *testing.T) {
 	})
 	t.Run("uintptr", func(t *testing.T) {
 		assertEqual(t, Field("address", uintptr(7)).Data(), any(uint64(7)))
+	})
+
+	slices := []struct {
+		name  string
+		value any
+	}{
+		{"ints", []int{1, 2}},
+		{"strings", []string{"a", "b"}},
+		{"bools", []bool{true}},
+		{"durations", []time.Duration{time.Second}},
+		{"times", []time.Time{moment}},
+		{"errors", []error{errors.New("declined")}},
+	}
+	for _, slice := range slices {
+		t.Run(slice.name+"_as_given", func(t *testing.T) {
+			data := Field("values", slice.value).Data()
+			assertEqual(t, reflect.TypeOf(data), reflect.TypeOf(slice.value))
+			assertEqual(t, fmt.Sprint(data), fmt.Sprint(slice.value))
+		})
+	}
+	t.Run("array_marshaler_as_given", func(t *testing.T) {
+		assertEqual(t, Field("items", piiFailingArray{item: "x"}).Data(), any(piiFailingArray{item: "x"}))
 	})
 }
 
@@ -93,6 +118,11 @@ func TestAnnotation_Value(t *testing.T) {
 		value, ok := Field("at", moment).Value[time.Time]()
 		assertEqual(t, ok, true)
 		assertEqual(t, value.Equal(moment), true)
+	})
+	t.Run("int_slice_as_int_slice", func(t *testing.T) {
+		value, ok := Field("ids", []int{1, 2}).Value[[]int]()
+		assertEqual(t, ok, true)
+		assertEqual(t, fmt.Sprint(value), "[1 2]")
 	})
 }
 

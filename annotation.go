@@ -17,7 +17,7 @@ import (
 // The internal storage wraps a zapcore.Field directly to avoid a second
 // type-switch on every log call. The field is unexported and unreachable
 // through any method or signature on the public API; downstream consumers
-// interact only via [Annotation.Name] and [Annotation.Data]. This is a
+// interact only via [Annotation.Name], [Annotation.Data] and [Annotation.Value]. This is a
 // deliberate exception to the project rule that axio's public types use
 // only axio-native types — the alternative would pay a per-call translation
 // cost with no user-visible reward (godoc already hides unexported fields).
@@ -89,6 +89,8 @@ func (a Annotation) Data() any {
 		return time.Duration(a.field.Integer)
 	case zapcore.TimeType:
 		return a.moment()
+	case zapcore.ArrayMarshalerType:
+		return givenSlice(a.field.Interface)
 	default:
 		return a.field.Interface
 	}
@@ -284,3 +286,19 @@ func setNumber[N int64 | uint64 | float64](can func() bool, overflows func(N) bo
 	set(number)
 	return true
 }
+
+// givenSlice returns a slice that zap keeps in one of its own array types — a
+// []int as its ints, a []string as its stringArray — as the slice it was
+// given, and any other value as it is. The reflect.Value names the boundary
+// where zap's unexported types meet the caller's.
+func givenSlice(value any) any {
+	array := reflect.ValueOf(value)
+	if array.Kind() != reflect.Slice || array.Type().PkgPath() != zapArrayPackage {
+		return value
+	}
+	return array.Convert(reflect.SliceOf(array.Type().Elem())).Interface()
+}
+
+// zapArrayPackage is the package of the array types zap.Any keeps a slice of a
+// basic type in.
+var zapArrayPackage = reflect.TypeOf(zap.Bools("", nil).Interface).PkgPath()

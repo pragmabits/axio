@@ -10,7 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"go.opentelemetry.io/otel/metric"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // MetricsConfig configures metrics collection via OpenTelemetry.

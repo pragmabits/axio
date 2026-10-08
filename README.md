@@ -543,14 +543,16 @@ In environments with centralized logs, exposed PII represents risk of:
 
 #### Built-in Patterns
 
-| Pattern         | Constant            | Detected formats                | Mask                  |
-| --------------- | ------------------- | ------------------------------- | --------------------- |
-| CPF             | `PatternCPF`        | `123.456.789-01`, `12345678901` | `***.***.***-**`      |
-| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`            | `**.***.***/****-**`  |
-| Credit Card     | `PatternCreditCard` | `1234-5678-9012-3456`           | `****-****-****-****` |
-| Email           | `PatternEmail`      | `user@domain.com`               | `***@***.***`         |
-| Phone           | `PatternPhone`      | `(11) 99999-9999`               | `(**) *****-****`     |
-| Phone (no area) | `PatternPhoneNoDDD` | `99999-9999`                    | `*****-****`          |
+| Pattern         | Constant            | Detected formats                    | Mask                  |
+| --------------- | ------------------- | ----------------------------------- | --------------------- |
+| CPF             | `PatternCPF`        | `123.456.789-01`, `12345678901`     | `***.***.***-**`      |
+| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`                | `**.***.***/****-**`  |
+| Credit Card     | `PatternCreditCard` | `1234-5678-9012-3456`               | `****-****-****-****` |
+| Email           | `PatternEmail`      | `user@domain.com`                   | `***@***.***`         |
+| Phone           | `PatternPhone`      | `(11) 99999-9999`, `+5511999999999` | `(**) *****-****`     |
+| Phone (no area) | `PatternPhoneNoDDD` | `99999-9999`                        | `*****-****`          |
+
+A number glued to a label is still masked: `cpf12345678901` becomes `cpf***.***.***-**`. Digits glued to more digits, as in a 13-digit timestamp, or inside a hex identifier — a run of hex digits with a letter among them, such as a trace id or a hash — are not taken for PII, so a label made only of hex letters, as in `cafe12345678901`, leaves its number unmasked.
 
 A UUID is not PII: the built-in patterns never match inside a whole UUID — 32 hex digits in groups of 8-4-4-4-12 carrying the RFC 9562 version and variant, or the nil UUID, with no hex digit on either side — so an identifier is never masked as a card or a phone number. PII glued to a UUID is still masked, and custom patterns read the text as it is.
 

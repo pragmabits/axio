@@ -39,6 +39,42 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			want:     "CPF: ***.***.***-**",
 		},
 		{
+			name:     "cpf_glued_to_a_label",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "cpf12345678901",
+			want:     "cpf***.***.***-**",
+		},
+		{
+			name:     "cpf_with_punctuation_glued_to_a_label",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "cpf123.456.789-01",
+			want:     "cpf***.***.***-**",
+		},
+		{
+			name:     "cpf_glued_to_a_label_after_it",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "12345678901cpf",
+			want:     "***.***.***-**cpf",
+		},
+		{
+			name:     "digits_of_a_hex_identifier_are_not_a_cpf",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "sha 4bf92f12345678901d0e0e4736",
+			want:     "sha 4bf92f12345678901d0e0e4736",
+		},
+		{
+			name:     "digits_glued_to_more_digits_are_not_a_cpf",
+			patterns: []PIIPattern{PatternCPF},
+			input:    "id 123456789012",
+			want:     "id 123456789012",
+		},
+		{
+			name:     "cnpj_glued_to_a_label",
+			patterns: []PIIPattern{PatternCNPJ},
+			input:    "cnpj12345678000190",
+			want:     "cnpj**.***.***/****-**",
+		},
+		{
 			name:     "cnpj_with_punctuation",
 			patterns: []PIIPattern{PatternCNPJ},
 			input:    "CNPJ: 12.345.678/0001-90",
@@ -75,6 +111,12 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			want:     "Card: ****-****-****-****",
 		},
 		{
+			name:     "credit_card_glued_to_a_label",
+			patterns: []PIIPattern{PatternCreditCard},
+			input:    "card4111111111111111",
+			want:     "card****-****-****-****",
+		},
+		{
 			name:     "email",
 			patterns: []PIIPattern{PatternEmail},
 			input:    "Email: user@example.com.br",
@@ -87,10 +129,64 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			want:     "Tel: (**) *****-****",
 		},
 		{
+			name:     "phone_without_separators",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "Tel: 11999998888",
+			want:     "Tel: (**) *****-****",
+		},
+		{
+			name:     "phone_with_trunk_prefix",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "Tel: (011) 99999-8888",
+			want:     "Tel: (**) *****-****",
+		},
+		{
+			name:     "phone_with_country_code",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "Tel: +5511999998888",
+			want:     "Tel: (**) *****-****",
+		},
+		{
+			name:     "phone_with_country_code_and_spaces",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "Tel: +55 (11) 99999-8888",
+			want:     "Tel: (**) *****-****",
+		},
+		{
+			name:     "phone_glued_to_a_label",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "tel11999998888",
+			want:     "tel(**) *****-****",
+		},
+		{
+			name:     "phone_glued_to_an_underscore",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "user_11999998888",
+			want:     "user_(**) *****-****",
+		},
+		{
+			name:     "digits_of_a_longer_number_are_not_a_phone",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "ts 1728425678123",
+			want:     "ts 1728425678123",
+		},
+		{
+			name:     "digits_inside_hex_are_not_a_phone",
+			patterns: []PIIPattern{PatternPhone},
+			input:    "trace 1234567890abcdef1234567890abcdef",
+			want:     "trace 1234567890abcdef1234567890abcdef",
+		},
+		{
 			name:     "phone_no_ddd",
 			patterns: []PIIPattern{PatternPhoneNoDDD},
 			input:    "Tel: 99999-8888",
 			want:     "Tel: *****-****",
+		},
+		{
+			name:     "phone_no_ddd_glued_to_a_label",
+			patterns: []PIIPattern{PatternPhoneNoDDD},
+			input:    "cel999998888",
+			want:     "cel*****-****",
 		},
 		{
 			name:     "no_pii_unchanged",
@@ -190,9 +286,14 @@ func TestPIIMasker_MaskString_UUID(t *testing.T) {
 				want:  "***@***.***",
 			},
 			{
-				name:  "phone_glued_before",
-				input: "tel (11) 99999-8888abcd-0123-4123-8958-0580b8e02a8c",
-				want:  "tel (**) *****-****abcd-*****-****-8958-0580b8e02a8c",
+				name:  "card_running_into_it",
+				input: "card 4111 1111 11111111-0123-4123-8958-0580b8e02a8c",
+				want:  "card ****-****-****-****-*****-****-8958-0580b8e02a8c",
+			},
+			{
+				name:  "digits_running_past_its_end",
+				input: "01a11cf4-04f5-7515-a958-058012345678 9012",
+				want:  "01a11cf4-04f5-7515-a958-****-****-****-****",
 			},
 		}
 		for _, test := range tests {
@@ -264,9 +365,30 @@ func TestPIIMasker_MaskFields_UUID(t *testing.T) {
 		}
 	})
 
-	t.Run("binary_with_a_phone_glued_to_a_uuid_is_redacted", func(t *testing.T) {
-		blob := "\xff\xfe tel (11) 99999-8888abcd-0123-4123-8958-0580b8e02a8c"
+	t.Run("binary_with_digits_running_past_a_uuid_is_redacted", func(t *testing.T) {
+		blob := "\xff\xfe 01a11cf4-04f5-7515-a958-058012345678 9012"
 		annotations := Annotations{Field("blob", base64.StdEncoding.EncodeToString([]byte(blob)))}
+		masker.MaskFields(annotations)
+
+		assertEqual(t, annotations[0].Data(), any("[REDACTED]"))
+	})
+}
+
+func TestPIIMasker_MaskFields_NumberGluedToALabel(t *testing.T) {
+	masker := MustPIIMasker(DefaultPIIConfig())
+
+	t.Run("in_a_struct", func(t *testing.T) {
+		annotations := Annotations{Field("customer", piiCustomer{Document: "cpf12345678901"})}
+		masker.MaskFields(annotations)
+
+		encoded, err := json.Marshal(annotations[0].Data())
+		assertNoError(t, err)
+		assertEqual(t, string(encoded), `{"age":0,"document":"cpf***.***.***-**","name":"","password":"[REDACTED]"}`)
+	})
+
+	t.Run("in_binary", func(t *testing.T) {
+		blob := base64.StdEncoding.EncodeToString([]byte("\xff\xfe cpf12345678901"))
+		annotations := Annotations{Field("blob", blob)}
 		masker.MaskFields(annotations)
 
 		assertEqual(t, annotations[0].Data(), any("[REDACTED]"))

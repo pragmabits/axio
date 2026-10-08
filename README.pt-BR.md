@@ -543,14 +543,16 @@ Em ambientes com logs centralizados, PII exposta representa risco de:
 
 #### Padrões Builtin
 
-| Padrão          | Constante           | Formatos detectados             | Máscara               |
-| --------------- | ------------------- | ------------------------------- | --------------------- |
-| CPF             | `PatternCPF`        | `123.456.789-01`, `12345678901` | `***.***.***-**`      |
-| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`            | `**.***.***/****-**`  |
-| Cartão          | `PatternCreditCard` | `1234-5678-9012-3456`           | `****-****-****-****` |
-| Email           | `PatternEmail`      | `user@domain.com`               | `***@***.***`         |
-| Telefone        | `PatternPhone`      | `(11) 99999-9999`               | `(**) *****-****`     |
-| Telefone s/ DDD | `PatternPhoneNoDDD` | `99999-9999`                    | `*****-****`          |
+| Padrão          | Constante           | Formatos detectados                 | Máscara               |
+| --------------- | ------------------- | ----------------------------------- | --------------------- |
+| CPF             | `PatternCPF`        | `123.456.789-01`, `12345678901`     | `***.***.***-**`      |
+| CNPJ            | `PatternCNPJ`       | `12.345.678/0001-90`                | `**.***.***/****-**`  |
+| Cartão          | `PatternCreditCard` | `1234-5678-9012-3456`               | `****-****-****-****` |
+| Email           | `PatternEmail`      | `user@domain.com`                   | `***@***.***`         |
+| Telefone        | `PatternPhone`      | `(11) 99999-9999`, `+5511999999999` | `(**) *****-****`     |
+| Telefone s/ DDD | `PatternPhoneNoDDD` | `99999-9999`                        | `*****-****`          |
+
+Um número grudado num rótulo continua mascarado: `cpf12345678901` vira `cpf***.***.***-**`. Dígitos grudados em mais dígitos, como num timestamp de 13 dígitos, ou dentro de um identificador hex — uma sequência de dígitos hexadecimais com alguma letra, como um trace id ou um hash — não são tomados por PII, então um rótulo feito só de letras hex, como em `cafe12345678901`, deixa o número sem máscara.
 
 Um UUID não é PII: os padrões builtin nunca casam dentro de um UUID inteiro — 32 dígitos hexadecimais em grupos de 8-4-4-4-12 com a versão e a variante do RFC 9562, ou o UUID nulo, sem dígito hexadecimal de nenhum dos lados —, então um identificador nunca é mascarado como cartão ou telefone. PII grudada num UUID continua mascarada, e os padrões customizados leem o texto como ele é.
 

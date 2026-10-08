@@ -1,7 +1,6 @@
 package axio
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding"
@@ -66,10 +65,12 @@ const (
 	// PatternEmail detects email addresses.
 	// Mask: ***@***.***
 	PatternEmail PIIPattern = "email"
-	// PatternPhone detects Brazilian phone numbers.
-	// Formats with area code: (11) 99999-9999, 11 99999-9999, 11999999999
-	// Formats without area code: 99999-9999, 999999999
-	// Mask: (**) *****-**** (with area code) or *****-**** (without area code)
+	// PatternPhone detects Brazilian phone numbers with an area code, which
+	// may carry a leading 0 and the country code +55. A number glued to more
+	// digits is not taken for one.
+	// Formats: (11) 99999-9999, 11 99999-9999, 11999999999, (011) 9999-9999,
+	// +55 11 99999-9999, +5511999999999
+	// Mask: (**) *****-****
 	PatternPhone PIIPattern = "phone"
 	// PatternPhoneNoDDD detects Brazilian phone numbers without area code.
 	// Formats: 99999-9999, 999999999, 9999-9999, 99999999
@@ -255,11 +256,8 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 
 	for _, pattern := range config.Patterns {
 		if info, ok := piiPatterns[pattern]; ok {
-			masker.patterns = append(masker.patterns, piiPatternInfo{
-				name:  pattern,
-				regex: info.regex,
-				mask:  info.mask,
-			})
+			info.name = pattern
+			masker.patterns = append(masker.patterns, info)
 		}
 	}
 
@@ -311,6 +309,12 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 // either side — is not PII: a built-in pattern never matches inside it, so an
 // identifier is never masked as a card or a phone number. PII glued to one is
 // still masked, and a custom pattern reads the text as it is.
+//
+// A number glued to a label is masked: "cpf12345678901" becomes
+// "cpf***.***.***-**". Digits glued to more digits, or inside a hex
+// identifier — a run of hex digits with a letter among them, such as a trace
+// id — are no number, so a label made only of hex letters, as in
+// "cafe12345678901", leaves its number unmasked.
 //
 // Example:
 //
@@ -661,23 +665,25 @@ func (m *PIIMasker) maskText(text string, counter *piiCounter) string {
 // escapes to the heap.
 func (m *PIIMasker) binaryCarriesPII(data []byte, counter *piiCounter) bool {
 	builtIn := mayHoldBuiltInPattern(data)
-	var copied []byte
-	var uuids uuidText
-	uuidsFound := false
+	var text string
+	var numbers numberText
+	copied, numbersRead := false, false
 	found := false
 	for _, info := range m.patterns {
 		if !info.custom && !builtIn {
 			continue
 		}
-		if copied == nil {
-			copied = bytes.Clone(data)
+		if !copied {
+			text, copied = string(data), true
 		}
-		matches := info.regex.FindAllIndex(copied, -1)
-		if !info.custom && len(matches) > 0 {
-			if !uuidsFound {
-				uuids, uuidsFound = findUUIDs(copied, uuidPattern.FindAllIndex(copied, -1)), true
+		var matches [][]int
+		if info.numeric {
+			if !numbersRead {
+				numbers, numbersRead = readNumbers(text), true
 			}
-			matches = uuids.matches(info.regex, matches)
+			matches = numbers.matches(info.regex)
+		} else {
+			matches = info.regex.FindAllStringIndex(text, -1)
 		}
 		found = found || len(matches) > 0
 		counter.matched(info.name, len(matches))
@@ -705,29 +711,29 @@ func mayHoldBuiltInPattern(data []byte) bool {
 // [uuidText.matches] gives them; a custom one reads text as it is. The UUIDs
 // are found once, and again only after a mask has changed text.
 func (m *PIIMasker) maskPatterns(text string, counter *piiCounter) string {
-	var uuids uuidText
-	uuidsFound := false
+	var numbers numberText
+	numbersRead := false
 	for _, info := range m.patterns {
-		matches := info.regex.FindAllStringIndex(text, -1)
-		if len(matches) == 0 {
-			continue
-		}
-		if info.custom {
+		if !info.numeric {
+			matches := info.regex.FindAllStringIndex(text, -1)
+			if len(matches) == 0 {
+				continue
+			}
 			counter.matched(info.name, len(matches))
 			text = info.regex.ReplaceAllString(text, info.mask)
-			uuidsFound = false
+			numbersRead = false
 			continue
 		}
-		if !uuidsFound {
-			uuids, uuidsFound = findUUIDs(text, uuidPattern.FindAllStringIndex(text, -1)), true
+		if !numbersRead {
+			numbers, numbersRead = readNumbers(text), true
 		}
-		matches = uuids.matches(info.regex, matches)
+		matches := numbers.matches(info.regex)
 		if len(matches) == 0 {
 			continue
 		}
 		counter.matched(info.name, len(matches))
 		text = replaceMatches(text, matches, info.mask)
-		uuidsFound = false
+		numbersRead = false
 	}
 	return text
 }
@@ -1311,29 +1317,31 @@ func isJOSEObject(object map[string]any) bool {
 	return ciphertext && vector
 }
 
-// uuidText is a text as a built-in pattern reads it: where its whole UUIDs
-// sit, and a copy of it with every digit of those UUIDs turned into "x", nil
-// when it holds none. The copy keeps the length and the word boundaries of the
-// text, so a match in it is a match in the text at the same indices.
+// uuidText is where the whole UUIDs of a text sit, and a copy of the text as
+// a built-in pattern for a number reads it, with every digit of those UUIDs
+// turned into "x", nil when it holds none. The copy keeps the length and the
+// word boundaries of the text, so a match in it is a match in the text at the
+// same indices.
 type uuidText struct {
 	spans  [][]int
 	hidden []byte
 }
 
-// findUUIDs returns text as a built-in pattern reads it, given candidates, the
-// matches of [uuidPattern] in text.
-func findUUIDs[Text string | []byte](text Text, candidates [][]int) uuidText {
+// findUUIDs returns the whole UUIDs of text, hiding them in a copy of labels,
+// or of text when labels is nil.
+func findUUIDs(text string, labels []byte) uuidText {
 	var found uuidText
-	for _, span := range candidates {
+	for _, span := range uuidPattern.FindAllStringIndex(text, -1) {
 		if !isWholeUUID(text, span) {
 			continue
 		}
 		if found.hidden == nil {
-			found.hidden = append([]byte(nil), text...)
+			found.hidden = []byte(text)
+			copy(found.hidden, labels)
 		}
 		found.spans = append(found.spans, span)
 		for index := span[0]; index < span[1]; index++ {
-			if found.hidden[index] >= '0' && found.hidden[index] <= '9' {
+			if isDigit(found.hidden[index]) {
 				found.hidden[index] = 'x'
 			}
 		}
@@ -1341,11 +1349,11 @@ func findUUIDs[Text string | []byte](text Text, candidates [][]int) uuidText {
 	return found
 }
 
-// matches returns the matches of a built-in pattern in the text, given the
-// ones it found in the text as it is: those it finds with the digits of the
-// UUIDs hidden, and those of the given ones that cross the border of a whole
-// UUID, since PII glued to an identifier is still PII. Matches that overlap
-// are merged into one.
+// matches returns the matches of a built-in pattern for a number in the text,
+// given the ones it found in the text as [numberText] reads it: those it finds
+// with the digits of the UUIDs hidden, and those of the given ones that cross
+// the border of a whole UUID, since PII glued to an identifier is still PII.
+// Matches that overlap are merged into one.
 //
 // A match that starts inside a whole UUID and runs past its end is missed when
 // a match inside that UUID starts before it and hides it. This is an exception
@@ -1381,7 +1389,7 @@ func (u uuidText) crosses(match []int) bool {
 // isWholeUUID reports whether the match of [uuidPattern] at span is a whole
 // UUID: no hex digit sits on either side of it, and it carries a version and
 // the variant of RFC 9562, or is the nil UUID.
-func isWholeUUID[Text string | []byte](text Text, span []int) bool {
+func isWholeUUID(text string, span []int) bool {
 	before, after := span[0]-1, span[1]
 	if before >= 0 && isHexDigit(text[before]) || after < len(text) && isHexDigit(text[after]) {
 		return false
@@ -1390,7 +1398,121 @@ func isWholeUUID[Text string | []byte](text Text, span []int) bool {
 	if version >= '1' && version <= '8' && strings.IndexByte("89abAB", variant) >= 0 {
 		return true
 	}
-	return string(text[span[0]:span[1]]) == nilUUID
+	return text[span[0]:span[1]] == nilUUID
+}
+
+// numberText is a text as a built-in pattern for a number reads it. A token —
+// a run of ASCII letters, digits and "_" — that glues digits to a label has
+// its letters and "_" turned into "#" in labels, so that its digits stand on
+// their own: "cpf12345678901" is read as "###12345678901". A token made only
+// of hex digits, a letter among them, is an identifier and is read as it is,
+// its digits glued to its letters. labels is nil when no token needs it.
+type numberText struct {
+	text       string
+	labels     []byte
+	uuids      uuidText
+	uuidsFound bool
+}
+
+// readNumbers returns text as a built-in pattern for a number reads it.
+func readNumbers(text string) numberText {
+	return numberText{text: text, labels: separateLabels(text)}
+}
+
+// matches returns the matches of regex, a built-in pattern for a number, in
+// the text, taken as [uuidText.matches] gives them. The UUIDs are found at the
+// first match.
+func (n *numberText) matches(regex *regexp.Regexp) [][]int {
+	matches := n.find(regex)
+	if len(matches) == 0 {
+		return nil
+	}
+	if !n.uuidsFound {
+		n.uuids, n.uuidsFound = findUUIDs(n.text, n.labels), true
+	}
+	return n.uuids.matches(regex, matches)
+}
+
+// find returns the matches of regex in labels, or in the text when labels is
+// nil.
+func (n *numberText) find(regex *regexp.Regexp) [][]int {
+	if n.labels != nil {
+		return regex.FindAllIndex(n.labels, -1)
+	}
+	return regex.FindAllStringIndex(n.text, -1)
+}
+
+// separateLabels returns a copy of text with the letters and "_" of every
+// token that glues digits to a label turned into "#", or nil when no token
+// does, or when text holds fewer digits than any built-in pattern for a
+// number needs.
+func separateLabels(text string) []byte {
+	if !holdsNumber(text) {
+		return nil
+	}
+	var separated []byte
+	for start := 0; start < len(text); {
+		end := start
+		for end < len(text) && isWordChar(text[end]) {
+			end++
+		}
+		if end == start {
+			start++
+			continue
+		}
+		if gluesDigits(text[start:end]) {
+			if separated == nil {
+				separated = []byte(text)
+			}
+			hideLabel(separated[start:end])
+		}
+		start = end
+	}
+	return separated
+}
+
+// holdsNumber reports whether text has as many digits as the shortest number
+// a built-in pattern matches, [minimumPatternDigits].
+func holdsNumber(text string) bool {
+	digits := 0
+	for index := 0; index < len(text); index++ {
+		if isDigit(text[index]) {
+			digits++
+		}
+	}
+	return digits >= minimumPatternDigits
+}
+
+// gluesDigits reports whether token, a run of ASCII letters, digits and "_",
+// glues digits to a label: it holds a digit and a character that is not a hex
+// digit. A token made only of hex digits is an identifier.
+func gluesDigits(token string) bool {
+	digit, label := false, false
+	for index := 0; index < len(token); index++ {
+		digit = digit || isDigit(token[index])
+		label = label || !isHexDigit(token[index])
+	}
+	return digit && label
+}
+
+// hideLabel turns every character of token but its digits into "#".
+func hideLabel(token []byte) {
+	for index, char := range token {
+		if !isDigit(char) {
+			token[index] = '#'
+		}
+	}
+}
+
+// isWordChar reports whether char is an ASCII letter, digit or "_", the
+// characters \b in a pattern counts as a word.
+func isWordChar(char byte) bool {
+	return isAlphanumeric(char) || char == '_'
+}
+
+// isDigit reports whether char is an ASCII digit.
+func isDigit(char byte) bool {
+	return char >= '0' && char <= '9'
 }
 
 // mergeMatches returns matches in the order they start, those that overlap
@@ -1442,33 +1564,41 @@ type piiPatternInfo struct {
 	// custom marks a pattern from [PIIConfig.CustomPatterns], which may match
 	// what no built-in one needs.
 	custom bool
+	// numeric marks a built-in pattern for a number, which reads the text as
+	// [numberText] gives it.
+	numeric bool
 }
 
 // piiPatterns maps pattern types to their regexes and masks.
 var piiPatterns = map[PIIPattern]piiPatternInfo{
 	PatternCPF: {
-		regex: regexp.MustCompile(`\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b`),
-		mask:  "***.***.***-**",
+		regex:   regexp.MustCompile(`\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b`),
+		mask:    "***.***.***-**",
+		numeric: true,
 	},
 	PatternCNPJ: {
-		regex: regexp.MustCompile(`\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b`),
-		mask:  "**.***.***/****-**",
+		regex:   regexp.MustCompile(`\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b`),
+		mask:    "**.***.***/****-**",
+		numeric: true,
 	},
 	PatternCreditCard: {
-		regex: regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
-		mask:  "****-****-****-****",
+		regex:   regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
+		mask:    "****-****-****-****",
+		numeric: true,
 	},
 	PatternEmail: {
 		regex: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
 		mask:  "***@***.***",
 	},
 	PatternPhone: {
-		regex: regexp.MustCompile(`\(?\d{2}\)?\s?\d{4,5}[\s-]?\d{4}`),
-		mask:  "(**) *****-****",
+		regex:   regexp.MustCompile(`(?:\+?\b55\s?(?:\(0?\d{2}\)|0?\d{2})|\(0?\d{2}\)|\b0?\d{2})\s?\d{4,5}[\s-]?\d{4}\b`),
+		mask:    "(**) *****-****",
+		numeric: true,
 	},
 	PatternPhoneNoDDD: {
-		regex: regexp.MustCompile(`\b9?\d{4}[\s-]?\d{4}\b`),
-		mask:  "*****-****",
+		regex:   regexp.MustCompile(`\b9?\d{4}[\s-]?\d{4}\b`),
+		mask:    "*****-****",
+		numeric: true,
 	},
 }
 

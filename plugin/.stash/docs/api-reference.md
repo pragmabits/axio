@@ -345,10 +345,11 @@ allocation per field or element. `MaskString` and `MaskStringWithCounts` cover a
 string the same way. A structured value that needed masking is written as its
 masked JSON tree, object keys in alphabetical order; one with nothing to mask
 keeps its original form. A container nested deeper than `MaxDepth` becomes
-`[REDACTED]` whole. A whole UUID — 8-4-4-4-12 hex digits with no hex digit on
-either side, `person_<uuid>` included — is not PII: no built-in pattern reads
-its digits, so an identifier is never masked as a card or a phone number; a
-custom pattern still reads them.
+`[REDACTED]` whole. A whole UUID — 8-4-4-4-12 hex digits with an RFC 9562
+version and variant, or the nil UUID, no hex digit on either side,
+`person_<uuid>` included — is not PII: no built-in pattern matches inside it,
+so an identifier is never masked as a card or a phone number; PII glued to a
+UUID is still masked, and a custom pattern still reads its digits.
 
 ### PIIHook
 

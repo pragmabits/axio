@@ -349,7 +349,12 @@ keeps its original form. A container nested deeper than `MaxDepth` becomes
 version and variant, or the nil UUID, no hex digit on either side,
 `person_<uuid>` included — is not PII: no built-in pattern matches inside it,
 so an identifier is never masked as a card or a phone number; PII glued to a
-UUID is still masked, and a custom pattern still reads its digits.
+UUID is still masked, and a custom pattern still reads its digits. A number
+glued to a label is still masked (`cpf12345678901` → `cpf***.***.***-**`);
+digits glued to more digits (a 13-digit timestamp) or inside a hex identifier
+(a trace id, a hash) are not taken for PII, so a label made only of hex
+letters (`cafe12345678901`) leaves its number unmasked. `PatternPhone` takes
+the number with or without `+55`.
 
 ### PIIHook
 

@@ -131,7 +131,7 @@ event.SetError(err, axio.Field("error_code", "declined"))
 ```
 
 ### PII Masking
-- Built-in patterns: `PatternCPF`, `PatternCNPJ`, `PatternCreditCard`, `PatternEmail`, `PatternPhone`, `PatternPhoneNoDDD`; the default masking uses only the first three, so list the others with `WithPII`, whose patterns replace the default ones
+- Built-in patterns: `PatternCPF`, `PatternCNPJ`, `PatternCreditCard`, `PatternEmail`, `PatternPhone` (with or without `+55`), `PatternPhoneNoDDD`; the default masking uses only the first three, so list the others with `WithPII`, whose patterns replace the default ones. A number glued to a label is still masked (`cpf12345678901` → `cpf***.***.***-**`); digits glued to more digits (a 13-digit timestamp) or inside a hex identifier (a trace id, a hash) are not taken for PII, so a label made only of hex letters (`cafe12345678901`) leaves its number unmasked
 - Custom patterns via `CustomPII{Name, Pattern, Mask}`
 - A whole UUID (8-4-4-4-12 hex digits with an RFC 9562 version and variant, or the nil UUID, no hex digit on either side, `person_<uuid>` included) is never matched inside by a built-in pattern, so an identifier is not taken for a card or a phone number; PII glued to a UUID is still masked, and a custom pattern still reads its digits
 - Sensitive field redaction (password, token, api_key, etc.)

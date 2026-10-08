@@ -552,7 +552,7 @@ Em ambientes com logs centralizados, PII exposta representa risco de:
 | Telefone        | `PatternPhone`      | `(11) 99999-9999`               | `(**) *****-****`     |
 | Telefone s/ DDD | `PatternPhoneNoDDD` | `99999-9999`                    | `*****-****`          |
 
-Um UUID não é PII: os padrões builtin nunca leem os dígitos de um UUID inteiro — 32 dígitos hexadecimais em grupos de 8-4-4-4-12, sem dígito hexadecimal de nenhum dos lados —, então um identificador nunca é mascarado como cartão ou telefone. Os padrões customizados os leem.
+Um UUID não é PII: os padrões builtin nunca casam dentro de um UUID inteiro — 32 dígitos hexadecimais em grupos de 8-4-4-4-12 com a versão e a variante do RFC 9562, ou o UUID nulo, sem dígito hexadecimal de nenhum dos lados —, então um identificador nunca é mascarado como cartão ou telefone. PII grudada num UUID continua mascarada, e os padrões customizados leem o texto como ele é.
 
 #### Campos Sensíveis Automáticos
 

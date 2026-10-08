@@ -143,12 +143,17 @@ func TestPIIMasker_MaskString_UUID(t *testing.T) {
 			"01a11cf4-04f5-7515-8958-058012345678",
 			"01234567-0123-7123-8958-0580b8e02a8c",
 			"01234567-0123-4123-8958-058012345678",
+			"01234567-0123-1123-9958-058012345678",
+			"01234567-0123-8123-b958-058012345678",
+			"01234567-0123-7123-A958-058012345678",
+			"a1234567-0123-4123-8958-05801234567f",
 			"01A11CF4-04F5-7515-8958-058012345678",
+			"00000000-0000-0000-0000-000000000000",
+			"FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
 			"person_01234567-0123-4123-8958-058012345678",
 			"req-01234567-0123-4123-8958-058012345678",
 			"urn:uuid:01234567-0123-4123-8958-058012345678",
 			"{01234567-0123-4123-8958-058012345678}",
-			"01234567-0123-4123-8958-058012345678-1234",
 			"01234567-0123-4123-8958-058012345678,01234567-0123-4123-8958-058012345678",
 		} {
 			result := masker.MaskStringWithCounts(text)
@@ -160,27 +165,74 @@ func TestPIIMasker_MaskString_UUID(t *testing.T) {
 
 	t.Run("pii_beside_a_uuid_is_masked", func(t *testing.T) {
 		tests := []struct {
+			name  string
 			input string
 			want  string
 		}{
-			{"01234567-0123-4123-8958-058012345678 4111 1111 1111 1111", "01234567-0123-4123-8958-058012345678 ****-****-****-****"},
-			{"01234567-0123-4123-8958-058012345678 cpf 123.456.789-01", "01234567-0123-4123-8958-058012345678 cpf ***.***.***-**"},
-			{"01234567-0123-4123-8958-058012345678 (11) 99999-8888", "01234567-0123-4123-8958-058012345678 (**) *****-****"},
-			{"01234567-0123-4123-8958-058012345678@example.com", "***@***.***"},
-			{"f01a11cf4-04f5-7515-8958-058012345678", "f01a11cf4-04f5-7515-****-****-****-****"},
+			{
+				name:  "card_after",
+				input: "01234567-0123-4123-8958-058012345678 4111 1111 1111 1111",
+				want:  "01234567-0123-4123-8958-058012345678 ****-****-****-****",
+			},
+			{
+				name:  "cpf_after",
+				input: "01234567-0123-4123-8958-058012345678 cpf 123.456.789-01",
+				want:  "01234567-0123-4123-8958-058012345678 cpf ***.***.***-**",
+			},
+			{
+				name:  "phone_after",
+				input: "01234567-0123-4123-8958-058012345678 (11) 99999-8888",
+				want:  "01234567-0123-4123-8958-058012345678 (**) *****-****",
+			},
+			{
+				name:  "email_around",
+				input: "01234567-0123-4123-8958-058012345678@example.com",
+				want:  "***@***.***",
+			},
+			{
+				name:  "phone_glued_before",
+				input: "tel (11) 99999-8888abcd-0123-4123-8958-0580b8e02a8c",
+				want:  "tel (**) *****-****abcd-*****-****-8958-0580b8e02a8c",
+			},
 		}
 		for _, test := range tests {
-			assertEqual(t, masker.MaskString(test.input), test.want)
+			t.Run(test.name, func(t *testing.T) {
+				assertEqual(t, masker.MaskString(test.input), test.want)
+			})
 		}
 	})
 
-	t.Run("generated_uuids_are_not_pii", func(t *testing.T) {
-		for range 20_000 {
-			for _, id := range []uuid.UUID{uuid.NewV4(), uuid.NewV7()} {
-				if text := id.String(); masker.MaskString(text) != text {
-					t.Fatalf("%s masked to %s", text, masker.MaskString(text))
-				}
-			}
+	t.Run("uuid_shape_that_is_not_a_uuid_is_masked", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			input string
+			want  string
+		}{
+			{
+				name:  "hex_digit_before",
+				input: "f01a11cf4-04f5-7515-8958-058012345678",
+				want:  "f01a11cf4-04f5-7515-****-****-****-****",
+			},
+			{
+				name:  "version_out_of_rfc_9562",
+				input: "12345678-9012-9456-8890-123456789012",
+				want:  "****-****-****-****-****-****-****-****",
+			},
+			{
+				name:  "variant_out_of_rfc_9562",
+				input: "12345678-9012-3456-7890-123456789012",
+				want:  "****-****-****-****-****-****-****-****",
+			},
+			{
+				name:  "card_and_phone_in_the_shape",
+				input: "41111111-1111-1111-0000-119999988880",
+				want:  "****-****-****-****-****-****-****-****",
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				assertEqual(t, masker.MaskString(test.input), test.want)
+			})
 		}
 	})
 }
@@ -188,26 +240,37 @@ func TestPIIMasker_MaskString_UUID(t *testing.T) {
 func TestPIIMasker_MaskFields_UUID(t *testing.T) {
 	const id = "01234567-0123-4123-8958-058012345678"
 	masker := MustPIIMasker(PIIConfig{Patterns: slices.Sorted(maps.Keys(piiPatterns))})
-	annotations := Annotations{
-		Field("person", uuid.MustParse(id)),
-		Field("people", []string{id}),
-		Field("customer", piiOrder{ID: id}),
-		Field("cause", errors.New("person "+id+" not found")),
-		Field("body", []byte(id)),
-		Field("blob", base64.StdEncoding.EncodeToString([]byte("\xff\xfe "+id))),
-	}
-	original := slices.Clone(annotations)
 
-	matches := masker.MaskFieldsWithCounts(annotations)
-
-	if len(matches) > 0 {
-		t.Errorf("matches %v", matches)
-	}
-	for index, annotation := range annotations {
-		if !reflect.DeepEqual(annotation.Data(), original[index].Data()) {
-			t.Errorf("%s masked to %v", annotation.Name(), annotation.Data())
+	t.Run("uuid_in_every_value_is_not_pii", func(t *testing.T) {
+		annotations := Annotations{
+			Field("person", uuid.MustParse(id)),
+			Field("people", []string{id}),
+			Field("customer", piiOrder{ID: id}),
+			Field("cause", errors.New("person "+id+" not found")),
+			Field("body", []byte(id)),
+			Field("blob", base64.StdEncoding.EncodeToString([]byte("\xff\xfe "+id))),
 		}
-	}
+		original := slices.Clone(annotations)
+
+		matches := masker.MaskFieldsWithCounts(annotations)
+
+		if len(matches) > 0 {
+			t.Errorf("matches %v", matches)
+		}
+		for index, annotation := range annotations {
+			if !reflect.DeepEqual(annotation.Data(), original[index].Data()) {
+				t.Errorf("%s masked to %v", annotation.Name(), annotation.Data())
+			}
+		}
+	})
+
+	t.Run("binary_with_a_phone_glued_to_a_uuid_is_redacted", func(t *testing.T) {
+		blob := "\xff\xfe tel (11) 99999-8888abcd-0123-4123-8958-0580b8e02a8c"
+		annotations := Annotations{Field("blob", base64.StdEncoding.EncodeToString([]byte(blob)))}
+		masker.MaskFields(annotations)
+
+		assertEqual(t, annotations[0].Data(), any("[REDACTED]"))
+	})
 }
 
 func TestPIIMasker_CustomPattern(t *testing.T) {

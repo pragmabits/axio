@@ -77,7 +77,7 @@ make pin-library LIBRARY_VERSION=<version>   # the same, through the Makefile
 - `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig
 - `options.go` — Functional options (WithOutputs, WithPII, WithPIIDisabled, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
-- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole, the digits of a whole UUID never read by a built-in pattern
+- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole, no built-in pattern matching inside a whole UUID (RFC 9562 version and variant, or nil)
 - `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written
 - `storelock_flock.go`, `storelock_other.go` — the `FileStore` lock: flock where it exists, nothing elsewhere
 - `tracing.go` — OpenTelemetry trace extraction

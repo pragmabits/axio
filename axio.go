@@ -63,6 +63,10 @@
 // Masking covers every value the caller hands a line — the message, the error
 // and each annotation, structs and maps included; see [PIIMasker.MaskFields].
 //
+// A whole UUID is not PII: no built-in pattern reads its digits, so an
+// identifier is never masked as a card or a phone number; see
+// [PIIMasker.MaskString].
+//
 // # Hash Chain Auditing
 //
 // For logs that require integrity proof (LGPD, SOX, PCI-DSS compliance):

@@ -552,6 +552,8 @@ In environments with centralized logs, exposed PII represents risk of:
 | Phone           | `PatternPhone`      | `(11) 99999-9999`               | `(**) *****-****`     |
 | Phone (no area) | `PatternPhoneNoDDD` | `99999-9999`                    | `*****-****`          |
 
+A UUID is not PII: the built-in patterns never read the digits of a whole UUID — 32 hex digits in groups of 8-4-4-4-12, with no hex digit on either side — so an identifier is never masked as a card or a phone number. Custom patterns read them.
+
 #### Automatic Sensitive Fields
 
 Fields whose names contain these terms are automatically redacted to `[REDACTED]`:

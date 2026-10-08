@@ -301,6 +301,11 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 // string: the patterns, a string with the shape of base64 by the text it
 // decodes to, and every JWT or JWE, which becomes "[REDACTED]" whole.
 //
+// A whole UUID — 32 hex digits in groups of 8, 4, 4, 4 and 12, with no hex
+// digit on either side — is not PII: a built-in pattern never reads its digits,
+// so an identifier is never masked as a card or a phone number. A custom
+// pattern reads them.
+//
 // Example:
 //
 //	masker := axio.MustPIIMasker(axio.DefaultPIIConfig())
@@ -644,12 +649,13 @@ func (m *PIIMasker) maskText(text string, counter *piiCounter) string {
 
 // binaryCarriesPII reports whether a PII pattern matches binary data, adding
 // the matches to counter when counter is not nil. A built-in pattern runs only
-// on data that [mayHoldBuiltInPattern] lets through; a custom one always runs.
-// The patterns read a copy, so data, a buffer on the caller's stack, never
+// on data that [mayHoldBuiltInPattern] lets through, and reads it with the
+// digits of every whole UUID hidden; a custom one always runs, on data as it
+// is. The patterns read a copy, so data, a buffer on the caller's stack, never
 // escapes to the heap.
 func (m *PIIMasker) binaryCarriesPII(data []byte, counter *piiCounter) bool {
 	builtIn := mayHoldBuiltInPattern(data)
-	var copied []byte
+	var copied, hidden []byte
 	found := false
 	for _, info := range m.patterns {
 		if !info.custom && !builtIn {
@@ -657,8 +663,13 @@ func (m *PIIMasker) binaryCarriesPII(data []byte, counter *piiCounter) bool {
 		}
 		if copied == nil {
 			copied = bytes.Clone(data)
+			hidden = hideUUIDs(copied, uuidPattern.FindAllIndex(copied, -1))
 		}
-		matches := info.regex.FindAllIndex(copied, -1)
+		read := copied
+		if !info.custom && hidden != nil {
+			read = hidden
+		}
+		matches := info.regex.FindAllIndex(read, -1)
 		found = found || len(matches) > 0
 		counter.matched(info.name, len(matches))
 	}
@@ -681,15 +692,24 @@ func mayHoldBuiltInPattern(data []byte) bool {
 }
 
 // maskPatterns masks every PII pattern in text, adding the matches to counter
-// when counter is not nil.
+// when counter is not nil. A built-in pattern reads text with the digits of
+// every whole UUID hidden; a custom one reads text as it is.
 func (m *PIIMasker) maskPatterns(text string, counter *piiCounter) string {
 	for _, info := range m.patterns {
 		matches := info.regex.FindAllStringIndex(text, -1)
 		if len(matches) == 0 {
 			continue
 		}
+		if info.custom {
+			counter.matched(info.name, len(matches))
+			text = info.regex.ReplaceAllString(text, info.mask)
+			continue
+		}
+		if hidden := hideUUIDs(text, uuidPattern.FindAllStringIndex(text, -1)); hidden != nil {
+			matches = info.regex.FindAllIndex(hidden, -1)
+		}
 		counter.matched(info.name, len(matches))
-		text = info.regex.ReplaceAllString(text, info.mask)
+		text = replaceMatches(text, matches, info.mask)
 	}
 	return text
 }
@@ -1283,6 +1303,58 @@ func isJOSEObject(object map[string]any) bool {
 	return ciphertext && vector
 }
 
+// hideUUIDs returns a copy of text with every digit of a whole UUID turned into
+// "x", or nil when text holds none. spans are the matches of [uuidPattern] in
+// text. The copy keeps the length and the word boundaries of text, so a match
+// in it is a match in text at the same indices.
+func hideUUIDs[Text string | []byte](text Text, spans [][]int) []byte {
+	var hidden []byte
+	for _, span := range spans {
+		if !isWholeUUID(text, span) {
+			continue
+		}
+		if hidden == nil {
+			hidden = append([]byte(nil), text...)
+		}
+		for index := span[0]; index < span[1]; index++ {
+			if hidden[index] >= '0' && hidden[index] <= '9' {
+				hidden[index] = 'x'
+			}
+		}
+	}
+	return hidden
+}
+
+// isWholeUUID reports whether the match of [uuidPattern] at span is a whole
+// UUID: no hex digit sits on either side of it.
+func isWholeUUID[Text string | []byte](text Text, span []int) bool {
+	before, after := span[0]-1, span[1]
+	return (before < 0 || !isHexDigit(text[before])) && (after == len(text) || !isHexDigit(text[after]))
+}
+
+// isHexDigit reports whether char is an ASCII hexadecimal digit.
+func isHexDigit(char byte) bool {
+	return char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F'
+}
+
+// replaceMatches returns text with every match, a pair of indices in order,
+// replaced by mask.
+func replaceMatches(text string, matches [][]int, mask string) string {
+	if len(matches) == 0 {
+		return text
+	}
+	var builder strings.Builder
+	builder.Grow(len(text) + len(matches)*len(mask))
+	last := 0
+	for _, match := range matches {
+		builder.WriteString(text[last:match[0]])
+		builder.WriteString(mask)
+		last = match[1]
+	}
+	builder.WriteString(text[last:])
+	return builder.String()
+}
+
 // piiPatternInfo holds the regex and mask for a PII pattern.
 type piiPatternInfo struct {
 	name  PIIPattern
@@ -1327,6 +1399,10 @@ var piiPatterns = map[PIIPattern]piiPatternInfo{
 // wherever it starts: a token glued to a word, as in "session_eyJ…", is
 // matched too.
 var tokenPattern = regexp.MustCompile(`(?:eyJ|eyI|eyA|ewo|ewk|ew0)[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}(?:(?:\.[A-Za-z0-9_-]*){2})?`)
+
+// uuidPattern matches the shape of a UUID: 32 hex digits in groups of 8, 4, 4,
+// 4 and 12. A match is a whole UUID only when [isWholeUUID] holds for it.
+var uuidPattern = regexp.MustCompile(`[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}`)
 
 // binaryRedactions holds the binaryRedaction of every encoding not in progress.
 var binaryRedactions = sync.Pool{New: func() any { return newBinaryRedaction() }}

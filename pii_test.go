@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"go.uber.org/zap/zapcore"
 )
@@ -63,6 +66,12 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			name:     "credit_card_no_separators",
 			patterns: []PIIPattern{PatternCreditCard},
 			input:    "Card: 1234567890123456",
+			want:     "Card: ****-****-****-****",
+		},
+		{
+			name:     "credit_card_mixed_separators",
+			patterns: []PIIPattern{PatternCreditCard},
+			input:    "Card: 1234-56789012 3456",
 			want:     "Card: ****-****-****-****",
 		},
 		{
@@ -123,6 +132,81 @@ func TestPIIMasker_MaskString(t *testing.T) {
 			got := masker.MaskString(test.input)
 			assertEqual(t, got, test.want)
 		})
+	}
+}
+
+func TestPIIMasker_MaskString_UUID(t *testing.T) {
+	masker := MustPIIMasker(PIIConfig{Patterns: slices.Sorted(maps.Keys(piiPatterns))})
+
+	t.Run("whole_uuid_is_not_pii", func(t *testing.T) {
+		for _, text := range []string{
+			"01a11cf4-04f5-7515-8958-058012345678",
+			"01234567-0123-7123-8958-0580b8e02a8c",
+			"01234567-0123-4123-8958-058012345678",
+			"01A11CF4-04F5-7515-8958-058012345678",
+			"person_01234567-0123-4123-8958-058012345678",
+			"req-01234567-0123-4123-8958-058012345678",
+			"urn:uuid:01234567-0123-4123-8958-058012345678",
+			"{01234567-0123-4123-8958-058012345678}",
+			"01234567-0123-4123-8958-058012345678-1234",
+			"01234567-0123-4123-8958-058012345678,01234567-0123-4123-8958-058012345678",
+		} {
+			result := masker.MaskStringWithCounts(text)
+			if result.Masked != text || len(result.Matches) > 0 {
+				t.Errorf("%s masked to %s, matches %v", text, result.Masked, result.Matches)
+			}
+		}
+	})
+
+	t.Run("pii_beside_a_uuid_is_masked", func(t *testing.T) {
+		tests := []struct {
+			input string
+			want  string
+		}{
+			{"01234567-0123-4123-8958-058012345678 4111 1111 1111 1111", "01234567-0123-4123-8958-058012345678 ****-****-****-****"},
+			{"01234567-0123-4123-8958-058012345678 cpf 123.456.789-01", "01234567-0123-4123-8958-058012345678 cpf ***.***.***-**"},
+			{"01234567-0123-4123-8958-058012345678 (11) 99999-8888", "01234567-0123-4123-8958-058012345678 (**) *****-****"},
+			{"01234567-0123-4123-8958-058012345678@example.com", "***@***.***"},
+			{"f01a11cf4-04f5-7515-8958-058012345678", "f01a11cf4-04f5-7515-****-****-****-****"},
+		}
+		for _, test := range tests {
+			assertEqual(t, masker.MaskString(test.input), test.want)
+		}
+	})
+
+	t.Run("generated_uuids_are_not_pii", func(t *testing.T) {
+		for range 20_000 {
+			for _, id := range []uuid.UUID{uuid.NewV4(), uuid.NewV7()} {
+				if text := id.String(); masker.MaskString(text) != text {
+					t.Fatalf("%s masked to %s", text, masker.MaskString(text))
+				}
+			}
+		}
+	})
+}
+
+func TestPIIMasker_MaskFields_UUID(t *testing.T) {
+	const id = "01234567-0123-4123-8958-058012345678"
+	masker := MustPIIMasker(PIIConfig{Patterns: slices.Sorted(maps.Keys(piiPatterns))})
+	annotations := Annotations{
+		Field("person", uuid.MustParse(id)),
+		Field("people", []string{id}),
+		Field("customer", piiOrder{ID: id}),
+		Field("cause", errors.New("person "+id+" not found")),
+		Field("body", []byte(id)),
+		Field("blob", base64.StdEncoding.EncodeToString([]byte("\xff\xfe "+id))),
+	}
+	original := slices.Clone(annotations)
+
+	matches := masker.MaskFieldsWithCounts(annotations)
+
+	if len(matches) > 0 {
+		t.Errorf("matches %v", matches)
+	}
+	for index, annotation := range annotations {
+		if !reflect.DeepEqual(annotation.Data(), original[index].Data()) {
+			t.Errorf("%s masked to %v", annotation.Name(), annotation.Data())
+		}
 	}
 }
 

@@ -3,7 +3,7 @@ module github.com/pragmabits/axio/cmd/axio
 go 1.27.0
 
 require (
-	github.com/pragmabits/axio v0.2.2
+	github.com/pragmabits/axio v0.3.0
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -21,5 +21,4 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

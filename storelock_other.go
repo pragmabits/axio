@@ -4,8 +4,9 @@ package axio
 
 import "os"
 
-// lockExclusive does nothing: this system has no flock, so a [FileStore] shared
-// by two processes is not detected here.
-func lockExclusive(*os.File) error {
-	return nil
+// lockExclusive does nothing and reports the lock as taken: this system has no
+// flock, so a [FileStore] or a rotating file shared by two processes is not
+// detected here.
+func lockExclusive(*os.File) (bool, error) {
+	return true, nil
 }

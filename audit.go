@@ -383,10 +383,16 @@ func (s *FileStore) claim() error {
 	if err != nil {
 		return fmt.Errorf("open lock file of %s: %w", s.path, err)
 	}
-	if err := lockExclusive(file); err != nil {
+	locked, err := lockExclusive(file)
+	if err != nil || !locked {
 		// The lock failed, so the file holds nothing worth reporting a close error for.
 		_ = file.Close()
+	}
+	if err != nil {
 		return fmt.Errorf("%s: %w", s.path, err)
+	}
+	if !locked {
+		return fmt.Errorf("%w: %s", ErrChainStoreLocked, s.path)
 	}
 	s.lockFile = file
 	return nil

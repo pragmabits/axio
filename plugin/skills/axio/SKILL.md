@@ -89,6 +89,7 @@ Precedence: the file or struct, then options, then defaults, then validation. Op
 | `WithPII(patterns, fields)` | chooses the patterns and sensitive fields; the patterns listed replace the defaults |
 | `WithPIIDisabled()` | turns masking off |
 | `WithPIIMaxDepth(n)` | how deep masking walks into a structured value (default 32) |
+| `WithPIIIdentifierShapes(shapes...)` | RE2 shapes of identifiers, such as a file name with a timestamp, that no built-in pattern for a number matches inside |
 | `WithPIIOmitErrorVerbose()` | drops an error's verbose form instead of masking it |
 | `WithAudit(path)` | audit chain with its state in a file |
 | `WithAuditChain(chain)` | audit chain over any `ChainStore` |
@@ -111,7 +112,7 @@ audit: { enabled: true, storePath: /var/lib/payments/chain.json }
 tracer: otel
 ```
 
-The rest: `serviceVersion`, `instanceId`, `callerSkip`, `omitCaller`, `agentMode`, `piiDisabled`, `piiFields`, `piiCustomPatterns`, `piiMaxDepth`, `piiOmitErrorVerbose` and `metrics`.
+The rest: `serviceVersion`, `instanceId`, `callerSkip`, `omitCaller`, `agentMode`, `piiDisabled`, `piiFields`, `piiCustomPatterns`, `piiMaxDepth`, `piiOmitErrorVerbose`, `piiIdentifierShapes` and `metrics`.
 
 ## Outputs
 
@@ -119,10 +120,11 @@ The rest: `serviceVersion`, `instanceId`, `callerSkip`, `omitCaller`, `agentMode
 
 ## PII masking
 
-Masking is on in every Logger and Event, whether the `Config` comes from `DefaultConfig`, a literal or a file. `WithPIIDisabled()` or `piiDisabled: true` turns it off. It costs roughly 1.3× for a plain message and up to about 2.8× for a struct or an error.
+Masking is on in every Logger and Event, whether the `Config` comes from `DefaultConfig`, a literal or a file. `WithPIIDisabled()` or `piiDisabled: true` turns it off. It costs roughly 2× for a plain message, 2 to 3× with strings, a map or an error, and up to about 4.5× for a struct or an `HTTP` annotation.
 
 - **Patterns.** CPF, CNPJ and credit card by default. Email (`PatternEmail`), phone (`PatternPhone`, with or without `+55`) and phone without area code (`PatternPhoneNoDDD`) only when listed through `WithPII`. Custom patterns: `CustomPII{Name, Pattern, Mask}`. A number glued to a label is still masked (`cpf12345678901` → `cpf***.***.***-**`); digits glued to more digits (a 13-digit timestamp) or inside a hex identifier (a trace id, a hash) are not taken for PII, so a label made only of hex letters (`cafe12345678901`) leaves its number unmasked.
 - **UUIDs.** A whole UUID — 8-4-4-4-12 hex digits with an RFC 9562 version and variant, or the nil UUID, no hex digit on either side, `person_<uuid>` included — is never matched inside by a built-in pattern, so an identifier is not taken for a card or a phone number. PII glued to a UUID is still masked, and a custom pattern still reads its digits.
+- **Identifier shapes.** A file name carrying a timestamp has the shape of a number (`20261107041818.csv` is masked as a CNPJ); `WithPIIIdentifierShapes(shapes...)`, `piiIdentifierShapes` or `PIIConfig.IdentifierShapes` declares, in RE2, the shape of such an identifier, and no built-in pattern for a number matches inside a match of it, as inside a UUID. A number that crosses its border or sits elsewhere in the text is still masked, and a match that starts or ends inside a word is no identifier (`\d{14}\.csv` leaves `cnpj12345678000195.csv` masked), so a prefix glued to the number goes into the shape (`relatorio_\d{14}\.xlsx`). A shape must hold its context inside one word — every match holds an ASCII letter written as is (under `(?i)` a `k` or `s` does not count: it also matches the Kelvin sign or the long s), no whitespace is written in it, and every class matches only ASCII letters, digits and `_` (`(?i)[a-z]` included), only hex digits when it matches a digit — or `New` fails with `ErrBroadPIIIdentifierShape` (`\d{14}`, `.*`, `\d{14}.*\.csv`, `\d{11} reais`); one that is not RE2 fails with `ErrInvalidPIIIdentifierShape`. What a shape matches is never masked as a number, so a shape naming PII (`cpf\d{11}`) leaves it in the clear, and a hex class takes in a number glued to the identifier by a separator (`id_[0-9a-f]+(?:-[0-9a-f]+)*` takes in the CPF of `id_ab-12345678901`).
 - **Sensitive fields.** A key containing `password`, `senha`, `token`, `api_key`, `secret`, `credential`, `authorization`, `bearer`, `private_key` and the other `DefaultSensitiveFields()` has its value replaced by `[REDACTED]`, case-insensitively.
 - **Coverage.** The message, the error and its verbose form, and every annotation: strings, Stringers, errors, bytes of text, structs, maps, slices and `http.Header`, walked as the JSON the line writes. Base64 text is decoded and checked. JWT, JWE and JWS in JSON serialization become `[REDACTED]`. Bytes that are not text become `[REDACTED]`. A container nested deeper than the depth limit becomes `[REDACTED]` whole.
 - **Not covered.** The logger name, service metadata, the caller and the stack trace are written as they are.

@@ -96,6 +96,7 @@ type Config struct {
     PIIFields        []string
     PIIMaxDepth      int         // 0 means DefaultPIIMaxDepth (32)
     PIIOmitErrorVerbose bool     // omit, instead of mask, the %+v of errors
+    PIIIdentifierShapes []string // RE2 shapes of identifiers that are not PII
     Audit            AuditConfig
     TracerType       string      // "otel" or "noop"
     Metrics          MetricsConfig
@@ -136,6 +137,7 @@ func WithHooks(hooks ...Hook) Option
 func WithPII(patterns []PIIPattern, fields []string) Option
 func WithPIIDisabled() Option
 func WithPIIMaxDepth(depth int) Option
+func WithPIIIdentifierShapes(shapes ...string) Option
 func WithPIIOmitErrorVerbose() Option
 func WithAudit(storePath string) Option
 func WithAuditChain(chain *HashChain) Option
@@ -304,6 +306,7 @@ type PIIConfig struct {
     Fields         []string
     MaxDepth       int  // 0 means DefaultPIIMaxDepth (32)
     OmitErrorVerbose bool // omit, instead of mask, the %+v of errors
+    IdentifierShapes []string // RE2 shapes of identifiers that are not PII
 }
 
 func DefaultPIIConfig() PIIConfig
@@ -356,6 +359,8 @@ digits glued to more digits (a 13-digit timestamp) or inside a hex identifier
 (a trace id, a hash) are not taken for PII, so a label made only of hex
 letters (`cafe12345678901`) leaves its number unmasked. `PatternPhone` takes
 the number with or without `+55`.
+
+A file name carrying a timestamp has the shape of a number (`20261107041818.csv` is masked as a CNPJ); `WithPIIIdentifierShapes(shapes...)`, `piiIdentifierShapes` or `PIIConfig.IdentifierShapes` declares, in RE2, the shape of such an identifier, and no built-in pattern for a number matches inside a match of it, as inside a UUID. A number that crosses its border or sits elsewhere in the text is still masked, and a match that starts or ends inside a word is no identifier (`\d{14}\.csv` leaves `cnpj12345678000195.csv` masked), so a prefix glued to the number goes into the shape (`relatorio_\d{14}\.xlsx`). A shape must hold its context inside one word — every match holds an ASCII letter written as is (under `(?i)` a `k` or `s` does not count: it also matches the Kelvin sign or the long s), no whitespace is written in it, and every class matches only ASCII letters, digits and `_` (`(?i)[a-z]` included), only hex digits when it matches a digit — or `New` fails with `ErrBroadPIIIdentifierShape` (`\d{14}`, `.*`, `\d{14}.*\.csv`, `\d{11} reais`); one that is not RE2 fails with `ErrInvalidPIIIdentifierShape`. What a shape matches is never masked as a number, so a shape naming PII (`cpf\d{11}`) leaves it in the clear, and a hex class takes in a number glued to the identifier by a separator (`id_[0-9a-f]+(?:-[0-9a-f]+)*` takes in the CPF of `id_ab-12345678901`).
 
 ### PIIHook
 
@@ -583,6 +588,8 @@ var (
     ErrFileOutputNoPath    = errors.New("output type 'file' requires 'path'")
     ErrAuditWithoutJSON    = errors.New("audit requires a JSON output")
     ErrInvalidPIIMaxDepth  = errors.New("PII max depth cannot be negative")
+    ErrInvalidPIIIdentifierShape = errors.New("invalid PII identifier shape")
+    ErrBroadPIIIdentifierShape   = errors.New("PII identifier shape is too broad")
 )
 
 var (

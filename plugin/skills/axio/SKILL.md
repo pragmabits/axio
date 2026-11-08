@@ -115,7 +115,7 @@ The rest: `serviceVersion`, `instanceId`, `callerSkip`, `omitCaller`, `agentMode
 
 ## Outputs
 
-`Console(format)` writes to stderr, `Stdout(format)` to stdout, `File(path, format)` and `MustFile` to a file, and `RotatingFile(path, format, rotation)` and `MustRotatingFile` to a rotating file. Each output has its own format, `FormatJSON` or `FormatText`. `RotationConfig` has `MaxSize` in MB (0 means no size rotation), `MaxAge` in days, `MaxBackups`, `Compress`, `LocalTime` and `Interval` (a `Duration`, such as `24h`). A custom `Output` implements `Format`, `Type`, `Write`, `Sync` and `Close`, and its `Type()` must be `OutputConsole` or `OutputStdout`.
+`Console(format)` writes to stderr, `Stdout(format)` to stdout, `File(path, format)` and `MustFile` to a file, and `RotatingFile(path, format, rotation)` and `MustRotatingFile` to a rotating file. Each output has its own format, `FormatJSON` or `FormatText`. `RotationConfig` has `MaxSize` in MB (0 means no size rotation), `MaxAge` in days, `MaxBackups`, `Compress`, `LocalTime` and `Interval` (a `Duration`, such as `24h`). Outputs on one path share one rotator, so a logger and per-request events can all write to the same rotating file; one `Output` value belongs to one `Logger` or `Event` (a second fails with `ErrOutputInUse`), another rotation on an open path fails with `ErrRotationConflict`, and another process on the same rotating file fails with `ErrRotatingFileLocked`, through a lock on `<path>.lock`. Rotation happens on the write: past `MaxSize`, or once `Interval` has passed since the last rotation, kept in the lock's modification time. A custom `Output` implements `Format`, `Type`, `Write`, `Sync` and `Close`, and its `Type()` must be `OutputConsole` or `OutputStdout`.
 
 ## PII masking
 

@@ -191,7 +191,7 @@ type RotationConfig struct {
     MaxBackups int       // old files to retain
     Compress   bool      // gzip rotated files
     LocalTime  bool      // use local time in backup names
-    Interval   Duration  // time between rotations
+    Interval   Duration  // rotates on the first write this long after the last rotation
 }
 
 func (r RotationConfig) Enabled() bool
@@ -592,8 +592,11 @@ var (
 )
 
 var (
-    ErrOpenFile     = errors.New("failed to open file")
-    ErrOutputClosed = errors.New("output already closed")
+    ErrOpenFile           = errors.New("failed to open file")
+    ErrOutputClosed       = errors.New("output already closed")
+    ErrOutputInUse        = errors.New("output already belongs to a logger or event")
+    ErrRotationConflict   = errors.New("file is already open with another rotation")
+    ErrRotatingFileLocked = errors.New("rotating file is in use by another process")
 )
 
 var (

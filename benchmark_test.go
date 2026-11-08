@@ -377,6 +377,25 @@ func BenchmarkPIIMasker_MaskString_Identifiers(b *testing.B) {
 	}
 }
 
+func BenchmarkPIIMasker_MaskString_IdentifierShapes(b *testing.B) {
+	config := DefaultPIIConfig()
+	config.IdentifierShapes = []string{`\d{14,23}-[0-9a-f]{64}\.csv`}
+	masker := MustPIIMasker(config)
+	texts := []string{
+		"data/extraction/contracts/20261107041818-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.csv",
+		"customer 123.456.789-01 registered",
+		"order created",
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		for _, text := range texts {
+			masker.MaskString(text)
+		}
+	}
+}
+
 func BenchmarkPIIMasker_NoMatch(b *testing.B) {
 	masker := MustPIIMasker(PIIConfig{
 		Patterns: []PIIPattern{PatternCPF, PatternCNPJ, PatternCreditCard},

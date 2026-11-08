@@ -1,5 +1,5 @@
-// Package main demonstrates PII masking: the MaskString API and the masking
-// every logger does by default.
+// Package main demonstrates PII masking: the MaskString API, the masking every
+// logger does by default, and the identifier shapes it leaves as they are.
 //
 // Run with: go run ./examples/pii/
 package main
@@ -16,6 +16,7 @@ func main() {
 	ctx := context.Background()
 
 	maskStringAPI()
+	identifierShapes()
 	loggerMasking(ctx)
 }
 
@@ -37,6 +38,20 @@ func maskStringAPI() {
 		fmt.Printf("  Original: %s\n", original)
 		fmt.Printf("  Masked:   %s\n\n", masked)
 	}
+}
+
+func identifierShapes() {
+	fmt.Println("=== Identifier Shapes ===")
+
+	const name = "contracts/20261107041818-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.csv"
+	config := axio.DefaultPIIConfig()
+	config.IdentifierShapes = []string{`\d{14,23}-[0-9a-f]{64}\.csv`}
+	shaped := axio.MustPIIMasker(config)
+	unshaped := axio.MustPIIMasker(axio.DefaultPIIConfig())
+
+	fmt.Printf("  Without the shape: %s\n", unshaped.MaskString(name))
+	fmt.Printf("  With the shape:    %s\n", shaped.MaskString(name))
+	fmt.Printf("  CPF beside it:     %s\n\n", shaped.MaskString("cpf 123.456.789-01 wrote "+name))
 }
 
 func loggerMasking(ctx context.Context) {

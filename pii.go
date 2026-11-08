@@ -13,10 +13,12 @@ import (
 	"maps"
 	"reflect"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"go.uber.org/zap/zapcore"
@@ -138,6 +140,32 @@ type PIIConfig struct {
 	// and its verbose form is never read. Off by default: the verbose form is
 	// masked and kept, at the cost of scanning it.
 	OmitErrorVerbose bool `json:"omitErrorVerbose,omitempty" yaml:"omitErrorVerbose,omitempty" toml:"omitErrorVerbose,omitempty" mapstructure:"omitErrorVerbose,omitempty"`
+	// IdentifierShapes declares, in RE2 syntax, the shapes of identifiers that
+	// are not PII, such as a file name carrying a timestamp: a built-in pattern
+	// for a number — CPF, CNPJ, card, phone — never matches inside a match of
+	// one, as it never matches inside a whole UUID, and a number that crosses
+	// its border is still masked. A shape is searched for anywhere in the text;
+	// "^" and "$" make it match a whole value only. A match that starts or ends
+	// inside a token — a run of ASCII letters, digits and "_" — is no
+	// identifier, so `\d{14}\.csv` leaves "cnpj12345678000195.csv" masked, and
+	// a prefix glued to the number goes into the shape, as in
+	// `relatorio_\d{14}\.xlsx`. The e-mail pattern and the custom patterns read
+	// the text as it is, inside an identifier too.
+	//
+	// A shape holds the context around its number, inside one word: every text
+	// it matches holds an ASCII letter written as is, outside any class — under
+	// (?i) a "k" or "s" does not count, as it also matches the Kelvin sign or the
+	// long s —, no whitespace is written in it, and every class in it, "."
+	// included, matches only ASCII letters, digits and "_" — (?i)[a-z] included,
+	// though it also matches those two — and only hex digits when it matches a
+	// digit. [NewPIIMasker] returns
+	// [ErrBroadPIIIdentifierShape] for one that does not, such as `\d{14}`, `.*`,
+	// `\d{14}.*\.csv` or `\d{11} reais`, and [ErrInvalidPIIIdentifierShape] for
+	// one that is not RE2. Whatever a shape matches is not masked as a number,
+	// so a shape that names PII, as `cpf\d{11}` does, leaves it in the clear,
+	// and a hex class takes in a number glued to the identifier by a separator,
+	// as `id_[0-9a-f]+(?:-[0-9a-f]+)*` takes in the CPF of "id_ab-12345678901".
+	IdentifierShapes []string `json:"identifierShapes,omitempty" yaml:"identifierShapes,omitempty" toml:"identifierShapes,omitempty" mapstructure:"identifierShapes,omitempty"`
 }
 
 // DefaultPIIConfig returns a configuration with common patterns enabled: the
@@ -214,6 +242,7 @@ type PIIMaskResult struct {
 //	// Result: "CPF: ***.***.***-**"
 type PIIMasker struct {
 	patterns         []piiPatternInfo
+	identifierShapes []*regexp.Regexp
 	fields           map[string]bool
 	maxDepth         int
 	omitErrorVerbose bool
@@ -223,8 +252,10 @@ type PIIMasker struct {
 
 // NewPIIMasker creates a new masker with the specified configuration.
 //
-// Returns an error if any CustomPattern has an invalid regex, and
-// [ErrInvalidPIIMaxDepth] for a negative MaxDepth.
+// Returns an error if any CustomPattern has an invalid regex,
+// [ErrInvalidPIIMaxDepth] for a negative MaxDepth, and
+// [ErrInvalidPIIIdentifierShape] or [ErrBroadPIIIdentifierShape] for a shape of
+// IdentifierShapes that is not RE2 or is too broad.
 //
 // Example:
 //
@@ -247,8 +278,13 @@ func NewPIIMasker(config PIIConfig) (*PIIMasker, error) {
 	if maxDepth == 0 {
 		maxDepth = DefaultPIIMaxDepth
 	}
+	identifierShapes, err := compileIdentifierShapes(config.IdentifierShapes)
+	if err != nil {
+		return nil, err
+	}
 
 	masker := &PIIMasker{
+		identifierShapes: identifierShapes,
 		fields:           make(map[string]bool),
 		maxDepth:         maxDepth,
 		omitErrorVerbose: config.OmitErrorVerbose,
@@ -308,7 +344,8 @@ func MustPIIMasker(config PIIConfig) *PIIMasker {
 // version and the variant of RFC 9562, or the nil UUID, with no hex digit on
 // either side — is not PII: a built-in pattern never matches inside it, so an
 // identifier is never masked as a card or a phone number. PII glued to one is
-// still masked, and a custom pattern reads the text as it is.
+// still masked, and a custom pattern reads the text as it is. A match of a
+// shape in [PIIConfig.IdentifierShapes] is an identifier as well.
 //
 // A number glued to a label is masked: "cpf12345678901" becomes
 // "cpf***.***.***-**". Digits glued to more digits, or inside a hex
@@ -660,7 +697,8 @@ func (m *PIIMasker) maskText(text string, counter *piiCounter) string {
 // binaryCarriesPII reports whether a PII pattern matches binary data, adding
 // the matches to counter when counter is not nil. A built-in pattern runs only
 // on data that [mayHoldBuiltInPattern] lets through, and its matches are taken
-// as [uuidText.matches] gives them; a custom one always runs, on data as it is.
+// as [identifierText.matches] gives them; a custom one always runs, on data as
+// it is.
 // The patterns read a copy, so data, a buffer on the caller's stack, never
 // escapes to the heap.
 func (m *PIIMasker) binaryCarriesPII(data []byte, counter *piiCounter) bool {
@@ -679,7 +717,7 @@ func (m *PIIMasker) binaryCarriesPII(data []byte, counter *piiCounter) bool {
 		var matches [][]int
 		if info.numeric {
 			if !numbersRead {
-				numbers, numbersRead = readNumbers(text), true
+				numbers, numbersRead = readNumbers(text, m.identifierShapes), true
 			}
 			matches = numbers.matches(info.regex)
 		} else {
@@ -708,8 +746,8 @@ func mayHoldBuiltInPattern(data []byte) bool {
 
 // maskPatterns masks every PII pattern in text, adding the matches to counter
 // when counter is not nil. The matches of a built-in pattern are taken as
-// [uuidText.matches] gives them; a custom one reads text as it is. The UUIDs
-// are found once, and again only after a mask has changed text.
+// [identifierText.matches] gives them; a custom one reads text as it is. The
+// identifiers are found once, and again only after a mask has changed text.
 func (m *PIIMasker) maskPatterns(text string, counter *piiCounter) string {
 	var numbers numberText
 	numbersRead := false
@@ -725,7 +763,7 @@ func (m *PIIMasker) maskPatterns(text string, counter *piiCounter) string {
 			continue
 		}
 		if !numbersRead {
-			numbers, numbersRead = readNumbers(text), true
+			numbers, numbersRead = readNumbers(text, m.identifierShapes), true
 		}
 		matches := numbers.matches(info.regex)
 		if len(matches) == 0 {
@@ -779,8 +817,10 @@ type PIIHook struct {
 
 // NewPIIHook creates a new [PIIHook] with the specified configuration.
 //
-// Returns an error if any CustomPattern has an invalid regex, and
-// [ErrInvalidPIIMaxDepth] for a negative MaxDepth.
+// Returns an error if any CustomPattern has an invalid regex,
+// [ErrInvalidPIIMaxDepth] for a negative MaxDepth, and
+// [ErrInvalidPIIIdentifierShape] or [ErrBroadPIIIdentifierShape] for a shape of
+// IdentifierShapes that is not RE2 or is too broad.
 //
 // Use [DefaultPIIConfig] for a default configuration with the most
 // common patterns enabled.
@@ -1317,73 +1357,252 @@ func isJOSEObject(object map[string]any) bool {
 	return ciphertext && vector
 }
 
-// uuidText is where the whole UUIDs of a text sit, and a copy of the text as
-// a built-in pattern for a number reads it, with every digit of those UUIDs
-// turned into "x", nil when it holds none. The copy keeps the length and the
-// word boundaries of the text, so a match in it is a match in the text at the
-// same indices.
-type uuidText struct {
+// compileIdentifierShapes compiles the shapes of [PIIConfig.IdentifierShapes],
+// returning [ErrInvalidPIIIdentifierShape] for one that is not RE2 and
+// [ErrBroadPIIIdentifierShape] for one that is not narrow ([isNarrowShape]).
+func compileIdentifierShapes(shapes []string) ([]*regexp.Regexp, error) {
+	compiled := make([]*regexp.Regexp, 0, len(shapes))
+	for _, shape := range shapes {
+		regex, err := compileIdentifierShape(shape)
+		if err != nil {
+			return nil, err
+		}
+		compiled = append(compiled, regex)
+	}
+	return compiled, nil
+}
+
+// compileIdentifierShape compiles one shape of [PIIConfig.IdentifierShapes],
+// parsed with the flags [regexp.Compile] parses with.
+func compileIdentifierShape(shape string) (*regexp.Regexp, error) {
+	tree, err := syntax.Parse(shape, syntax.Perl)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q: %w", ErrInvalidPIIIdentifierShape, shape, err)
+	}
+	if !isNarrowShape(tree) {
+		return nil, fmt.Errorf("%w: %q", ErrBroadPIIIdentifierShape, shape)
+	}
+	regex, err := regexp.Compile(shape)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q: %w", ErrInvalidPIIIdentifierShape, shape, err)
+	}
+	return regex, nil
+}
+
+// isNarrowShape reports whether the shape parsed into tree can only match
+// with a context around a number, inside one word of a text: every text it
+// matches holds an ASCII letter written as is, no literal in it holds
+// whitespace, and every class in it, "." included, matches only ASCII letters,
+// digits and "_" ([isNarrowClass]), and only hex digits when it matches a
+// digit — the line [separateLabels] draws between an identifier and a label
+// glued to a number.
+func isNarrowShape(tree *syntax.Regexp) bool {
+	return alwaysHoldsLetter(tree) && hasNarrowCharacters(tree)
+}
+
+// alwaysHoldsLetter reports whether every text tree matches holds an ASCII
+// letter of a literal. A tree that matches nothing holds one in every text it
+// matches.
+func alwaysHoldsLetter(tree *syntax.Regexp) bool {
+	switch tree.Op {
+	case syntax.OpLiteral:
+		return holdsASCIILetter(tree)
+	case syntax.OpConcat:
+		return slices.ContainsFunc(tree.Sub, alwaysHoldsLetter)
+	case syntax.OpAlternate:
+		return everyHoldsLetter(tree.Sub)
+	case syntax.OpPlus, syntax.OpCapture:
+		return alwaysHoldsLetter(tree.Sub[0])
+	case syntax.OpRepeat:
+		return tree.Min >= 1 && alwaysHoldsLetter(tree.Sub[0])
+	case syntax.OpNoMatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// everyHoldsLetter reports whether every tree of trees always holds a letter.
+func everyHoldsLetter(trees []*syntax.Regexp) bool {
+	for _, tree := range trees {
+		if !alwaysHoldsLetter(tree) {
+			return false
+		}
+	}
+	return true
+}
+
+// holdsASCIILetter reports whether every text a literal matches holds an
+// ASCII letter: one of its runes is an ASCII letter that, when the literal
+// folds case, folds only into ASCII letters — "k" also matches the Kelvin sign
+// and "s" the long s.
+func holdsASCIILetter(literal *syntax.Regexp) bool {
+	folds := literal.Flags&syntax.FoldCase != 0
+	for _, char := range literal.Rune {
+		if isASCIILetter(char) && (!folds || foldsOnlyIntoASCII(char)) {
+			return true
+		}
+	}
+	return false
+}
+
+// foldsOnlyIntoASCII reports whether every rune char folds into is ASCII.
+func foldsOnlyIntoASCII(char rune) bool {
+	for folded := unicode.SimpleFold(char); folded != char; folded = unicode.SimpleFold(folded) {
+		if folded > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+// hasNarrowCharacters reports whether every literal in tree is free of
+// whitespace and every class in it, "." included, is narrow
+// ([isNarrowClass]).
+func hasNarrowCharacters(tree *syntax.Regexp) bool {
+	switch tree.Op {
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return false
+	case syntax.OpCharClass:
+		return isNarrowClass(tree.Rune)
+	case syntax.OpLiteral:
+		return !slices.ContainsFunc(tree.Rune, unicode.IsSpace)
+	}
+	for _, subexpression := range tree.Sub {
+		if !hasNarrowCharacters(subexpression) {
+			return false
+		}
+	}
+	return true
+}
+
+// isNarrowClass reports whether a class, given as the pairs of its ranges,
+// matches only ASCII letters, digits and "_" — and the long s and the Kelvin
+// sign, which (?i) folds "s" and "k" into — and only hex digits when it
+// matches a digit.
+func isNarrowClass(ranges []rune) bool {
+	allowed := wordRanges
+	if classMatchesDigit(ranges) {
+		allowed = hexRanges
+	}
+	for index := 0; index < len(ranges); index += 2 {
+		if !withinRanges(ranges[index], ranges[index+1], allowed) {
+			return false
+		}
+	}
+	return true
+}
+
+// classMatchesDigit reports whether a class, given as the pairs of its
+// ranges, matches an ASCII digit.
+func classMatchesDigit(ranges []rune) bool {
+	for index := 0; index < len(ranges); index += 2 {
+		if ranges[index] <= '9' && ranges[index+1] >= '0' {
+			return true
+		}
+	}
+	return false
+}
+
+// withinRanges reports whether the range from low to high fits inside one of
+// allowed, given as the pairs of its ranges.
+func withinRanges(low, high rune, allowed []rune) bool {
+	for index := 0; index < len(allowed); index += 2 {
+		if low >= allowed[index] && high <= allowed[index+1] {
+			return true
+		}
+	}
+	return false
+}
+
+// isASCIILetter reports whether char is an ASCII letter.
+func isASCIILetter(char rune) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z'
+}
+
+// identifierText is where the identifiers of a text sit — its whole UUIDs and
+// the matches of the shapes in [PIIConfig.IdentifierShapes] — and a copy of
+// the text as a built-in pattern for a number reads it, with every digit of
+// those identifiers turned into "x", nil when it holds none. The copy keeps the
+// length and the word boundaries of the text, so a match in it is a match in
+// the text at the same indices.
+type identifierText struct {
 	spans  [][]int
 	hidden []byte
 }
 
-// findUUIDs returns the whole UUIDs of text, hiding them in a copy of labels,
-// or of text when labels is nil.
-func findUUIDs(text string, labels []byte) uuidText {
-	var found uuidText
+// findIdentifiers returns the identifiers of text — its whole UUIDs and the
+// matches of shapes that split no token — hiding them in a copy of labels, or
+// of text when labels is nil.
+func findIdentifiers(text string, labels []byte, shapes []*regexp.Regexp) identifierText {
+	var found identifierText
 	for _, span := range uuidPattern.FindAllStringIndex(text, -1) {
-		if !isWholeUUID(text, span) {
-			continue
+		if isWholeUUID(text, span) {
+			found.hide(text, labels, span)
 		}
-		if found.hidden == nil {
-			found.hidden = []byte(text)
-			copy(found.hidden, labels)
-		}
-		found.spans = append(found.spans, span)
-		for index := span[0]; index < span[1]; index++ {
-			if isDigit(found.hidden[index]) {
-				found.hidden[index] = 'x'
+	}
+	for _, shape := range shapes {
+		for _, span := range shape.FindAllStringIndex(text, -1) {
+			if !splitsToken(text, span) {
+				found.hide(text, labels, span)
 			}
 		}
 	}
 	return found
 }
 
+// hide adds span to the identifiers and turns its digits into "x" in the
+// copy, made from labels, or from text when labels is nil, at the first span.
+func (i *identifierText) hide(text string, labels []byte, span []int) {
+	if i.hidden == nil {
+		i.hidden = []byte(text)
+		copy(i.hidden, labels)
+	}
+	i.spans = append(i.spans, span)
+	for index := span[0]; index < span[1]; index++ {
+		if isDigit(i.hidden[index]) {
+			i.hidden[index] = 'x'
+		}
+	}
+}
+
 // matches returns the matches of a built-in pattern for a number in the text,
 // given the ones it found in the text as [numberText] reads it: those it finds
-// with the digits of the UUIDs hidden, and those of the given ones that cross
-// the border of a whole UUID, since PII glued to an identifier is still PII.
-// Matches that overlap are merged into one.
+// with the digits of the identifiers hidden, and those of the given ones that
+// cross the border of an identifier, since PII glued to an identifier is still
+// PII. Matches that overlap are merged into one.
 //
-// A match that starts inside a whole UUID and runs past its end is missed when
-// a match inside that UUID starts before it and hides it. This is an exception
-// to the secure default, taken for complexity: the regexp package returns
-// matches that do not overlap and cannot search again from inside one, so
-// finding it would take a search of axio's own, for PII whose first digits
-// would have to be the UUID's last ones.
-func (u uuidText) matches(regex *regexp.Regexp, matches [][]int) [][]int {
-	if u.hidden == nil {
+// A match that starts inside an identifier and runs past its end is missed
+// when a match inside that identifier starts before it and hides it. This is
+// an exception to the secure default, taken for complexity: the regexp package
+// returns matches that do not overlap and cannot search again from inside one,
+// so finding it would take a search of axio's own, for PII whose first digits
+// would have to be the identifier's last ones.
+func (i identifierText) matches(regex *regexp.Regexp, matches [][]int) [][]int {
+	if i.hidden == nil {
 		return matches
 	}
-	found := regex.FindAllIndex(u.hidden, -1)
+	found := regex.FindAllIndex(i.hidden, -1)
 	for _, match := range matches {
-		if u.crosses(match) {
+		if i.crosses(match) {
 			found = append(found, match)
 		}
 	}
 	return mergeMatches(found)
 }
 
-// crosses reports whether match overlaps a whole UUID without fitting inside it.
-func (u uuidText) crosses(match []int) bool {
-	for _, span := range u.spans {
-		overlaps := match[0] < span[1] && match[1] > span[0]
-		inside := match[0] >= span[0] && match[1] <= span[1]
-		if overlaps && !inside {
-			return true
+// crosses reports whether match overlaps an identifier and fits inside none:
+// a match inside a declared identifier that crosses a UUID within it does not
+// cross.
+func (i identifierText) crosses(match []int) bool {
+	overlaps := false
+	for _, span := range i.spans {
+		if match[0] >= span[0] && match[1] <= span[1] {
+			return false
 		}
+		overlaps = overlaps || match[0] < span[1] && match[1] > span[0]
 	}
-	return false
+	return overlaps
 }
 
 // isWholeUUID reports whether the match of [uuidPattern] at span is a whole
@@ -1401,36 +1620,50 @@ func isWholeUUID(text string, span []int) bool {
 	return text[span[0]:span[1]] == nilUUID
 }
 
+// splitsToken reports whether the match of a shape at span starts or ends
+// inside a token — a run of ASCII letters, digits and "_" — that it does not
+// hold whole, as \d{14}\.csv does in "cnpj12345678000195.csv": such a match
+// is a label and its number, not an identifier.
+func splitsToken(text string, span []int) bool {
+	start, end := span[0], span[1]
+	splitsStart := start > 0 && start < len(text) && isWordChar(text[start-1]) && isWordChar(text[start])
+	splitsEnd := end > 0 && end < len(text) && isWordChar(text[end-1]) && isWordChar(text[end])
+	return splitsStart || splitsEnd
+}
+
 // numberText is a text as a built-in pattern for a number reads it. A token —
 // a run of ASCII letters, digits and "_" — that glues digits to a label has
 // its letters and "_" turned into "#" in labels, so that its digits stand on
 // their own: "cpf12345678901" is read as "###12345678901". A token made only
 // of hex digits, a letter among them, is an identifier and is read as it is,
 // its digits glued to its letters. labels is nil when no token needs it.
+// shapes are the shapes of [PIIConfig.IdentifierShapes].
 type numberText struct {
-	text       string
-	labels     []byte
-	uuids      uuidText
-	uuidsFound bool
+	text             string
+	labels           []byte
+	shapes           []*regexp.Regexp
+	identifiers      identifierText
+	identifiersFound bool
 }
 
-// readNumbers returns text as a built-in pattern for a number reads it.
-func readNumbers(text string) numberText {
-	return numberText{text: text, labels: separateLabels(text)}
+// readNumbers returns text as a built-in pattern for a number reads it, with
+// shapes declaring identifiers beside the whole UUIDs.
+func readNumbers(text string, shapes []*regexp.Regexp) numberText {
+	return numberText{text: text, labels: separateLabels(text), shapes: shapes}
 }
 
 // matches returns the matches of regex, a built-in pattern for a number, in
-// the text, taken as [uuidText.matches] gives them. The UUIDs are found at the
-// first match.
+// the text, taken as [identifierText.matches] gives them. The identifiers are
+// found at the first match.
 func (n *numberText) matches(regex *regexp.Regexp) [][]int {
 	matches := n.find(regex)
 	if len(matches) == 0 {
 		return nil
 	}
-	if !n.uuidsFound {
-		n.uuids, n.uuidsFound = findUUIDs(n.text, n.labels), true
+	if !n.identifiersFound {
+		n.identifiers, n.identifiersFound = findIdentifiers(n.text, n.labels, n.shapes), true
 	}
-	return n.uuids.matches(regex, matches)
+	return n.identifiers.matches(regex, matches)
 }
 
 // find returns the matches of regex in labels, or in the text when labels is
@@ -1612,6 +1845,15 @@ var tokenPattern = regexp.MustCompile(`(?:eyJ|eyI|eyA|ewo|ewk|ew0)[A-Za-z0-9_-]*
 // uuidPattern matches the shape of a UUID: 32 hex digits in groups of 8, 4, 4,
 // 4 and 12. A match is a whole UUID only when [isWholeUUID] holds for it.
 var uuidPattern = regexp.MustCompile(`[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}`)
+
+// wordRanges are the ranges, in pairs, of the characters a class in a narrow
+// identifier shape may match: ASCII letters, digits and "_", and the long s
+// and the Kelvin sign, which (?i) folds "s" and "k" into.
+var wordRanges = []rune{'0', '9', 'A', 'Z', '_', '_', 'a', 'z', '\u017f', '\u017f', '\u212a', '\u212a'}
+
+// hexRanges are the ranges, in pairs, of the characters a class in a narrow
+// identifier shape may match when it matches a digit: hex digits.
+var hexRanges = []rune{'0', '9', 'A', 'F', 'a', 'f'}
 
 // binaryRedactions holds the binaryRedaction of every encoding not in progress.
 var binaryRedactions = sync.Pool{New: func() any { return newBinaryRedaction() }}

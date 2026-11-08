@@ -177,6 +177,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `PIIFields`           | `[]string`       | Não         | `DefaultSensitiveFields()` | qualquer                               | -                                        |
 | `PIIMaxDepth`         | `int`            | Não         | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` se negativo      |
 | `PIIOmitErrorVerbose` | `bool`           | Não         | `false`                    | `true`, `false`                        | -                                        |
+| `PIIIdentifierShapes` | `[]string`       | Não         | `[]`                       | formas RE2, ver PII                    | `ErrBroadPIIIdentifierShape` se larga    |
 | `PIICustomPatterns`   | `[]CustomPII`    | Não         | `[]`                       | ver CustomPII                          | Regex deve ser válida                    |
 | `TracerType`          | `string`         | Não         | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` se inválido           |
 | `Audit`               | `AuditConfig`    | Não         | desabilitado               | ver AuditConfig                        | -                                        |
@@ -269,6 +270,8 @@ piiFields:
   - secret
 piiMaxDepth: 8
 piiOmitErrorVerbose: false
+piiIdentifierShapes:
+  - "\\d{14,23}-[0-9a-f]{64}\\.csv"
 
 piiCustomPatterns:
   - name: matricula
@@ -560,6 +563,16 @@ Um número grudado num rótulo continua mascarado: `cpf12345678901` vira `cpf***
 
 Um UUID não é PII: os padrões builtin nunca casam dentro de um UUID inteiro — 32 dígitos hexadecimais em grupos de 8-4-4-4-12 com a versão e a variante do RFC 9562, ou o UUID nulo, sem dígito hexadecimal de nenhum dos lados —, então um identificador nunca é mascarado como cartão ou telefone. PII grudada num UUID continua mascarada, e os padrões customizados leem o texto como ele é.
 
+Um nome de arquivo com timestamp tem a forma de um número: `20261107041818.csv` é mascarado como CNPJ. Declare a forma desse identificador, em RE2, com `axio.WithPIIIdentifierShapes(...)`, com `piiIdentifierShapes` no arquivo de config, ou com `PIIConfig.IdentifierShapes`, e os padrões builtin de número — CPF, CNPJ, cartão, telefone — nunca casam dentro dele, como dentro de um UUID. Um número que cruza a borda, ou outro no mesmo texto, continua mascarado, e o e-mail e os padrões customizados leem o texto como ele é. Um casamento que começa ou termina dentro de uma palavra não é identificador, então `\d{14}\.csv` deixa `cnpj12345678000195.csv` mascarado; um prefixo grudado no número entra na forma, como em `relatorio_\d{14}\.xlsx`.
+
+```go
+logger, err := axio.New(config,
+    axio.WithPIIIdentifierShapes(`\d{14,23}-[0-9a-f]{64}\.csv`),
+)
+```
+
+Uma forma traz o contexto em volta do número, dentro de uma palavra: todo texto que ela casa tem uma letra ASCII escrita como é (com `(?i)`, um `k` ou `s` não conta: também casa o sinal de Kelvin ou o s longo), nenhum espaço em branco é escrito nela, e toda classe nela, o `.` incluído, casa só letras ASCII, dígitos e `_` (`(?i)[a-z]` incluída) — só dígitos hex quando casa um dígito. O `New` recusa a que não cumpre isso, como `\d{14}`, `.*`, `\d{14}.*\.csv` ou `\d{11} reais`, com `ErrBroadPIIIdentifierShape`. O que uma forma casa nunca é mascarado como número, então uma forma que nomeia PII, como `cpf\d{11}`, deixa o dado em claro, e uma classe hex absorve um número grudado ao identificador por um separador, como `id_[0-9a-f]+(?:-[0-9a-f]+)*` absorve o CPF de `id_ab-12345678901`. Uma forma só é procurada num texto em que um padrão de número já casou: uma linha sem esse número não paga nada por ela, e uma que tem o identificador paga cerca de 1 µs e duas alocações a mais.
+
 #### Campos Sensíveis Automáticos
 
 Campos cujos nomes contenham estes termos são automaticamente redigidos para `[REDACTED]`:
@@ -568,7 +581,7 @@ Campos cujos nomes contenham estes termos são automaticamente redigidos para `[
 
 #### Configuração
 
-Todo `Logger` e todo `Event` mascaram por padrão, com os padrões de CPF, CNPJ e cartão de crédito e os campos sensíveis acima, venha o `Config` de `DefaultConfig`, de um literal ou de um arquivo. A máscara varre cada entrada: uma linha custa cerca de 1,3× numa mensagem simples e até cerca de 2,8× numa struct ou num erro. Um serviço que não loga dado pessoal pode desligá-la.
+Todo `Logger` e todo `Event` mascaram por padrão, com os padrões de CPF, CNPJ e cartão de crédito e os campos sensíveis acima, venha o `Config` de `DefaultConfig`, de um literal ou de um arquivo. A máscara varre cada entrada: uma linha custa cerca de 2× numa mensagem simples, de 2 a 3× com strings, um map ou um erro, e até cerca de 4,5× numa struct ou numa anotação `HTTP`. Um serviço que não loga dado pessoal pode desligá-la.
 
 ```go
 // Ligada por padrão
@@ -1040,7 +1053,7 @@ Sempre passe `context.Context` e adicione identificadores:
 - Evite logs em loops quentes; prefira agregação
 - Não construa strings/mapas grandes desnecessariamente
 - Em produção: JSON + coleta por agente
-- Achar o caller custa cerca de metade de escrever uma linha; onde a localização no código não é necessária, `omitCaller: true` ou `axio.WithOmitCaller()` o remove
+- Achar o caller custa cerca de 2 µs: metade de uma linha com a máscara de PII desligada, um terço de uma com ela ligada; onde a localização no código não é necessária, `omitCaller: true` ou `axio.WithOmitCaller()` o remove
 
 ### 6. Cardinalidade controlada
 
@@ -1259,6 +1272,8 @@ logger.Error(ctx, err, "falha ao confirmar pagamento",
 | `ErrAuditWithoutPath`    | Audit habilitado sem storePath       | Especifique `storePath` no AuditConfig       |
 | `ErrAuditWithoutJSON`    | Logger auditado só com saídas texto  | Adicione uma saída JSON; só JSON é verificável |
 | `ErrInvalidPIIMaxDepth`  | Profundidade de PII negativa         | Use `0` para o padrão, ou uma profundidade positiva |
+| `ErrInvalidPIIIdentifierShape` | Forma de identificador que não é RE2 | Corrija a expressão                  |
+| `ErrBroadPIIIdentifierShape`   | Forma que pode casar um número sozinho | Escreva as letras em volta do número como elas são |
 | `ErrInvalidTracer`       | Valor de TracerType inválido         | Use `otel` ou `noop`                         |
 | `ErrLoadConfig`          | Falha ao ler arquivo de config       | Verifique caminho e permissões               |
 | `ErrUnknownFormat`       | Extensão de arquivo desconhecida     | Use `.yaml`, `.yml`, `.json` ou `.toml`      |

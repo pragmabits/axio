@@ -3,6 +3,7 @@ package axio
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"go.opentelemetry.io/otel/metric"
 )
@@ -23,6 +24,7 @@ import (
 //   - [WithPII]: configures PII masking
 //   - [WithPIIDisabled]: turns PII masking off
 //   - [WithPIIMaxDepth]: sets how deep PII masking walks into structured values
+//   - [WithPIIIdentifierShapes]: declares identifiers that PII masking leaves as they are
 //   - [WithPIIOmitErrorVerbose]: omits the verbose form of errors instead of masking it
 //   - [WithAudit]: configures auditing with a hash chain stored in a file
 //   - [WithAuditChain]: configures auditing with a hash chain of your own
@@ -196,6 +198,31 @@ func WithPIIMaxDepth(depth int) Option {
 			return fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, depth)
 		}
 		config.PIIMaxDepth = depth
+		return nil
+	}
+}
+
+// WithPIIIdentifierShapes declares the shapes of identifiers that are not
+// PII, as [Config.PIIIdentifierShapes] does from a file: a built-in pattern for
+// a number — CPF, CNPJ, card, phone — never matches inside a match of one, so
+// a file name carrying a timestamp is not masked as a CNPJ. The shapes replace
+// those of the file, and none clears them. [PIIConfig.IdentifierShapes] says
+// what a shape matches and which shapes are too broad. It has no effect with
+// masking turned off by [WithPIIDisabled] or [Config.PIIDisabled], and the
+// shapes are validated all the same.
+//
+// [New] returns [ErrValidateConfig] wrapping [ErrBroadPIIIdentifierShape] for a
+// shape too broad, and [ErrInvalidPIIIdentifierShape] for one that is not RE2.
+//
+// Example:
+//
+//	logger, err := axio.New(config,
+//	    axio.WithPIIIdentifierShapes(`\d{14,23}-[0-9a-f]{64}\.csv`),
+//	)
+func WithPIIIdentifierShapes(shapes ...string) Option {
+	shapes = slices.Clone(shapes)
+	return func(config *Config) error {
+		config.PIIIdentifierShapes = shapes
 		return nil
 	}
 }

@@ -197,6 +197,14 @@ level: info
 		assertEqual(t, config.PIIMaxDepth, 4)
 	})
 
+	t.Run("pii_identifier_shapes", func(t *testing.T) {
+		reader := strings.NewReader("piiIdentifierShapes:\n  - '\\d{14}\\.csv'\n")
+
+		config, err := LoadConfigFrom(reader, "yaml")
+		assertNoError(t, err)
+		assertEqual(t, strings.Join(config.PIIIdentifierShapes, " "), `\d{14}\.csv`)
+	})
+
 	t.Run("pii_disabled_writes_personal_data_as_given", func(t *testing.T) {
 		config, err := LoadConfigFrom(strings.NewReader("piiDisabled: true\n"), "yaml")
 		assertNoError(t, err)
@@ -299,6 +307,15 @@ func TestConfig_Validate(t *testing.T) {
 
 		if err := config.Validate(); !errors.Is(err, ErrInvalidPIIMaxDepth) {
 			t.Errorf("expected ErrInvalidPIIMaxDepth, got %v", err)
+		}
+	})
+
+	t.Run("broad_pii_identifier_shape", func(t *testing.T) {
+		config := minimalConfig()
+		config.PIIIdentifierShapes = []string{`\d{14}`}
+
+		if err := config.Validate(); !errors.Is(err, ErrBroadPIIIdentifierShape) {
+			t.Errorf("expected ErrBroadPIIIdentifierShape, got %v", err)
 		}
 	})
 

@@ -101,6 +101,13 @@ type Config struct {
 	// PIIOmitErrorVerbose omits the verbose form of an error that formats
 	// itself, instead of masking it. See [PIIConfig.OmitErrorVerbose].
 	PIIOmitErrorVerbose bool `json:"piiOmitErrorVerbose,omitempty" yaml:"piiOmitErrorVerbose,omitempty" toml:"piiOmitErrorVerbose,omitempty" mapstructure:"piiOmitErrorVerbose,omitempty"`
+	// PIIIdentifierShapes declares, in RE2 syntax, the shapes of identifiers
+	// that are not PII: a built-in pattern for a number never matches inside a
+	// match of one. A shape that is not RE2 fails [Config.Validate] with
+	// [ErrInvalidPIIIdentifierShape], and one too broad with
+	// [ErrBroadPIIIdentifierShape]. See [PIIConfig.IdentifierShapes] and
+	// [WithPIIIdentifierShapes].
+	PIIIdentifierShapes []string `json:"piiIdentifierShapes,omitempty" yaml:"piiIdentifierShapes,omitempty" toml:"piiIdentifierShapes,omitempty" mapstructure:"piiIdentifierShapes,omitempty"`
 
 	// Audit configures auditing with hash chain.
 	Audit AuditConfig `json:"audit" yaml:"audit" toml:"audit" mapstructure:"audit"`
@@ -268,6 +275,7 @@ func LoadConfigFrom(reader io.Reader, format string) (Config, error) {
 //   - OutputConfig: Type=file requires non-empty Path
 //   - AuditConfig: Enabled=true requires non-empty StorePath
 //   - PIIMaxDepth is not negative
+//   - PIIIdentifierShapes: every shape is RE2 and not too broad
 //   - AgentMode: requires stdout+json outputs
 //   - TracerType is "otel", "noop", or empty
 //
@@ -295,6 +303,10 @@ func (c *Config) Validate() error {
 
 	if c.PIIMaxDepth < 0 {
 		return fmt.Errorf("%w: %d", ErrInvalidPIIMaxDepth, c.PIIMaxDepth)
+	}
+
+	if _, err := compileIdentifierShapes(c.PIIIdentifierShapes); err != nil {
+		return err
 	}
 
 	if c.TracerType != "" && c.TracerType != "otel" && c.TracerType != "noop" {

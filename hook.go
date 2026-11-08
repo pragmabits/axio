@@ -216,6 +216,7 @@ func buildHooks(config Config) ([]Hook, error) {
 			Fields:           config.PIIFields,
 			MaxDepth:         config.PIIMaxDepth,
 			OmitErrorVerbose: config.PIIOmitErrorVerbose,
+			IdentifierShapes: config.PIIIdentifierShapes,
 		}
 		piiHook, err := NewPIIHook(piiConfig)
 		if err != nil {

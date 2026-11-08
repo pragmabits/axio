@@ -50,7 +50,7 @@ go run ./examples/basic/              # Logger, levels, named, DefaultConfig
 go run ./examples/config/             # LoadConfig, LoadConfigFrom
 go run ./examples/outputs/            # Console+File, agent mode, production
 go run ./examples/annotations/        # Field, HTTP metadata
-go run ./examples/pii/                # MaskString API, masking by default
+go run ./examples/pii/                # MaskString API, masking by default, identifier shapes
 go run ./examples/audit/              # Audited logger, Verify, tamper detection
 go run ./examples/tracing/            # OpenTelemetry
 go run ./examples/rotation/           # Size + time rotation
@@ -81,7 +81,7 @@ make pin-library LIBRARY_VERSION=<version>   # the same, through the Makefile
 - `openlogfile_unix.go`, `openlogfile_other.go` — opening a rotating log and its lock with the descriptor left out of the runtime's poller on Unix; `os.OpenFile` elsewhere
 - `options.go` — Functional options (WithOutputs, WithPII, WithPIIDisabled, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
-- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole, no built-in pattern matching inside a whole UUID (RFC 9562 version and variant, or nil), a number glued to a label masked and one inside a hex identifier not
+- `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole, no built-in pattern for a number matching inside a whole UUID (RFC 9562 version and variant, or nil) or inside a match of a shape the caller declares (`IdentifierShapes`, refused when it could match a bare number), a number glued to a label masked and one inside a hex identifier not
 - `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written
 - `storelock_flock.go`, `storelock_other.go` — the lock of a `FileStore` and of a rotating file: flock where it exists, nothing elsewhere
 - `tracing.go` — OpenTelemetry trace extraction

@@ -30,6 +30,14 @@ var (
 	ErrAuditWithoutJSON = errors.New("audit requires a JSON output")
 	// ErrInvalidPIIMaxDepth indicates a negative PII masking depth.
 	ErrInvalidPIIMaxDepth = errors.New("PII max depth cannot be negative")
+	// ErrInvalidPIIIdentifierShape indicates a PII identifier shape that is not
+	// a valid RE2 expression.
+	ErrInvalidPIIIdentifierShape = errors.New("invalid PII identifier shape")
+	// ErrBroadPIIIdentifierShape indicates a PII identifier shape that could
+	// match a number with no context: one of its matches may hold no ASCII
+	// letter written as is, a literal in it may hold whitespace, or a class in
+	// it may match more than [PIIConfig.IdentifierShapes] allows.
+	ErrBroadPIIIdentifierShape = errors.New("PII identifier shape is too broad")
 )
 
 var (

@@ -177,6 +177,7 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 | `PIIFields`           | `[]string`       | No       | `DefaultSensitiveFields()` | any                                    | -                                      |
 | `PIIMaxDepth`         | `int`            | No       | `0` (= `32`)               | `>= 0`                                 | `ErrInvalidPIIMaxDepth` if negative    |
 | `PIIOmitErrorVerbose` | `bool`           | No       | `false`                    | `true`, `false`                        | -                                      |
+| `PIIIdentifierShapes` | `[]string`       | No       | `[]`                       | RE2 shapes, see PII                    | `ErrBroadPIIIdentifierShape` if broad  |
 | `PIICustomPatterns`   | `[]CustomPII`    | No       | `[]`                       | see CustomPII                          | Regex must be valid                    |
 | `TracerType`          | `string`         | No       | `noop`                     | `otel`, `noop`                         | `ErrInvalidTracer` if invalid          |
 | `Audit`               | `AuditConfig`    | No       | disabled                   | see AuditConfig                        | -                                      |
@@ -269,6 +270,8 @@ piiFields:
   - secret
 piiMaxDepth: 8
 piiOmitErrorVerbose: false
+piiIdentifierShapes:
+  - "\\d{14,23}-[0-9a-f]{64}\\.csv"
 
 piiCustomPatterns:
   - name: employee_id
@@ -560,6 +563,16 @@ A number glued to a label is still masked: `cpf12345678901` becomes `cpf***.***.
 
 A UUID is not PII: the built-in patterns never match inside a whole UUID — 32 hex digits in groups of 8-4-4-4-12 carrying the RFC 9562 version and variant, or the nil UUID, with no hex digit on either side — so an identifier is never masked as a card or a phone number. PII glued to a UUID is still masked, and custom patterns read the text as it is.
 
+A file name carrying a timestamp has the shape of a number: `20261107041818.csv` is masked as a CNPJ. Declare the shape of such an identifier, in RE2, with `axio.WithPIIIdentifierShapes(...)`, `piiIdentifierShapes` in the config file, or `PIIConfig.IdentifierShapes`, and the built-in patterns for a number — CPF, CNPJ, card, phone — never match inside it, as inside a UUID. A number that crosses its border, or one elsewhere in the same text, is still masked, and the e-mail and custom patterns read the text as it is. A match that starts or ends inside a word is no identifier, so `\d{14}\.csv` leaves `cnpj12345678000195.csv` masked; a prefix glued to the number goes into the shape, as in `relatorio_\d{14}\.xlsx`.
+
+```go
+logger, err := axio.New(config,
+    axio.WithPIIIdentifierShapes(`\d{14,23}-[0-9a-f]{64}\.csv`),
+)
+```
+
+A shape holds the context around its number, inside one word: every text it matches holds an ASCII letter written as is (under `(?i)` a `k` or `s` does not count: it also matches the Kelvin sign or the long s), no whitespace is written in it, and every class in it, `.` included, matches only ASCII letters, digits and `_` (`(?i)[a-z]` included) — only hex digits when it matches a digit. `New` refuses one that does not, such as `\d{14}`, `.*`, `\d{14}.*\.csv` or `\d{11} reais`, with `ErrBroadPIIIdentifierShape`. Whatever a shape matches is never masked as a number, so a shape that names PII, such as `cpf\d{11}`, leaves it in the clear, and a hex class takes in a number glued to the identifier by a separator, as `id_[0-9a-f]+(?:-[0-9a-f]+)*` takes in the CPF of `id_ab-12345678901`. A shape is searched for only in a text where a pattern for a number already matched: a line with no such number pays nothing for it, and one holding the identifier about 1 µs and two allocations more.
+
 #### Automatic Sensitive Fields
 
 Fields whose names contain these terms are automatically redacted to `[REDACTED]`:
@@ -568,7 +581,7 @@ Fields whose names contain these terms are automatically redacted to `[REDACTED]
 
 #### Configuration
 
-Every `Logger` and `Event` masks by default, with the CPF, CNPJ and credit card patterns and the sensitive fields above, whether its `Config` comes from `DefaultConfig`, from a literal or from a file. Masking scans every entry: a line costs roughly 1.3× as much for a plain message and up to about 2.8× for a struct or an error. A service that logs no personal data can turn it off.
+Every `Logger` and `Event` masks by default, with the CPF, CNPJ and credit card patterns and the sensitive fields above, whether its `Config` comes from `DefaultConfig`, from a literal or from a file. Masking scans every entry: a line costs roughly 2× as much for a plain message, 2 to 3× with strings, a map or an error, and up to about 4.5× for a struct or an `HTTP` annotation. A service that logs no personal data can turn it off.
 
 ```go
 // On by default
@@ -1040,7 +1053,7 @@ Always pass `context.Context` and add identifiers:
 - Avoid logs in hot loops; prefer aggregation
 - Don't build large strings/maps unnecessarily
 - In production: JSON + agent collection
-- Finding the caller costs about half of writing a line; where the source location is not needed, `omitCaller: true` or `axio.WithOmitCaller()` drops it
+- Finding the caller costs about 2 µs: half of a line with PII masking off, a third of one with it on; where the source location is not needed, `omitCaller: true` or `axio.WithOmitCaller()` drops it
 
 ### 6. Controlled cardinality
 
@@ -1259,6 +1272,8 @@ logger.Error(ctx, err, "failed to confirm payment",
 | `ErrAuditWithoutPath`    | Audit enabled without storePath      | Specify `storePath` in AuditConfig           |
 | `ErrAuditWithoutJSON`    | Audited Logger with only text outputs| Add a JSON output; only JSON lines verify    |
 | `ErrInvalidPIIMaxDepth`  | Negative PII masking depth           | Use `0` for the default, or a positive depth |
+| `ErrInvalidPIIIdentifierShape` | PII identifier shape that is not RE2 | Fix the expression                     |
+| `ErrBroadPIIIdentifierShape`   | Shape that could match a bare number | Write the letters around the number as they are |
 | `ErrInvalidTracer`       | Invalid TracerType value             | Use `otel` or `noop`                         |
 | `ErrLoadConfig`          | Failed to read config file           | Check path and permissions                   |
 | `ErrUnknownFormat`       | Unknown file extension               | Use `.yaml`, `.yml`, `.json`, or `.toml`     |

@@ -374,6 +374,200 @@ func TestPIIMasker_MaskFields_UUID(t *testing.T) {
 	})
 }
 
+func TestPIIMasker_MaskString_IdentifierShape(t *testing.T) {
+	const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	maskerWith := func(shapes ...string) *PIIMasker {
+		config := DefaultPIIConfig()
+		config.IdentifierShapes = shapes
+		return MustPIIMasker(config)
+	}
+	masker := maskerWith(`\d{14}\.csv`, `relatorio_\d{14}\.xlsx`, `\d{14,23}-[0-9a-f]{64}\.csv`)
+
+	t.Run("without_a_shape_nothing_changes", func(t *testing.T) {
+		tests := []struct {
+			input string
+			want  string
+		}{
+			{"data/extraction/contracts/20261107041818.csv", "data/extraction/contracts/**.***.***/****-**.csv"},
+			{"relatorio_20261107041818.xlsx", "relatorio_**.***.***/****-**.xlsx"},
+			{"20261107041818-a1b2c3d4.csv", "**.***.***/****-**-a1b2c3d4.csv"},
+			{"2026110704181812.csv", "****-****-****-****.csv"},
+			{"20261107041.csv", "***.***.***-**.csv"},
+			{"1762490298123.csv", "1762490298123.csv"},
+			{"20261107-041818.csv", "20261107-041818.csv"},
+			{"committed 20261107041818.csv", "committed **.***.***/****-**.csv"},
+		}
+		unshaped := MustPIIMasker(DefaultPIIConfig())
+		for _, test := range tests {
+			assertEqual(t, unshaped.MaskString(test.input), test.want)
+		}
+	})
+
+	t.Run("declared_identifier_is_not_pii", func(t *testing.T) {
+		for _, text := range []string{
+			"data/extraction/contracts/20261107041818.csv",
+			"committed 20261107041818.csv",
+			"relatorio_20261107041818.xlsx",
+			"data/extraction/contracts/20261107041818-" + hash + ".csv",
+			"2026110704181812-" + hash + ".csv",
+		} {
+			result := masker.MaskStringWithCounts(text)
+			if result.Masked != text || len(result.Matches) > 0 {
+				t.Errorf("%s masked to %s, matches %v", text, result.Masked, result.Matches)
+			}
+		}
+	})
+
+	t.Run("number_out_of_a_declared_identifier_is_masked", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			input string
+			want  string
+		}{
+			{
+				name:  "no_shape_covers_it",
+				input: "20261107041818-a1b2c3d4.csv",
+				want:  "**.***.***/****-**-a1b2c3d4.csv",
+			},
+			{
+				name:  "too_few_digits_for_the_shape",
+				input: "20261107041.csv",
+				want:  "***.***.***-**.csv",
+			},
+			{
+				name:  "cpf_beside_it",
+				input: "cpf 123.456.789-01 wrote 20261107041818.csv",
+				want:  "cpf ***.***.***-** wrote 20261107041818.csv",
+			},
+			{
+				name:  "cnpj_beside_it",
+				input: "cnpj 12345678000195, file 20261107041818.csv",
+				want:  "cnpj **.***.***/****-**, file 20261107041818.csv",
+			},
+			{
+				name:  "card_running_into_it",
+				input: "2026110704181812.csv",
+				want:  "****-****-****-****.csv",
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				assertEqual(t, masker.MaskString(test.input), test.want)
+			})
+		}
+	})
+
+	t.Run("shape_splitting_a_token_is_no_identifier", func(t *testing.T) {
+		assertEqual(t, masker.MaskString("cnpj12345678000195.csv"), "cnpj**.***.***/****-**.csv")
+		labeled := maskerWith(`\d{11}\.xlsx`)
+		assertEqual(t, labeled.MaskString("relatorio_12345678901.xlsx"), "relatorio_***.***.***-**.xlsx")
+	})
+
+	t.Run("number_crossing_a_uuid_inside_the_identifier_is_not_pii", func(t *testing.T) {
+		const text = "v4111-01234567-0123-4123-8958-058012345678.csv"
+		versioned := maskerWith(`v\d{4}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.csv`)
+		assertEqual(t, versioned.MaskString(text), text)
+	})
+
+	t.Run("card_crossing_the_border_is_masked", func(t *testing.T) {
+		crossed := maskerWith(`\d{4}-[0-9a-f]{4}\.csv`)
+		assertEqual(t, crossed.MaskString("4111-1111-1111-1111-abcd.csv"), "****-****-****-****-abcd.csv")
+	})
+}
+
+func TestNewPIIMasker_IdentifierShapes(t *testing.T) {
+	newMasker := func(shape string) error {
+		_, err := NewPIIMasker(PIIConfig{Patterns: []PIIPattern{PatternCNPJ}, IdentifierShapes: []string{shape}})
+		return err
+	}
+
+	t.Run("broad_shape_is_refused", func(t *testing.T) {
+		for _, shape := range []string{
+			`\d{14}`,
+			``,
+			`"\d{14}"`,
+			`=\d{14}`,
+			`\d{14}-[0-9a-f]{64}`,
+			`[a-z_]*[a-z][a-z_]*\d{11}`,
+			`x?\d{14}`,
+			`x*\d{14}`,
+			`x{0}\d{14}`,
+			`x{0,3}\d{14}`,
+			`(?:x|)\d{14}`,
+			`\d{14}(?:\.csv)?`,
+			`.*`,
+			`\w*[a-z]\w*`,
+			`cpf\w+`,
+			`[!-~]*\.pdf`,
+			`[\w./-]+\.pdf`,
+			`\d{14}.*\.csv`,
+			`\d{14}\D*\.csv`,
+			`\d{11} reais`,
+			`(?i)k\d{11}`,
+			`(?i)s\d{11}`,
+			`(?i)[0-9a-z]+\.csv`,
+		} {
+			if err := newMasker(shape); !errors.Is(err, ErrBroadPIIIdentifierShape) {
+				t.Errorf("%q: got %v, want ErrBroadPIIIdentifierShape", shape, err)
+			}
+		}
+	})
+
+	t.Run("narrow_shape_is_accepted", func(t *testing.T) {
+		for _, shape := range []string{
+			`\d{14}\.csv`,
+			`\d{14,23}-[0-9a-f]{64}\.csv`,
+			`relatorio_\d{14}\.xlsx`,
+			`(?i)\d{14}\.CSV`,
+			`[a-z]+_\d{14}\.csv`,
+			`^\d{14}\.csv$`,
+			`(?i)[a-z]+_\d{14}\.csv`,
+		} {
+			if err := newMasker(shape); err != nil {
+				t.Errorf("%q: %v", shape, err)
+			}
+		}
+	})
+
+	t.Run("shape_that_does_not_compile_is_refused", func(t *testing.T) {
+		for _, shape := range []string{`(`, `[a-`} {
+			if err := newMasker(shape); !errors.Is(err, ErrInvalidPIIIdentifierShape) {
+				t.Errorf("%q: got %v, want ErrInvalidPIIIdentifierShape", shape, err)
+			}
+		}
+	})
+}
+
+func TestPIIMasker_MaskFields_IdentifierShape(t *testing.T) {
+	const name = "data/extraction/contracts/20261107041818.csv"
+	config := DefaultPIIConfig()
+	config.IdentifierShapes = []string{`\d{14}\.csv`}
+	masker := MustPIIMasker(config)
+
+	t.Run("declared_identifier_in_every_value_is_not_pii", func(t *testing.T) {
+		annotations := Annotations{
+			Field("file", name),
+			Field("files", []string{name}),
+			Field("order", piiOrder{ID: name}),
+			Field("cause", errors.New("write "+name+" failed")),
+			Field("body", []byte(name)),
+			Field("blob", base64.StdEncoding.EncodeToString([]byte("\xff\xfe "+name))),
+		}
+		original := slices.Clone(annotations)
+
+		matches := masker.MaskFieldsWithCounts(annotations)
+
+		if len(matches) > 0 {
+			t.Errorf("matches %v", matches)
+		}
+		for index, annotation := range annotations {
+			if !reflect.DeepEqual(annotation.Data(), original[index].Data()) {
+				t.Errorf("%s masked to %v", annotation.Name(), annotation.Data())
+			}
+		}
+	})
+}
+
 func TestPIIMasker_MaskFields_NumberGluedToALabel(t *testing.T) {
 	masker := MustPIIMasker(DefaultPIIConfig())
 

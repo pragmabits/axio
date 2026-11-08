@@ -124,6 +124,58 @@ func TestWithPIIMaxDepth(t *testing.T) {
 	})
 }
 
+func TestWithPIIIdentifierShapes(t *testing.T) {
+	shapesOf := func(options ...Option) string {
+		config := minimalConfig()
+		config.PIIIdentifierShapes = []string{`relatorio_\d{14}\.xlsx`}
+		for _, option := range options {
+			assertNoError(t, option(&config))
+		}
+		return strings.Join(config.PIIIdentifierShapes, " ")
+	}
+
+	t.Run("replaces_the_shapes_of_the_file", func(t *testing.T) {
+		assertEqual(t, shapesOf(WithPIIIdentifierShapes(`\d{14}\.csv`, `\d{11}\.txt`)), `\d{14}\.csv \d{11}\.txt`)
+	})
+
+	t.Run("no_shape_clears_them", func(t *testing.T) {
+		assertEqual(t, shapesOf(WithPIIIdentifierShapes()), "")
+	})
+
+	t.Run("the_last_one_wins", func(t *testing.T) {
+		assertEqual(t, shapesOf(WithPIIIdentifierShapes(`\d{14}\.csv`), WithPIIIdentifierShapes(`\d{11}\.txt`)), `\d{11}\.txt`)
+	})
+
+	t.Run("keeps_a_copy_of_the_shapes", func(t *testing.T) {
+		shapes := []string{`\d{14}\.csv`}
+		option := WithPIIIdentifierShapes(shapes...)
+		shapes[0] = `\d{11}\.txt`
+		assertEqual(t, shapesOf(option), `\d{14}\.csv`)
+	})
+
+	t.Run("the_logger_leaves_a_declared_identifier_as_is", func(t *testing.T) {
+		const name = "data/extraction/contracts/20261107041818.csv"
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), WithOutputs(output), WithPII(nil, nil), WithPIIIdentifierShapes(`\d{14}\.csv`))
+		assertNoError(t, err)
+		logger.Error(context.Background(), errors.New("write "+name+" failed"), "committed "+name+" for 123.456.789-01", Field("file", name))
+		assertNoError(t, logger.Close())
+
+		records := parseJSONLines(t, output.String())
+		assertEqual(t, len(records), 1)
+		assertEqual(t, records[0]["message"], any("committed "+name+" for ***.***.***-**"))
+		assertEqual(t, records[0]["file"], any(name))
+		assertEqual(t, records[0]["error"], any("write "+name+" failed"))
+	})
+
+	t.Run("broad_shape_fails_new", func(t *testing.T) {
+		_, err := New(minimalConfig(), WithOutputs(newBufferOutput(FormatJSON)), WithPIIIdentifierShapes(`\d{14}`))
+		if !errors.Is(err, ErrValidateConfig) || !errors.Is(err, ErrBroadPIIIdentifierShape) {
+			t.Errorf("expected ErrValidateConfig and ErrBroadPIIIdentifierShape, got %v", err)
+		}
+	})
+}
+
 func TestWithPIIOmitErrorVerbose(t *testing.T) {
 	t.Run("sets_the_flag", func(t *testing.T) {
 		config := minimalConfig()

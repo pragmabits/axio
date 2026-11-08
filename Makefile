@@ -22,7 +22,7 @@ EXAMPLES := $(notdir $(wildcard examples/*))
 # local toolchain, which golangci-lint needs: a binary built with an older Go
 # cannot analyze code for go 1.27.
 TOOLS_DIRECTORY := $(CURDIR)/bin/tools
-GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT_VERSION := v2.15.0
 GOVULNCHECK_VERSION := v1.7.0
 BUMPIT_VERSION := v0.4.0
 

@@ -1,6 +1,6 @@
 ---
 name: axio
-description: "How to use axio (github.com/pragmabits/axio), the Go structured logging library. Read this before writing, reviewing or debugging Go code that logs with axio: creating a Logger with axio.New, DefaultConfig or LoadConfig, the level methods and their context and error arguments, annotations with Field, With and Named, outputs and rotation, PII masking and its defaults, the audit hash chain, wide events, hooks and custom extensions, OpenTelemetry tracing and metrics, and the axio command that renders and verifies logs. Trigger phrases include \"axio\", \"pragmabits/axio\", \"axio.New\", \"axio.Config\", \"axio.Field\", \"WithOutputs\", \"WithPII\", \"WithPIIDisabled\", \"WithAudit\", \"NewEvent\", \"wide event\", \"RotatingFile\", \"PII masking\", \"hash chain\", \"axio render\", \"axio verify\", \"structured logging in Go\"."
+description: "How to use axio (github.com/pragmabits/axio), the Go structured logging library. Read this before writing, reviewing or debugging Go code that logs with axio: creating a Logger with axio.New, DefaultConfig or LoadConfig, the level methods and their context and error arguments, annotations with Field, With and Named, outputs and rotation, PII masking and its defaults, the audit hash chain, wide events, hooks and custom extensions, OpenTelemetry tracing and metrics, and the axio command that renders and verifies logs. Trigger phrases include \"axio\", \"pragmabits/axio\", \"axio.New\", \"axio.Config\", \"axio.Field\", \"WithOutputs\", \"WithPII\", \"WithPIIDisabled\", \"WithAudit\", \"logger.Event\", \"wide event\", \"RotatingFile\", \"PII masking\", \"hash chain\", \"axio render\", \"axio verify\", \"structured logging in Go\"."
 ---
 
 # Using axio
@@ -115,7 +115,7 @@ The rest: `serviceVersion`, `instanceId`, `callerSkip`, `omitCaller`, `agentMode
 
 ## Outputs
 
-`Console(format)` writes to stderr, `Stdout(format)` to stdout, `File(path, format)` and `MustFile` to a file, and `RotatingFile(path, format, rotation)` and `MustRotatingFile` to a rotating file. Each output has its own format, `FormatJSON` or `FormatText`. `RotationConfig` has `MaxSize` in MB (0 means no size rotation), `MaxAge` in days, `MaxBackups`, `Compress`, `LocalTime` and `Interval` (a `Duration`, such as `24h`). Outputs on one path share one rotator, so a logger and per-request events can all write to the same rotating file; one `Output` value belongs to one `Logger` or `Event` (a second fails with `ErrOutputInUse`), another rotation on an open path fails with `ErrRotationConflict`, and another process on the same rotating file fails with `ErrRotatingFileLocked`, through a lock on `<path>.lock`. Rotation happens on the write: past `MaxSize`, or once `Interval` has passed since the last rotation, kept in the lock's modification time. A custom `Output` implements `Format`, `Type`, `Write`, `Sync` and `Close`, and its `Type()` must be `OutputConsole` or `OutputStdout`.
+`Console(format)` writes to stderr, `Stdout(format)` to stdout, `File(path, format)` and `MustFile` to a file, and `RotatingFile(path, format, rotation)` and `MustRotatingFile` to a rotating file. Each output has its own format, `FormatJSON` or `FormatText`. `RotationConfig` has `MaxSize` in MB (0 means no size rotation), `MaxAge` in days, `MaxBackups`, `Compress`, `LocalTime` and `Interval` (a `Duration`, such as `24h`). Outputs on one path share one rotator, so several loggers can write to the same rotating file; one `Output` value belongs to one `Logger` (a second fails with `ErrOutputInUse`), another rotation on an open path fails with `ErrRotationConflict`, and another process on the same rotating file fails with `ErrRotatingFileLocked`, through a lock on `<path>.lock`. Rotation happens on the write: past `MaxSize`, or once `Interval` has passed since the last rotation, kept in the lock's modification time. A custom `Output` implements `Format`, `Type`, `Write`, `Sync` and `Close`, and its `Type()` must be `OutputConsole` or `OutputStdout`.
 
 ## PII masking
 
@@ -131,14 +131,10 @@ Masking is on in every Logger and Event, whether the `Config` comes from `Defaul
 
 ## Wide events
 
-One line per unit of work, built up as it runs:
+One line per unit of work, built up as it runs, started from a Logger:
 
 ```go
-event, err := axio.NewEvent("http_request", config)
-if err != nil {
-    return err
-}
-defer event.Close()
+event := logger.Event("http_request")
 ctx = axio.WithEvent(ctx, event)
 defer event.Emit(ctx)
 
@@ -149,11 +145,11 @@ if event := axio.EventFromContext(ctx); event != nil {
 }
 ```
 
-`Add`, `With` and `SetError` are safe from any goroutine. `Emit` writes one JSON line with the accumulated fields and `duration_ms`, runs PII masking, custom hooks and auditing, and only the first call writes. The line has no level field. An event takes the same `Config` and options as `New`, and `Close` releases its outputs.
+`Add`, `With` and `SetError` are safe from any goroutine. `Emit` writes one line with the accumulated fields and `duration_ms` through the logger's PII masking, custom hooks and auditing, and only the first call writes. The line has no level field: a JSON output gets JSON, and a text output the Console's text with `EVENT` in the level column. An event owns nothing, so starting one allocates the event alone and there is no `Close`: options go to `New`, the event carries the `With` annotations and the `Named` name of the logger it came from, is written whatever that logger's level, and writes nothing after the root logger is closed.
 
 ## Audit chain
 
-`WithAudit("/var/lib/app/chain.json")` makes each JSON line end with `previous_hash` and `hash`: SHA-256 over the previous hash and the line's own bytes, so any change, removal or reordering breaks the chain. An audited Logger needs a JSON output (`ErrAuditWithoutJSON`). Every Logger and Event on the same path in a process extends one chain, and `New` locks the store against a second process (`ErrChainStoreLocked`; no lock on Windows, Solaris or AIX). `WithAuditChain(chain)` takes a chain over your own `ChainStore` (`Save(sequence, lastHash)` and `Load()`). To verify: `chain.Verify(file, "")`, or `VerifyLines(reader, previousHash)` for one rotated file at a time. The errors are `ErrHashMismatch`, `ErrChainBroken` and `ErrChainIncomplete`. PII is masked before hashing.
+`WithAudit("/var/lib/app/chain.json")` makes each JSON line end with `previous_hash` and `hash`: SHA-256 over the previous hash and the line's own bytes, so any change, removal or reordering breaks the chain. An audited Logger needs a JSON output (`ErrAuditWithoutJSON`). Every Logger on the same path in a process, and every event they start, extends one chain, and `New` locks the store against a second process (`ErrChainStoreLocked`; no lock on Windows, Solaris or AIX). `WithAuditChain(chain)` takes a chain over your own `ChainStore` (`Save(sequence, lastHash)` and `Load()`). To verify: `chain.Verify(file, "")`, or `VerifyLines(reader, previousHash)` for one rotated file at a time. The errors are `ErrHashMismatch`, `ErrChainBroken` and `ErrChainIncomplete`. PII is masked before hashing.
 
 ## Hooks and extensions
 

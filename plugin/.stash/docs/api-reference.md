@@ -59,6 +59,7 @@ type Logger interface {
     Warn(context.Context, error, string, ...Annotation)   // error is 2nd param
     Error(context.Context, error, string, ...Annotation)  // error is 2nd param
     With(...Annotation) Logger
+    Event(name string) *Event                             // a wide event written through this logger
     Close() error
 }
 ```
@@ -450,7 +451,7 @@ func (s *FileStore) Save(sequence uint64, lastHash string) error
 func (s *FileStore) Load() (uint64, string, error)
 ```
 
-`New` and `NewEvent` take an exclusive `flock` on `path + ".lock"` — for the
+`New` takes an exclusive `flock` on `path + ".lock"` — for the
 `WithAudit` path, and for a `FileStore` passed through `WithAuditChain`, whose
 chain is then loaded from the store again — and hold it while the process runs;
 a second process on the same store fails in `New` with `ErrChainStoreLocked`
@@ -472,12 +473,12 @@ func (c *HashChain) LastHash() string
 func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err error)
 ```
 
-`Add` hashes `sha256(previousHash ‖ data)`. An audited Logger or Event writes
-every JSON line with `previous_hash` and `hash` as its last two keys, hashing
-exactly the bytes before them; hashing, saving the state and writing happen
-under the chain's lock, so the file's order is the chain's order. A Logger's
-text outputs show the first 6 characters of the hash, for reference only; an
-audited Event writes its JSON line to every output.
+`Add` hashes `sha256(previousHash ‖ data)`. An audited Logger, and every event
+it starts, writes every JSON line with `previous_hash` and `hash` as its last
+two keys, hashing exactly the bytes before them; hashing, saving the state and
+writing happen under the chain's lock, so the file's order is the chain's
+order. Text outputs show the first 6 characters of the hash, for reference
+only.
 
 `Verify` reads audited JSON lines and returns `ErrHashMismatch` (a line
 changed), `ErrChainBroken` (a line removed, moved, inserted or without
@@ -487,10 +488,9 @@ without the end-of-chain check and returns the last line's hash, for
 verifying rotated files one at a time. From the terminal: `axio verify
 --store chain.json [file...]`.
 
-`WithAudit(path)` shares one chain per path across every Logger and Event in
-the process. `WithAuditChain(chain)` takes a chain over any `ChainStore`. An
-audited Logger needs a JSON output (`ErrAuditWithoutJSON`); an Event writes
-JSON to every output.
+`WithAudit(path)` shares one chain per path across every Logger in the
+process and the events they start. `WithAuditChain(chain)` takes a chain over
+any `ChainStore`. An audited Logger needs a JSON output (`ErrAuditWithoutJSON`).
 
 ## Tracing (tracing.go)
 
@@ -519,7 +519,7 @@ type Metrics interface {
 
 type PIIOrigin struct {
     Annotation string // "message", "error", or an annotation's key as written
-    Logger     string // the Named logger; empty for the root logger and events
+    Logger     string // the Named logger, also for its events; empty for the root's
 }
 
 type PIIRedaction string // declared in pii.go: why a value became [REDACTED] whole
@@ -539,7 +539,7 @@ type NoopMetrics struct{}
 ```go
 type Event struct { /* internal */ }
 
-func NewEvent(name string, config Config, options ...Option) (*Event, error)
+// started with Logger.Event(name string) *Event, a method of the Logger interface
 func WithEvent(ctx context.Context, event *Event) context.Context
 func EventFromContext(ctx context.Context) *Event
 
@@ -547,11 +547,15 @@ func (e *Event) Add[T any](key string, value T)
 func (e *Event) With(annotations ...Annotation)
 func (e *Event) SetError(err error, details ...Annotation)
 func (e *Event) Emit(ctx context.Context)
-func (e *Event) Close() error
 ```
 
-A hook may rename the event through `Entry.Message`. An `Emit` after `Close`
-writes nothing; a second `Close` returns `ErrEventClosed`.
+An event owns nothing: it writes through the logger it came from — its outputs,
+hooks, tracer and audit chain — and starting one allocates the event alone. It
+carries the `With` annotations and the `Named` name of that logger, is written
+whatever the logger's level, and writes nothing after the root logger is
+closed. A JSON output gets the event as JSON; a text output gets the Console's
+text with `EVENT` in the level column. A hook may rename the event through
+`Entry.Message`.
 
 ## Duration (duration.go)
 
@@ -594,7 +598,7 @@ var (
 var (
     ErrOpenFile           = errors.New("failed to open file")
     ErrOutputClosed       = errors.New("output already closed")
-    ErrOutputInUse        = errors.New("output already belongs to a logger or event")
+    ErrOutputInUse        = errors.New("output already belongs to a logger")
     ErrRotationConflict   = errors.New("file is already open with another rotation")
     ErrRotatingFileLocked = errors.New("rotating file is in use by another process")
 )
@@ -620,6 +624,5 @@ var (
 var (
     ErrLoggerClosed  = errors.New("logger already closed")
     ErrLoggerNotRoot = errors.New("close called on forked logger")
-    ErrEventClosed   = errors.New("event already closed")
 )
 ```

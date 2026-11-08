@@ -106,40 +106,21 @@ func newOtelMetrics(provider metric.MeterProvider, config MetricsConfig) (*otelM
 		metric.WithInstrumentationVersion(config.MeterVersion),
 	)
 
-	logsTotal, err := meter.Int64Counter(
-		"logs.total",
-		metric.WithDescription("Total logs emitted"),
-		metric.WithUnit("{record}"),
-	)
+	logsTotal, err := int64Counter(meter, "logs.total", "Total logs emitted", "{record}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: logs.total: %w", ErrCreateMetric, err)
+		return nil, err
 	}
-
-	piiMasked, err := meter.Int64Counter(
-		"pii.masked",
-		metric.WithDescription("Total PII occurrences masked"),
-		metric.WithUnit("{occurrence}"),
-	)
+	piiMasked, err := int64Counter(meter, "pii.masked", "Total PII occurrences masked", "{occurrence}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: pii.masked: %w", ErrCreateMetric, err)
+		return nil, err
 	}
-
-	piiRedacted, err := meter.Int64Counter(
-		"pii.redacted",
-		metric.WithDescription("Total values redacted whole"),
-		metric.WithUnit("{value}"),
-	)
+	piiRedacted, err := int64Counter(meter, "pii.redacted", "Total values redacted whole", "{value}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: pii.redacted: %w", ErrCreateMetric, err)
+		return nil, err
 	}
-
-	auditRecords, err := meter.Int64Counter(
-		"audit.records",
-		metric.WithDescription("Total audit records created"),
-		metric.WithUnit("{entry}"),
-	)
+	auditRecords, err := int64Counter(meter, "audit.records", "Total audit records created", "{entry}")
 	if err != nil {
-		return nil, fmt.Errorf("%w: audit.records: %w", ErrCreateMetric, err)
+		return nil, err
 	}
 
 	hookDuration, err := meter.Float64Histogram(
@@ -151,28 +132,15 @@ func newOtelMetrics(provider metric.MeterProvider, config MetricsConfig) (*otelM
 		return nil, fmt.Errorf("%w: hook.duration: %w", ErrCreateMetric, err)
 	}
 
-	return &otelMetrics{
+	metrics := &otelMetrics{
 		logsTotal:    logsTotal,
 		piiMasked:    piiMasked,
 		piiRedacted:  piiRedacted,
 		auditRecords: auditRecords,
 		hookDuration: hookDuration,
-		levels: optionCache[Level, metric.AddOption]{build: func(level Level) []metric.AddOption {
-			return []metric.AddOption{metric.WithAttributes(attribute.String("level", string(level)))}
-		}},
-		patterns: optionCache[patternAt, metric.AddOption]{build: func(key patternAt) []metric.AddOption {
-			return []metric.AddOption{metric.WithAttributes(append(originAttributes(key.origin), attribute.String("pattern", string(key.pattern)))...)}
-		}},
-		redactions: optionCache[redactionAt, metric.AddOption]{build: func(key redactionAt) []metric.AddOption {
-			return []metric.AddOption{metric.WithAttributes(append(originAttributes(key.origin), attribute.String("reason", string(key.reason)))...)}
-		}},
-		hooks: optionCache[hookOutcome, metric.RecordOption]{build: func(outcome hookOutcome) []metric.RecordOption {
-			return []metric.RecordOption{metric.WithAttributes(
-				attribute.String("hook.name", outcome.name),
-				attribute.String("error", strconv.FormatBool(outcome.failed)),
-			)}
-		}},
-	}, nil
+	}
+	metrics.cacheOptions()
+	return metrics, nil
 }
 
 // LogsTotal increments the log counter at the specified level.
@@ -199,6 +167,37 @@ func (o *otelMetrics) AuditRecords(ctx context.Context) {
 // the hook returned an error.
 func (o *otelMetrics) HookDuration(ctx context.Context, hookName string, duration time.Duration, hasError bool) {
 	o.hookDuration.Record(ctx, duration.Seconds(), o.hooks.get(hookOutcome{name: hookName, failed: hasError})...)
+}
+
+// cacheOptions sets up the caches of the attribute options each instrument
+// records with: by level, by pattern and origin, by redaction and origin, and
+// by hook and outcome.
+func (o *otelMetrics) cacheOptions() {
+	o.levels = optionCache[Level, metric.AddOption]{build: func(level Level) []metric.AddOption {
+		return []metric.AddOption{metric.WithAttributes(attribute.String("level", string(level)))}
+	}}
+	o.patterns = optionCache[patternAt, metric.AddOption]{build: func(key patternAt) []metric.AddOption {
+		return []metric.AddOption{metric.WithAttributes(append(originAttributes(key.origin), attribute.String("pattern", string(key.pattern)))...)}
+	}}
+	o.redactions = optionCache[redactionAt, metric.AddOption]{build: func(key redactionAt) []metric.AddOption {
+		return []metric.AddOption{metric.WithAttributes(append(originAttributes(key.origin), attribute.String("reason", string(key.reason)))...)}
+	}}
+	o.hooks = optionCache[hookOutcome, metric.RecordOption]{build: func(outcome hookOutcome) []metric.RecordOption {
+		return []metric.RecordOption{metric.WithAttributes(
+			attribute.String("hook.name", outcome.name),
+			attribute.String("error", strconv.FormatBool(outcome.failed)),
+		)}
+	}}
+}
+
+// int64Counter creates the counter name on meter. Returns [ErrCreateMetric]
+// naming the counter when the meter cannot create it.
+func int64Counter(meter metric.Meter, name, description, unit string) (metric.Int64Counter, error) {
+	counter, err := meter.Int64Counter(name, metric.WithDescription(description), metric.WithUnit(unit))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrCreateMetric, name, err)
+	}
+	return counter, nil
 }
 
 // buildMetrics creates the Metrics object from configuration.

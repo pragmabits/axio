@@ -361,9 +361,9 @@ func (c *Config) validateAudit() error {
 	return nil
 }
 
-// validateAuditOutputs checks that an audited Logger has a JSON output. It is
-// not part of [Config.Validate]: an Event writes JSON to every output, so the
-// same Config is valid for an audited Event.
+// validateAuditOutputs checks that an audited Logger has a JSON output. It runs
+// in [New] after the defaults have chosen the outputs, and is not part of
+// [Config.Validate], which may see a Config before they do.
 func (c *Config) validateAuditOutputs() error {
 	if !c.Audit.Enabled {
 		return nil

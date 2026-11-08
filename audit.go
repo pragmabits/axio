@@ -54,8 +54,8 @@ type storeClaimer interface {
 // hash — lives in a [ChainStore], which is what lets [HashChain.Verify] tell a
 // log that ends early from a complete one.
 //
-// A Logger or Event built with [WithAudit] or [WithAuditChain] writes through a
-// HashChain; the chain is rarely driven by hand.
+// A Logger built with [WithAudit] or [WithAuditChain], and every [Event] it
+// starts, writes through a HashChain; the chain is rarely driven by hand.
 //
 // Use case: audit logs for regulatory compliance (LGPD, SOX, PCI-DSS)
 // where record integrity must be provable.
@@ -259,8 +259,8 @@ func VerifyLines(reader io.Reader, previousHash string) (lastHash string, err er
 // FileStore persists the hash chain state in a local JSON file.
 //
 // The store takes an exclusive lock on a file beside it, the path with ".lock"
-// appended — in [New] or [NewEvent] when a Logger or Event audits through it,
-// or at the first [FileStore.Save] when it is used on its own — and holds it
+// appended — in [New] when a Logger audits through it, or at the first
+// [FileStore.Save] when it is used on its own — and holds it
 // for the life of the process: two processes saving to one store would each extend the chain from
 // the same last hash and fork it, so the second fails with
 // [ErrChainStoreLocked]. [FileStore.Load] takes no lock, so a store in use can
@@ -404,7 +404,8 @@ type fileStoreState struct {
 	LastHash string `json:"last_hash"`
 }
 
-// auditCore is the zapcore.Core of an audited Logger or Event.
+// auditCore is the zapcore.Core of an audited Logger, and of the events it
+// starts.
 //
 // It encodes each entry once as JSON, adds those bytes to the chain and writes
 // the audited line to every JSON output, all while the chain is locked: the
@@ -583,7 +584,7 @@ func callerContext(fields []zapcore.Field) context.Context {
 	return context.Background()
 }
 
-// buildAuditChain returns the chain an audited Logger or Event writes
+// buildAuditChain returns the chain an audited Logger and its events write
 // through, or nil when auditing is off.
 func buildAuditChain(config Config) (*HashChain, error) {
 	switch {
@@ -626,8 +627,8 @@ func sharedChain(storePath string) (*HashChain, error) {
 }
 
 // chainsByPath holds one chain per store path in this process, so every Logger
-// and Event audited with the same [WithAudit] path extends a single chain
-// instead of each loading the store and forking it.
+// audited with the same [WithAudit] path extends a single chain instead of each
+// loading the store and forking it.
 var chainsByPath = struct {
 	mutex  sync.Mutex
 	chains map[string]*HashChain

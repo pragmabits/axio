@@ -152,10 +152,6 @@ func TestFileStore_Lock(t *testing.T) {
 		if !errors.Is(err, ErrChainStoreLocked) || !errors.Is(err, ErrBuildAudit) {
 			t.Errorf("expected ErrBuildAudit wrapping ErrChainStoreLocked, got %v", err)
 		}
-		_, err = NewEvent("checkout", minimalConfig(), WithOutputs(newBufferOutput(FormatJSON)), WithAuditChain(chain))
-		if !errors.Is(err, ErrChainStoreLocked) {
-			t.Errorf("expected ErrChainStoreLocked from NewEvent, got %v", err)
-		}
 	})
 
 	t.Run("audit_chain_continues_what_the_store_holds_when_claimed", func(t *testing.T) {

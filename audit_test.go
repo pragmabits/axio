@@ -442,21 +442,22 @@ func TestAuditCore_Write(t *testing.T) {
 	})
 }
 
-func TestSharedChain_LoggerAndEventExtendOneChain(t *testing.T) {
+func TestSharedChain_LoggersExtendOneChain(t *testing.T) {
 	logPath, storePath := tempFile(t, "shared.log"), tempFile(t, "shared-chain.json")
 	config := Config{ServiceName: "checkout", Environment: EnvironmentProduction, Level: LevelInfo}
 
-	logger, err := New(config, WithOutputs(MustFile(logPath, FormatJSON)), WithAudit(storePath))
+	first, err := New(config, WithOutputs(MustFile(logPath, FormatJSON)), WithAudit(storePath))
 	assertNoError(t, err)
-	event, err := NewEvent("http_request", config, WithOutputs(MustFile(logPath, FormatJSON)), WithAudit(storePath))
+	second, err := New(config, WithOutputs(MustFile(logPath, FormatJSON)), WithAudit(storePath))
 	assertNoError(t, err)
 
-	logger.Info(context.Background(), "before the event")
+	first.Info(context.Background(), "before the event")
+	event := second.Event("http_request")
 	event.Add("route", "/api/v1/orders")
 	event.Emit(context.Background())
-	logger.Info(context.Background(), "after the event")
-	assertNoError(t, event.Close())
-	assertNoError(t, logger.Close())
+	first.Info(context.Background(), "after the event")
+	assertNoError(t, second.Close())
+	assertNoError(t, first.Close())
 
 	assertEqual(t, len(readLines(t, logPath)), 3)
 	assertNoError(t, verifyFile(t, logPath, storePath))
@@ -560,12 +561,8 @@ func TestAuditCore_RecordsMetricWithCallerContext(t *testing.T) {
 	logger, err := New(config, WithOutputs(newBufferOutput(FormatJSON)), WithAuditChain(chain))
 	assertNoError(t, err)
 	logger.Info(ctx, "order created")
+	logger.Event("checkout").Emit(ctx)
 	assertNoError(t, logger.Close())
-
-	event, err := NewEvent("checkout", config, WithOutputs(newBufferOutput(FormatJSON)), WithAuditChain(chain))
-	assertNoError(t, err)
-	event.Emit(ctx)
-	assertNoError(t, event.Close())
 
 	assertEqual(t, len(recorder.contexts), 2)
 	for _, recorded := range recorder.contexts {

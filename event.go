@@ -2,7 +2,6 @@ package axio
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -23,6 +22,11 @@ import (
 // many log lines per request, one richly-annotated event captures the complete
 // context of what happened.
 //
+// An event comes from a [Logger] through [Logger.Event] and owns nothing: it
+// writes to that logger's outputs, through its hooks and its audit chain, and
+// stops writing once the root logger is closed. A JSON output gets the event as
+// JSON and a text output as the Console's text, with EVENT in the level column.
+//
 // The event output omits the log level field — severity is expressed through
 // the event's own fields (status_code, error, etc.), not through traditional
 // log levels.
@@ -31,10 +35,7 @@ import (
 //
 // Example:
 //
-//	event, err := axio.NewEvent("checkout", config)
-//	if err != nil {
-//	    return err
-//	}
+//	event := logger.Event("checkout")
 //	ctx = axio.WithEvent(ctx, event)
 //	defer event.Emit(ctx)
 //
@@ -44,70 +45,18 @@ import (
 //	event.Add("cart_total", cartTotal)
 type Event struct {
 	name        string
+	loggerName  string
 	engine      *zap.Logger
 	hooks       *hookChain
 	trace       Tracer
-	metrics     Metrics
 	annotations []Annotation
 	err         error
 	errDetails  []Annotation
 	startTime   time.Time
-	outputs     []Output
 	mutex       sync.Mutex
 	emitted     atomic.Bool
-	closed      atomic.Bool
+	lifecycle   *lifecycle
 	audited     bool
-}
-
-// NewEvent creates a new wide event with the specified name and configuration.
-//
-// The event builds its own internal logger using the provided configuration,
-// with the level field omitted from output. The same [Config] and [Option]
-// functions used with [New] work here.
-//
-// Example:
-//
-//	event, err := axio.NewEvent("http_request", config,
-//	    axio.WithOutputs(axio.Stdout(axio.FormatJSON)),
-//	)
-func NewEvent(name string, config Config, options ...Option) (*Event, error) {
-	for _, option := range options {
-		if err := option(&config); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrApplyOption, err)
-		}
-	}
-
-	applyDefaults(&config)
-
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
-	}
-
-	outputs, err := openOutputs(config)
-	if err != nil {
-		return nil, err
-	}
-
-	parts, err := buildEngineParts(config)
-	if err != nil {
-		return nil, abandonOutputs(config, outputs, err)
-	}
-
-	engine, err := buildEventEngine(outputs, parts.chain, parts.metrics)
-	if err != nil {
-		return nil, abandonOutputs(config, outputs, fmt.Errorf("%w: %w", ErrBuildEngine, err))
-	}
-
-	return &Event{
-		name:      name,
-		engine:    engine,
-		hooks:     newHookChain(parts.metrics, parts.hooks...),
-		trace:     buildTracer(config),
-		metrics:   parts.metrics,
-		startTime: time.Now(),
-		outputs:   outputs,
-		audited:   parts.chain != nil,
-	}, nil
 }
 
 // Add adds a key-value annotation to the event.
@@ -164,8 +113,8 @@ func (e *Event) SetError(err error, details ...Annotation) {
 //   - Writes the entry through the internal logger
 //
 // Emit should be called once, typically via defer in middleware.
-// Subsequent calls are no-ops; only the first call produces output. After
-// [Event.Close], Emit writes nothing.
+// Subsequent calls are no-ops; only the first call produces output. After the
+// root logger the event came from is closed, Emit writes nothing.
 //
 // Hooks see the event name as [Entry.Message]; a name they change is the
 // name written.
@@ -175,7 +124,7 @@ func (e *Event) Emit(ctx context.Context) {
 	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	if e.closed.Load() {
+	if e.lifecycle.closed.Load() {
 		return
 	}
 
@@ -185,6 +134,7 @@ func (e *Event) Emit(ctx context.Context) {
 	entry.Timestamp = e.startTime
 	entry.Level = LevelInfo
 	entry.Message = e.name
+	entry.Logger = e.loggerName
 	entry.Error = e.err
 	entry.Annotations = expandAnnotable(append(cloneAnnotations(e.annotations), e.errDetails...))
 
@@ -207,43 +157,12 @@ func (e *Event) Emit(ctx context.Context) {
 		return
 	}
 	log.Time = e.startTime
+	log.LoggerName = e.loggerName
 	fields := eventFields(entry, durationMS)
 	if e.audited {
 		fields = append(fields, contextField(ctx))
 	}
-	log.Write(fields...)
-}
-
-// Close releases resources associated with the event's outputs.
-//
-// Call Close after [Event.Emit] to release file handles and other resources.
-// For events without file outputs, Close is a no-op but should still be called
-// for correctness. An Emit already writing finishes first; an Emit after Close
-// writes nothing. A second call returns [ErrEventClosed].
-//
-// Example:
-//
-//	event, _ := axio.NewEvent("checkout", config)
-//	defer event.Close()
-//	// ... enrich event ...
-//	event.Emit(ctx)
-func (e *Event) Close() error {
-	if !e.closed.CompareAndSwap(false, true) {
-		return ErrEventClosed
-	}
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
-	var errs []error
-	for _, output := range e.outputs {
-		if err := output.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("close event: %w", errors.Join(errs...))
-	}
-	return nil
+	e.lifecycle.write(log, fields)
 }
 
 type eventContextKey struct{}
@@ -255,7 +174,7 @@ type eventContextKey struct{}
 //
 // Example:
 //
-//	event, _ := axio.NewEvent("http_request", config)
+//	event := logger.Event("http_request")
 //	ctx = axio.WithEvent(ctx, event)
 func WithEvent(ctx context.Context, event *Event) context.Context {
 	return context.WithValue(ctx, eventContextKey{}, event)
@@ -275,30 +194,19 @@ func EventFromContext(ctx context.Context) *Event {
 	return event
 }
 
-// buildEventEngine creates a zap logger for wide events.
-//
-// Uses [logline.EventEncoderConfig], which omits level, caller, logger name,
-// and stacktrace fields. The message key is "event". Events are always JSON,
-// whatever the output's format; with auditing on, every output receives the
-// audited line.
-func buildEventEngine(outputs []Output, chain *HashChain, metrics Metrics) (*zap.Logger, error) {
+// buildEventEngine creates the zap logger a [Logger]'s events write through,
+// over the logger's outputs and audit chain: JSON outputs get
+// [logline.EventEncoderConfig], with the name under "event" and no level,
+// caller or stacktrace, and text outputs [logline.EventConsoleEncoderConfig].
+// Its level is fixed at info, so every event is written whatever the logger's
+// level. With auditing on, the JSON line is hashed and the text carries the
+// short hash, as for an entry.
+func buildEventEngine(outputs []Output, parts engineParts) *zap.Logger {
 	level := zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	if chain != nil {
-		return zap.New(&reportingCore{Core: &auditCore{
-			LevelEnabler: level,
-			chain:        chain,
-			metrics:      metrics,
-			canonical:    zapcore.NewJSONEncoder(logline.EventEncoderConfig()),
-			jsonOutputs:  outputs,
-		}}), nil
+	if parts.chain != nil {
+		return zap.New(&reportingCore{Core: newAuditedCore(level, outputs, nil, parts, eventEncoding())})
 	}
-
-	cores := make([]zapcore.Core, 0, len(outputs))
-	for _, output := range outputs {
-		encoder := zapcore.NewJSONEncoder(logline.EventEncoderConfig())
-		cores = append(cores, zapcore.NewCore(encoder, output, level))
-	}
-	return zap.New(&reportingCore{Core: zapcore.NewTee(cores...)}), nil
+	return zap.New(&reportingCore{Core: newPlainCore(level, outputs, nil, eventEncoding())})
 }
 
 // eventFields converts a processed event entry into the fields written by

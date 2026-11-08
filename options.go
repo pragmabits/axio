@@ -241,8 +241,8 @@ func WithOmitCaller() Option {
 // exactly what was written. Verify the log with [HashChain.Verify]. Text
 // outputs show a shortened hash for reference only.
 //
-// Every Logger and Event audited with the same storePath in this process
-// extends one chain, whichever was created first. Another process holding the
+// Every Logger audited with the same storePath in this process, and every
+// [Event] they start, extends one chain, whichever was created first. Another process holding the
 // same store makes [New] fail with [ErrBuildAudit] wrapping
 // [ErrChainStoreLocked]; see [FileStore]. An audited Logger needs a JSON
 // output, or [New] returns [ErrAuditWithoutJSON].
@@ -261,11 +261,11 @@ func WithAudit(storePath string) Option {
 }
 
 // WithAuditChain enables auditing through chain, for chain state kept in a
-// [ChainStore] other than a local file. Loggers and Events given the same
-// chain extend one chain.
+// [ChainStore] other than a local file. Loggers given the same chain, and the
+// events they start, extend one chain.
 //
 // A chain over a [FileStore] is locked the way [WithAudit] locks its store:
-// [New] or [NewEvent] takes the store's lock and loads the chain from it again,
+// [New] takes the store's lock and loads the chain from it again,
 // so a store another process holds fails there with [ErrChainStoreLocked], and
 // state another process saved after [NewHashChain] loaded it is continued.
 //
@@ -354,8 +354,8 @@ func WithTracer(tracer Tracer) Option {
 }
 
 // closeDiscarded closes an output [WithAgentMode] discards. A file output is
-// claimed first, so one that belongs to another Logger or Event is left open
-// and reported with [ErrOutputInUse], as [New] would report it.
+// claimed first, so one that belongs to another Logger is left open and
+// reported with [ErrOutputInUse], as [New] would report it.
 func closeDiscarded(output Output) error {
 	if file, ok := output.(*fileOutput); ok {
 		if err := file.claim(); err != nil {

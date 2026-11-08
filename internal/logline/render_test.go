@@ -163,6 +163,12 @@ func writeSamples(logger axio.Logger) {
 		axio.Field("hash", "user hash"),
 		axio.Field("stacktrace", "user stacktrace"),
 	).Info(ctx, "annotations named like reserved keys")
+
+	checkout := orders.Event("checkout")
+	checkout.Add("cart_total", 15999)
+	checkout.With(axio.Field("http", axio.HTTP{Method: "POST", URL: "/api/v1/checkout", StatusCode: 402, LatencyMS: 87}))
+	checkout.SetError(errors.New("card declined"), axio.Field("error_code", "card_declined"))
+	checkout.Emit(ctx)
 }
 
 var errWriteFailed = errors.New("write failed")

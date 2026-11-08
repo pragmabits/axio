@@ -59,9 +59,23 @@ func TestEventEncoderConfig(t *testing.T) {
 	assertEqual(t, config.TimeKey, "timestamp")
 	assertEqual(t, config.LevelKey, "") // omitted
 	assertEqual(t, config.MessageKey, "event")
-	assertEqual(t, config.NameKey, "")       // omitted
+	assertEqual(t, config.NameKey, "logger")
 	assertEqual(t, config.CallerKey, "")     // omitted
 	assertEqual(t, config.StacktraceKey, "") // omitted
+}
+
+func TestEventConsoleEncoderConfig(t *testing.T) {
+	encoder := zapcore.NewConsoleEncoder(logline.EventConsoleEncoderConfig())
+	entry := zapcore.Entry{
+		Time:       time.Date(2026, 9, 23, 14, 44, 45, 897000000, time.UTC),
+		Level:      zapcore.InfoLevel,
+		LoggerName: "orders",
+		Message:    "checkout",
+	}
+
+	line, err := encoder.EncodeEntry(entry, []zapcore.Field{zap.Int64("duration_ms", 3)})
+	assertNoError(t, err)
+	assertEqual(t, line.String(), "2026-09-23T14:44:45.897Z\t\x1b[36mEVENT\x1b[0m\torders\tcheckout\t{\"duration_ms\": 3}\n")
 }
 
 func TestConsoleEncoderConfig(t *testing.T) {
@@ -157,6 +171,7 @@ func TestValueOptions_WrittenByEveryEncoderConfig(t *testing.T) {
 		{"json", zapcore.NewJSONEncoder(logline.JSONEncoderConfig())},
 		{"console", zapcore.NewConsoleEncoder(logline.ConsoleEncoderConfig())},
 		{"event", zapcore.NewJSONEncoder(logline.EventEncoderConfig())},
+		{"event_console", zapcore.NewConsoleEncoder(logline.EventConsoleEncoderConfig())},
 	}
 	for _, test := range encoders {
 		t.Run(test.name, func(t *testing.T) {

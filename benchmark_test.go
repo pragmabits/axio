@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,17 +26,17 @@ func benchLogger(b *testing.B) *logger {
 	b.Helper()
 
 	out := benchOutput{}
-	encoder := buildEncoder(FormatJSON)
+	encoder := entryEncoding().encoder(FormatJSON)
 	core := zapcore.NewCore(encoder, out, zap.NewAtomicLevelAt(zap.DebugLevel))
 	engine := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(minimumCallerSkip))
 
 	return &logger{
-		engine:  engine,
-		trace:   NoopTracer{},
-		hooks:   newHookChain(NoopMetrics{}),
-		metrics: NoopMetrics{},
-		outputs: []Output{out},
-		closed:  new(atomic.Bool),
+		engine:    engine,
+		trace:     NoopTracer{},
+		hooks:     newHookChain(NoopMetrics{}),
+		metrics:   NoopMetrics{},
+		outputs:   []Output{out},
+		lifecycle: new(lifecycle),
 	}
 }
 
@@ -474,10 +473,54 @@ func BenchmarkNoopTracer_Extract(b *testing.B) {
 	}
 }
 
-// BenchmarkNewEvent_RotatingFile measures one event per unit of work over a
-// rotating file, built, emitted and closed in sequence: each one opens the
-// file and its lock and gives them back.
-func BenchmarkNewEvent_RotatingFile(b *testing.B) {
+// BenchmarkLogger_Event measures a wide event derived from a Logger, enriched
+// and emitted, with PII masking on as in every Logger [New] builds.
+func BenchmarkLogger_Event(b *testing.B) {
+	loggerUnderTest, err := New(minimalConfig(), WithOutputs(benchOutput{}))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := loggerUnderTest.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		event := loggerUnderTest.Event("checkout")
+		event.Add("user", "abc")
+		event.Emit(ctx)
+	}
+}
+
+// BenchmarkLogger_Info_New measures an entry through a Logger [New] builds, PII
+// masking on, the same condition as [BenchmarkLogger_Event].
+func BenchmarkLogger_Info_New(b *testing.B) {
+	loggerUnderTest, err := New(minimalConfig(), WithOutputs(benchOutput{}))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := loggerUnderTest.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loggerUnderTest.Info(ctx, "checkout", Field("user", "abc"))
+	}
+}
+
+// BenchmarkNew_RotatingFile measures a Logger built over a rotating file,
+// written once and closed, in sequence: each one opens the file and its lock
+// and gives them back.
+func BenchmarkNew_RotatingFile(b *testing.B) {
 	config := minimalConfig()
 	config.Environment = EnvironmentStaging
 	config.Outputs = []OutputConfig{{
@@ -491,13 +534,12 @@ func BenchmarkNewEvent_RotatingFile(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		event, err := NewEvent("checkout", config)
+		loggerUnderTest, err := New(config)
 		if err != nil {
 			b.Fatal(err)
 		}
-		event.Add("user", "abc")
-		event.Emit(ctx)
-		if err := event.Close(); err != nil {
+		loggerUnderTest.Info(ctx, "checkout", Field("user", "abc"))
+		if err := loggerUnderTest.Close(); err != nil {
 			b.Fatal(err)
 		}
 	}

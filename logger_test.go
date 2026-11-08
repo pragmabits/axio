@@ -3,9 +3,13 @@ package axio
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNew(t *testing.T) {
@@ -240,6 +244,192 @@ func TestLogger_With(t *testing.T) {
 	}
 }
 
+func TestLogger_Event(t *testing.T) {
+	t.Run("writes_to_the_logger_outputs", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		event := logger.Event("checkout")
+		event.Add("cart_total", 15999)
+		event.Emit(context.Background())
+
+		written := output.String()
+		if !strings.Contains(written, `"event":"checkout"`) || !strings.Contains(written, `"cart_total":15999`) {
+			t.Errorf("expected the event on the logger's output, got:\n%s", written)
+		}
+	})
+
+	t.Run("deriving_allocates_only_the_event", func(t *testing.T) {
+		logger, err := New(minimalConfig(), WithOutputs(newBufferOutput(FormatJSON)))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		var derived *Event
+		allocations := testing.AllocsPerRun(100, func() {
+			derived = logger.Event("checkout")
+		})
+		if allocations > 1 {
+			t.Errorf("expected deriving an event to allocate the event alone, got %v allocations", allocations)
+		}
+		_ = derived
+	})
+
+	t.Run("audited_event_extends_the_logger_chain", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		chain, err := NewHashChain(nil)
+		assertNoError(t, err)
+		logger, err := New(minimalConfig(), WithOutputs(output), WithAuditChain(chain))
+		assertNoError(t, err)
+		defer logger.Close()
+		ctx := context.Background()
+
+		logger.Info(ctx, "before the event")
+		logger.Event("checkout").Emit(ctx)
+		logger.Info(ctx, "after the event")
+
+		assertNoError(t, chain.Verify(strings.NewReader(output.String()), ""))
+		assertEqual(t, chain.Sequence(), uint64(3))
+	})
+
+	t.Run("inherits_with_annotations", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		event := logger.With(Field("tenant", "acme")).Event("checkout")
+		event.Add("cart_total", 15999)
+		event.Emit(context.Background())
+
+		written := output.String()
+		tenant, total := strings.Index(written, `"tenant":"acme"`), strings.Index(written, `"cart_total":15999`)
+		if tenant < 0 || total < 0 || tenant > total {
+			t.Errorf("expected the logger's tenant before the event's cart_total, got:\n%s", written)
+		}
+	})
+
+	t.Run("inherits_the_named_name", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		var seen string
+		hook := &testHook{name: "name", process: func(_ context.Context, entry *Entry) error {
+			seen = entry.Logger
+			return nil
+		}}
+		logger, err := New(minimalConfig(), WithOutputs(output), WithHooks(hook))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		logger.Named("billing").Event("checkout").Emit(context.Background())
+
+		assertEqual(t, seen, "billing")
+		assertEqual(t, parseJSONLines(t, output.String())[0]["logger"], any("billing"))
+	})
+
+	t.Run("hook_changes_do_not_reach_the_logger", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		hook := &testHook{name: "rewrite", process: func(_ context.Context, entry *Entry) error {
+			if entry.Message == "checkout" {
+				entry.Annotations[0] = Field("tenant", "rewritten")
+			}
+			return nil
+		}}
+		logger, err := New(minimalConfig(), WithOutputs(output), WithHooks(hook))
+		assertNoError(t, err)
+		defer logger.Close()
+		ctx := context.Background()
+
+		tenant := logger.With(Field("tenant", "acme"))
+		tenant.Event("checkout").Emit(ctx)
+		tenant.Info(ctx, "after the event")
+
+		assertEqual(t, parseJSONLines(t, output.String())[1]["tenant"], any("acme"))
+	})
+
+	t.Run("emit_after_logger_close_writes_nothing", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		direct, forked := logger.Event("checkout"), logger.Named("billing").Event("invoice")
+		assertNoError(t, logger.Close())
+
+		direct.Emit(context.Background())
+		forked.Emit(context.Background())
+
+		assertEqual(t, output.String(), "")
+	})
+
+	t.Run("masks_pii_by_default", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		logger, err := New(DefaultConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		event := logger.Event("registration")
+		event.Add("document", "123.456.789-01")
+		event.Add("password", "hunter2")
+		event.Emit(context.Background())
+
+		record := parseJSONLines(t, output.String())[0]
+		assertEqual(t, record["document"], any("***.***.***-**"))
+		assertEqual(t, record["password"], any("[REDACTED]"))
+	})
+
+	// emitBeside emits an event through a logger with a text output and a JSON
+	// output, built with options, and returns what each one received.
+	emitBeside := func(t *testing.T, options ...Option) (string, string) {
+		t.Helper()
+		text, structured := newBufferOutput(FormatText), newBufferOutput(FormatJSON)
+		logger, err := New(minimalConfig(), append([]Option{WithOutputs(text, structured)}, options...)...)
+		if err != nil {
+			t.Fatalf("new logger: %v", err)
+		}
+		logger.Event("checkout").Emit(context.Background())
+		assertNoError(t, logger.Close())
+		return text.String(), structured.String()
+	}
+
+	t.Run("writes_text_on_text_outputs", func(t *testing.T) {
+		text, structured := emitBeside(t)
+
+		if !strings.Contains(text, "EVENT") || !strings.Contains(text, "\tcheckout\t") || strings.Contains(text, `"event":`) {
+			t.Errorf("expected the event as text on the text output, got:\n%s", text)
+		}
+		if !strings.Contains(structured, `"event":"checkout"`) {
+			t.Errorf("expected the event as JSON on the JSON output, got:\n%s", structured)
+		}
+	})
+
+	t.Run("audited_event_writes_the_short_hash_on_text_outputs", func(t *testing.T) {
+		chain, err := NewHashChain(nil)
+		assertNoError(t, err)
+		text, structured := emitBeside(t, WithAuditChain(chain))
+
+		if !strings.Contains(text, "EVENT") || !strings.Contains(text, `"hash": "`) || strings.Contains(text, `"event":`) {
+			t.Errorf("expected the event as text with the short hash on the text output, got:\n%s", text)
+		}
+		if !strings.Contains(structured, `"event":"checkout"`) || !strings.Contains(structured, `"hash":"`) {
+			t.Errorf("expected the audited event as JSON on the JSON output, got:\n%s", structured)
+		}
+	})
+
+	t.Run("logger_level_does_not_filter_events", func(t *testing.T) {
+		output := newBufferOutput(FormatJSON)
+		config := minimalConfig()
+		config.Level = LevelError
+		logger, err := New(config, WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		logger.Event("checkout").Emit(context.Background())
+
+		if !strings.Contains(output.String(), `"event":"checkout"`) {
+			t.Errorf("expected the event from a logger at error level, got:\n%s", output.String())
+		}
+	})
+}
+
 func TestLogger_WithHTTP(t *testing.T) {
 	path := tempFile(t, "http.log")
 	config := Config{
@@ -399,6 +589,19 @@ func TestNew_OutputOwnership(t *testing.T) {
 		assertNoError(t, logger.Close())
 	})
 
+	t.Run("output_in_a_second_logger_fails", func(t *testing.T) {
+		output, err := RotatingFile(tempFile(t, "shared.log"), FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		_, err = New(minimalConfig(), WithOutputs(output))
+		if !errors.Is(err, ErrOutputInUse) {
+			t.Errorf("expected ErrOutputInUse, got %v", err)
+		}
+	})
+
 	t.Run("claim_refuses_a_closed_output", func(t *testing.T) {
 		output, err := File(tempFile(t, "app.log"), FormatJSON)
 		assertNoError(t, err)
@@ -407,6 +610,90 @@ func TestNew_OutputOwnership(t *testing.T) {
 		_, err = New(minimalConfig(), WithOutputs(output))
 		if !errors.Is(err, ErrOutputClosed) || !errors.Is(err, ErrBuildOutputs) {
 			t.Errorf("expected ErrBuildOutputs wrapping ErrOutputClosed, got %v", err)
+		}
+	})
+}
+
+func TestNew_RotatingFile(t *testing.T) {
+	rotatingConfig := func(path string, rotation RotationConfig) Config {
+		config := minimalConfig()
+		config.Outputs = []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path, Rotation: rotation}}
+		return config
+	}
+	logOnce := func(t *testing.T, config Config, payload string) {
+		t.Helper()
+		logger, err := New(config)
+		if err != nil {
+			t.Errorf("new logger: %v", err)
+			return
+		}
+		logger.Info(context.Background(), "extraction", Field("payload", payload))
+		assertNoError(t, logger.Close())
+	}
+
+	t.Run("two_hundred_loggers_leave_no_goroutine", func(t *testing.T) {
+		config := rotatingConfig(tempFile(t, "app.log"), RotationConfig{MaxSize: 10})
+		before := runtime.NumGoroutine()
+		for range 200 {
+			logOnce(t, config, "x")
+		}
+		if after := settledGoroutines(before); after > before {
+			t.Errorf("200 loggers left %d goroutines behind", after-before)
+		}
+	})
+
+	t.Run("concurrent_loggers_lose_no_line", func(t *testing.T) {
+		directory := tempDir(t)
+		config := rotatingConfig(filepath.Join(directory, "app.log"), RotationConfig{MaxSize: 1})
+		payload := strings.Repeat("x", 8<<10)
+		stderr := captureStderr(t)
+		var group sync.WaitGroup
+		for range 8 {
+			group.Go(func() {
+				for range 200 {
+					logOnce(t, config, payload)
+				}
+			})
+		}
+		group.Wait()
+		reported := stderr()
+
+		assertEqual(t, countLogLines(t, directory), 1600)
+		locks, err := filepath.Glob(filepath.Join(directory, "*.lock"))
+		assertNoError(t, err)
+		assertEqual(t, len(locks), 1)
+		if strings.Contains(reported, "axio:") {
+			t.Errorf("expected no failure on stderr, got:\n%s", reported)
+		}
+	})
+
+	t.Run("sequential_loggers_rotate_by_interval", func(t *testing.T) {
+		directory := tempDir(t)
+		config := rotatingConfig(filepath.Join(directory, "app.log"), RotationConfig{Interval: Duration(50 * time.Millisecond)})
+		deadline := time.Now().Add(400 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			logOnce(t, config, "x")
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		if files := len(logFiles(t, directory)); files < 2 {
+			t.Errorf("expected a backup beside the log, got %d file(s)", files)
+		}
+	})
+
+	t.Run("loggers_on_one_path_close_cleanly", func(t *testing.T) {
+		for _, rotation := range []RotationConfig{{MaxSize: 10}, {}} {
+			path := tempFile(t, "shared.log")
+			config := rotatingConfig(path, rotation)
+			logger, err := New(config)
+			assertNoError(t, err)
+			for range 3 {
+				logOnce(t, config, "x")
+			}
+			logger.Info(context.Background(), "after the others")
+			assertNoError(t, logger.Close())
+
+			assertEqual(t, len(readLines(t, path)), 4)
 		}
 	})
 }
@@ -426,6 +713,108 @@ func TestLogger_Close(t *testing.T) {
 		logger, _ := New(config)
 		err := logger.Close()
 		assertNoError(t, err)
+	})
+
+	// A call that reaches its write after Close, while its hooks ran, counts as
+	// a call made after Close: it writes nothing and reports nothing. Nothing
+	// is written to an output already closed, and with auditing the chain
+	// never runs past the log, which would read as a log cut short.
+	racingClose := func(t *testing.T, write func(logger Logger), options ...Option) string {
+		t.Helper()
+		logPath := tempFile(t, "app.log")
+		config := minimalConfig()
+		config.Outputs = []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: logPath}}
+		entered, release := make(chan struct{}), make(chan struct{})
+		pause := &testHook{name: "pause", process: func(_ context.Context, entry *Entry) error {
+			if entry.Message == "racing" {
+				close(entered)
+				<-release
+			}
+			return nil
+		}}
+		logger, err := New(config, append([]Option{WithHooks(pause)}, options...)...)
+		if err != nil {
+			t.Fatalf("new logger: %v", err)
+		}
+		logger.Info(context.Background(), "before the close")
+		stderr := captureStderr(t)
+
+		written := make(chan struct{})
+		go func() {
+			write(logger)
+			close(written)
+		}()
+		<-entered
+		assertNoError(t, logger.Close())
+		close(release)
+		<-written
+
+		if reported := stderr(); reported != "" {
+			t.Errorf("expected the racing write dropped without a report, got:\n%s", reported)
+		}
+		return logPath
+	}
+	writeLine := func(logger Logger) { logger.Info(context.Background(), "racing") }
+	emitEvent := func(logger Logger) { logger.Event("racing").Emit(context.Background()) }
+
+	t.Run("line_racing_close_is_dropped", func(t *testing.T) {
+		logPath := racingClose(t, writeLine)
+		assertEqual(t, len(readLines(t, logPath)), 1)
+	})
+
+	t.Run("event_racing_close_is_dropped", func(t *testing.T) {
+		logPath := racingClose(t, emitEvent)
+		assertEqual(t, len(readLines(t, logPath)), 1)
+	})
+
+	t.Run("line_racing_close_is_not_counted", func(t *testing.T) {
+		recorder := &logsRecorder{}
+		racingClose(t, writeLine, func(config *Config) error {
+			config.metrics = recorder
+			return nil
+		})
+		assertEqual(t, recorder.logs.Load(), int32(1))
+	})
+
+	t.Run("audited_line_racing_close_is_dropped", func(t *testing.T) {
+		storePath := tempFile(t, "chain.json")
+		logPath := racingClose(t, writeLine, WithAudit(storePath))
+		assertNoError(t, verifyFile(t, logPath, storePath))
+	})
+
+	t.Run("audited_event_racing_close_is_dropped", func(t *testing.T) {
+		storePath := tempFile(t, "chain.json")
+		logPath := racingClose(t, emitEvent, WithAudit(storePath))
+		assertNoError(t, verifyFile(t, logPath, storePath))
+	})
+
+	t.Run("close_waits_for_a_write_under_way", func(t *testing.T) {
+		output := newPausingOutput()
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		if err != nil {
+			t.Fatalf("new logger: %v", err)
+		}
+		go logger.Info(context.Background(), "under way")
+		<-output.entered
+
+		closed := make(chan error, 1)
+		go func() { closed <- logger.Close() }()
+		returnedEarly := false
+		select {
+		case err := <-closed:
+			returnedEarly = true
+			assertNoError(t, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(output.release)
+		if returnedEarly {
+			t.Fatal("Close returned while a write was under way")
+		}
+		assertNoError(t, <-closed)
+
+		if !strings.Contains(output.String(), "under way") {
+			t.Errorf("expected the write under way to finish before Close, got %q", output.String())
+		}
 	})
 
 	t.Run("close_is_idempotent", func(t *testing.T) {
@@ -587,9 +976,9 @@ func TestReportingCore_Write(t *testing.T) {
 		{
 			name: "event",
 			write: func(t *testing.T) {
-				event, err := NewEvent("checkout", config, WithOutputs(failingOutput{format: FormatJSON}))
+				logger, err := New(config, WithOutputs(failingOutput{format: FormatJSON}))
 				assertNoError(t, err)
-				event.Emit(context.Background())
+				logger.Event("checkout").Emit(context.Background())
 			},
 			cause: "disk full",
 		},
@@ -633,12 +1022,13 @@ func TestAnnotationsToFields_ReservedKeyIsRenamed(t *testing.T) {
 	assertNoError(t, logger.Close())
 
 	emitted := newBufferOutput(FormatJSON)
-	event, err := NewEvent("checkout", config, WithOutputs(emitted))
+	emitter, err := New(config, WithOutputs(emitted))
 	assertNoError(t, err)
+	event := emitter.Event("checkout")
 	event.With(annotations...)
 	event.SetError(errors.New("card declined"))
 	event.Emit(context.Background())
-	assertNoError(t, event.Close())
+	assertNoError(t, emitter.Close())
 
 	for name, line := range map[string]string{"logger": logged.String(), "event": emitted.String()} {
 		for _, key := range reserved {

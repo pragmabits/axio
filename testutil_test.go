@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -246,6 +247,42 @@ func (b *bufferOutput) String() string {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	return b.buffer.String()
+}
+
+// pausingOutput is a bufferOutput whose first write signals entered and then
+// waits for release before it is kept.
+type pausingOutput struct {
+	bufferOutput
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// newPausingOutput returns an empty pausingOutput encoding JSON.
+func newPausingOutput() *pausingOutput {
+	return &pausingOutput{
+		bufferOutput: bufferOutput{format: FormatJSON},
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+}
+
+func (p *pausingOutput) Write(data []byte) (int, error) {
+	p.once.Do(func() {
+		close(p.entered)
+		<-p.release
+	})
+	return p.bufferOutput.Write(data)
+}
+
+// logsRecorder is a Metrics that counts the entries LogsTotal records.
+type logsRecorder struct {
+	NoopMetrics
+	logs atomic.Int32
+}
+
+func (l *logsRecorder) LogsTotal(context.Context, Level) {
+	l.logs.Add(1)
 }
 
 // failingOutput is an Output whose every write fails.

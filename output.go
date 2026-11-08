@@ -154,7 +154,7 @@ type fileOutput struct {
 	key     string      // the plain file's key in filesByPath (empty when rotating)
 	file    *os.File    // used for plain files (nil when rotating)
 	rotator *rotator    // used for rotating files (nil otherwise)
-	owned   atomic.Bool // set by the Logger or Event the output is given to
+	owned   atomic.Bool // set by the Logger the output is given to
 	closed  atomic.Bool // set by the first Close
 }
 
@@ -225,7 +225,7 @@ func MustFile(path string, format Format) Output {
 // nothing was written to is not rotated.
 //
 // Every output on one file shares this process's rotator for it, whatever path
-// reaches the file, so each Logger and Event can open its own. The first takes
+// reaches the file, so each Logger can open its own. The first takes
 // the lock, which is held until the last one closes. Returns [ErrOpenFile] when
 // the file cannot be opened, [ErrRotationConflict] when this process has it open
 // with another rotation or as a [File], and [ErrRotatingFileLocked] when another
@@ -308,7 +308,7 @@ func (f *fileOutput) Close() error {
 	return nil
 }
 
-// claim makes the output belong to the Logger or Event being built. Returns
+// claim makes the output belong to the Logger being built. Returns
 // [ErrOutputClosed] for a closed output and [ErrOutputInUse] for one that
 // already belongs to another.
 func (f *fileOutput) claim() error {
@@ -321,8 +321,8 @@ func (f *fileOutput) claim() error {
 	return nil
 }
 
-// unclaim gives the output back to its caller, after the Logger or Event it
-// was given to failed to be built.
+// unclaim gives the output back to its caller, after the Logger it was given
+// to failed to be built.
 func (f *fileOutput) unclaim() {
 	f.owned.Store(false)
 }
@@ -462,7 +462,7 @@ func buildOutput(index int, outputConfig OutputConfig) (Output, error) {
 }
 
 // openOutputs builds the outputs of config and claims those given through
-// [WithOutputs] for the Logger or Event being built, all or none. Returns
+// [WithOutputs] for the Logger being built, all or none. Returns
 // [ErrBuildOutputs], wrapping [ErrOutputInUse] or [ErrOutputClosed] for an
 // output that cannot be claimed.
 func openOutputs(config Config) ([]Output, error) {
@@ -501,8 +501,8 @@ func unclaimOutputs(outputs []Output) {
 	}
 }
 
-// abandonOutputs undoes [openOutputs] for a Logger or Event that failed to be
-// built after it, and returns cause: it closes the outputs built from
+// abandonOutputs undoes [openOutputs] for a Logger that failed to be built
+// after it, and returns cause: it closes the outputs built from
 // [Config.Outputs] and gives those passed to [WithOutputs] back to the caller,
 // who still holds them.
 func abandonOutputs(config Config, outputs []Output, cause error) error {

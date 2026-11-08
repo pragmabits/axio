@@ -180,15 +180,34 @@ type Logger interface {
 	// With returns a logger that attaches the annotations to every entry it
 	// writes, before the annotations given to each call.
 	With(...Annotation) Logger
-	// Close releases resources owned by the root logger (open files, rotation
-	// goroutines, etc.). It should be called when the logger is no longer
-	// needed, typically via defer in main.
+	// Event starts a wide [Event] with the given name, written through this
+	// logger when [Event.Emit] is called. The event owns nothing: it writes to
+	// the logger's outputs, through its hooks and its audit chain, and builds
+	// none of them, so starting one allocates the event alone. It carries the
+	// annotations of [Logger.With] before its own and the name of
+	// [Logger.Named], and it is written whatever the logger's level. After the
+	// root logger is closed, Emit writes nothing.
+	//
+	// Example:
+	//
+	//	event := logger.Event("checkout")
+	//	ctx = axio.WithEvent(ctx, event)
+	//	defer event.Emit(ctx)
+	//	event.Add("cart_total", cartTotal)
+	Event(name string) *Event
+	// Close releases resources owned by the root logger: it syncs and closes
+	// its outputs, which releases the files and their locks. It should be
+	// called when the logger is no longer needed, typically via defer in main.
 	//
 	// Only the root Logger (returned by [New]) owns resources. Calling Close
 	// on a logger produced by [Logger.Named] or [Logger.With] returns
 	// [ErrLoggerNotRoot] and leaves all resources untouched. A second Close
 	// on the root returns [ErrLoggerClosed]. After the root is closed, log
-	// calls on the root and on every fork become silent no-ops.
+	// calls on the root and on every fork become silent no-ops, and so does
+	// [Event.Emit] on every event they started. Close waits for the writes
+	// already under way, and a line or event that reaches its write after Close
+	// counts as one made after it and writes nothing: no write fails on a
+	// closed output, and with auditing the chain never runs past the log.
 	Close() error
 }
 

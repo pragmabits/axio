@@ -55,10 +55,9 @@ var (
 	// ErrOutputClosed indicates a file output has already been closed.
 	// Returned by Close on subsequent calls.
 	ErrOutputClosed = errors.New("output already closed")
-	// ErrOutputInUse indicates a file output given to a Logger or an Event
-	// that another one already owns: the first to close it would close it for
-	// both.
-	ErrOutputInUse = errors.New("output already belongs to a logger or event")
+	// ErrOutputInUse indicates a file output given to a Logger that another one
+	// already owns: the first to close it would close it for both.
+	ErrOutputInUse = errors.New("output already belongs to a logger")
 	// ErrRotationConflict indicates a path already open in this process with
 	// another rotation, or with rotation where it has none: two rotations of
 	// one file would move it under each other.
@@ -108,7 +107,4 @@ var (
 	// (one returned by [Logger.Named] or [Logger.With]). Only the root logger
 	// owns the underlying outputs and engine; forks must not close them.
 	ErrLoggerNotRoot = errors.New("close called on forked logger")
-	// ErrEventClosed indicates the event has already been closed.
-	// Returned by [Event.Close] on subsequent calls.
-	ErrEventClosed = errors.New("event already closed")
 )

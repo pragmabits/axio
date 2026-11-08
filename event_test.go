@@ -4,172 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewEvent(t *testing.T) {
-	t.Run("creates_event_with_name", func(t *testing.T) {
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputStdout, Format: FormatJSON},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
-
-		if event == nil {
-			t.Fatal("event should not be nil")
-		}
-	})
-
-	t.Run("invalid_config_returns_error", func(t *testing.T) {
-		config := minimalConfig()
-		config.Environment = "invalid"
-
-		_, err := NewEvent("checkout", config)
-		assertError(t, err)
-	})
-
-	t.Run("accepts_options", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-
-		event, err := NewEvent("checkout", config,
-			WithOutputs(MustFile(path, FormatJSON)),
-		)
-		assertNoError(t, err)
-
-		if event == nil {
-			t.Fatal("event should not be nil")
-		}
-	})
-}
-
-func TestNewEvent_RotatingFile(t *testing.T) {
-	rotatingConfig := func(path string, rotation RotationConfig) Config {
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path, Rotation: rotation}}
-		return config
-	}
-	emit := func(t *testing.T, config Config, payload string) {
-		t.Helper()
-		event, err := NewEvent("extraction", config)
-		if err != nil {
-			t.Errorf("new event: %v", err)
-			return
-		}
-		event.Add("payload", payload)
-		event.Emit(context.Background())
-		assertNoError(t, event.Close())
-	}
-
-	t.Run("two_hundred_events_leave_no_goroutine", func(t *testing.T) {
-		config := rotatingConfig(tempFile(t, "events.log"), RotationConfig{MaxSize: 10})
-		before := runtime.NumGoroutine()
-		for range 200 {
-			emit(t, config, "x")
-		}
-		if after := settledGoroutines(before); after > before {
-			t.Errorf("200 events left %d goroutines behind", after-before)
-		}
-	})
-
-	t.Run("concurrent_events_lose_no_line", func(t *testing.T) {
-		directory := tempDir(t)
-		config := rotatingConfig(filepath.Join(directory, "events.log"), RotationConfig{MaxSize: 1})
-		payload := strings.Repeat("x", 8<<10)
-		stderr := captureStderr(t)
-		var group sync.WaitGroup
-		for range 8 {
-			group.Go(func() {
-				for range 200 {
-					emit(t, config, payload)
-				}
-			})
-		}
-		group.Wait()
-		reported := stderr()
-
-		assertEqual(t, countLogLines(t, directory), 1600)
-		locks, err := filepath.Glob(filepath.Join(directory, "*.lock"))
-		assertNoError(t, err)
-		assertEqual(t, len(locks), 1)
-		if strings.Contains(reported, "axio:") {
-			t.Errorf("expected no failure on stderr, got:\n%s", reported)
-		}
-	})
-
-	t.Run("sequential_events_rotate_by_interval", func(t *testing.T) {
-		directory := tempDir(t)
-		config := rotatingConfig(filepath.Join(directory, "events.log"), RotationConfig{Interval: Duration(50 * time.Millisecond)})
-		deadline := time.Now().Add(400 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			emit(t, config, "x")
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		if files := len(logFiles(t, directory)); files < 2 {
-			t.Errorf("expected a backup beside the log, got %d file(s)", files)
-		}
-	})
-
-	t.Run("file_output_in_a_second_owner_fails", func(t *testing.T) {
-		output, err := RotatingFile(tempFile(t, "shared.log"), FormatJSON, RotationConfig{MaxSize: 10})
-		assertNoError(t, err)
-		logger, err := New(minimalConfig(), WithOutputs(output))
-		assertNoError(t, err)
-		defer logger.Close()
-
-		_, err = NewEvent("first", minimalConfig(), WithOutputs(output))
-		if !errors.Is(err, ErrOutputInUse) {
-			t.Errorf("expected ErrOutputInUse, got %v", err)
-		}
-	})
-
-	t.Run("logger_and_events_on_one_path_close_cleanly", func(t *testing.T) {
-		for _, rotation := range []RotationConfig{{MaxSize: 10}, {}} {
-			path := tempFile(t, "shared.log")
-			config := rotatingConfig(path, rotation)
-			logger, err := New(config)
-			assertNoError(t, err)
-			for range 3 {
-				emit(t, config, "x")
-			}
-			logger.Info(context.Background(), "after the events")
-			assertNoError(t, logger.Close())
-
-			assertEqual(t, len(readLines(t, path)), 4)
-		}
-	})
-}
-
-func TestNewEvent_MasksPIIByDefault(t *testing.T) {
-	output := newBufferOutput(FormatJSON)
-	event, err := NewEvent("registration", DefaultConfig(), WithOutputs(output))
-	assertNoError(t, err)
-	event.Add("document", "123.456.789-01")
-	event.Add("password", "hunter2")
-	event.Emit(context.Background())
-	assertNoError(t, event.Close())
-
-	record := parseJSONLines(t, output.String())[0]
-	assertEqual(t, record["document"], any("***.***.***-**"))
-	assertEqual(t, record["password"], any("[REDACTED]"))
-}
-
 func TestEvent_ContextPropagation(t *testing.T) {
 	t.Run("round_trip_through_context", func(t *testing.T) {
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputStdout, Format: FormatJSON},
-		}
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, _ := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		ctx := WithEvent(context.Background(), event)
 		retrieved := EventFromContext(ctx)
@@ -189,22 +33,15 @@ func TestEvent_ContextPropagation(t *testing.T) {
 
 func TestEvent_Add(t *testing.T) {
 	t.Run("adds_flat_fields_to_output", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.Add("user_id", "usr_456")
 		event.Add("cart_total", 15999)
 		event.Add("premium", true)
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		assertEqual(t, result["user_id"].(string), "usr_456")
 		assertEqual(t, result["cart_total"].(float64), float64(15999))
@@ -257,14 +94,8 @@ func TestEvent_Add(t *testing.T) {
 
 func TestEvent_With(t *testing.T) {
 	t.Run("accepts_annotations", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("http_request", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("http_request")
 
 		event.With(
 			Field("method", "POST"),
@@ -272,22 +103,15 @@ func TestEvent_With(t *testing.T) {
 		)
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		assertEqual(t, result["method"].(string), "POST")
 		assertEqual(t, result["url"].(string), "/api/checkout")
 	})
 
 	t.Run("accepts_annotable_types", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("http_request", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("http_request")
 
 		event.With(Field("http", HTTP{
 			Method:     "POST",
@@ -297,8 +121,7 @@ func TestEvent_With(t *testing.T) {
 		}))
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		assertEqual(t, result["method"].(string), "POST")
 		assertEqual(t, result["url"].(string), "/api/checkout")
@@ -307,14 +130,8 @@ func TestEvent_With(t *testing.T) {
 	})
 
 	t.Run("supports_nested_maps", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.Add("user", map[string]any{
 			"id":           "usr_456",
@@ -322,8 +139,7 @@ func TestEvent_With(t *testing.T) {
 		})
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		userMap, ok := result["user"].(map[string]any)
 		if !ok {
@@ -336,33 +152,20 @@ func TestEvent_With(t *testing.T) {
 
 func TestEvent_SetError(t *testing.T) {
 	t.Run("records_error_in_output", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.SetError(errors.New("card declined"))
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		assertEqual(t, result["error"].(string), "card declined")
 	})
 
 	t.Run("records_error_with_details", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.SetError(errors.New("card declined"),
 			Field("error_code", "card_declined"),
@@ -370,8 +173,7 @@ func TestEvent_SetError(t *testing.T) {
 		)
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		assertEqual(t, result["error"].(string), "card declined")
 		assertEqual(t, result["error_code"].(string), "card_declined")
@@ -379,19 +181,12 @@ func TestEvent_SetError(t *testing.T) {
 	})
 
 	t.Run("no_error_field_when_not_set", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		if _, ok := result["error"]; ok {
 			t.Error("event without error should not have error field")
@@ -401,19 +196,12 @@ func TestEvent_SetError(t *testing.T) {
 
 func TestEvent_Emit(t *testing.T) {
 	t.Run("emits_event_with_name_and_duration", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		// Must have event name
 		assertEqual(t, result["event"].(string), "checkout")
@@ -438,7 +226,7 @@ func TestEvent_Emit(t *testing.T) {
 			t.Error("event output should not contain caller field")
 		}
 
-		// Must NOT have logger name
+		// Must NOT have logger name: the root logger has none
 		if _, ok := result["logger"]; ok {
 			t.Error("event output should not contain logger field")
 		}
@@ -450,19 +238,12 @@ func TestEvent_Emit(t *testing.T) {
 	})
 
 	t.Run("empty_event_has_name_and_duration_only", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("ping", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("ping")
 
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		// Only timestamp, event, duration_ms should be present
 		assertEqual(t, result["event"].(string), "ping")
@@ -475,14 +256,8 @@ func TestEvent_Emit(t *testing.T) {
 	})
 
 	t.Run("concurrent_enrichment_is_safe", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("concurrent", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("concurrent")
 
 		var waitGroup sync.WaitGroup
 		for index := 0; index < 100; index++ {
@@ -496,28 +271,19 @@ func TestEvent_Emit(t *testing.T) {
 
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		if len(content) == 0 {
+		if output.String() == "" {
 			t.Error("expected event output after concurrent enrichment")
 		}
 	})
 
 	t.Run("pii_masking_works_on_event_fields", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config,
-			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()),
-		)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()))
+		event := logger.Event("checkout")
 
 		event.Add("document", "123.456.789-01")
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
+		content := output.String()
 		if strings.Contains(content, "123.456.789-01") {
 			t.Error("CPF should have been masked by PII hook")
 		}
@@ -527,23 +293,15 @@ func TestEvent_Emit(t *testing.T) {
 	})
 
 	t.Run("pii_masking_works_on_error_details", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config,
-			WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()),
-		)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t, WithPII([]PIIPattern{PatternCPF}, DefaultSensitiveFields()))
+		event := logger.Event("checkout")
 
 		event.SetError(errors.New("validation failed"),
 			Field("customer_document", "123.456.789-01"),
 		)
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
+		content := output.String()
 		if strings.Contains(content, "123.456.789-01") {
 			t.Error("CPF in error details should have been masked by PII hook")
 		}
@@ -553,14 +311,8 @@ func TestEvent_Emit(t *testing.T) {
 	})
 
 	t.Run("timestamp_is_event_start_time", func(t *testing.T) {
-		path := tempFile(t, "event.log")
-		config := minimalConfig()
-		config.Outputs = []OutputConfig{
-			{Type: OutputFile, Format: FormatJSON, Path: path},
-		}
-
-		event, err := NewEvent("checkout", config)
-		assertNoError(t, err)
+		logger, output := newEventLogger(t)
+		event := logger.Event("checkout")
 
 		startTime := event.startTime
 
@@ -569,8 +321,7 @@ func TestEvent_Emit(t *testing.T) {
 
 		event.Emit(context.Background())
 
-		content := readFile(t, path)
-		result := parseEventJSON(t, content)
+		result := parseEventJSON(t, output.String())
 
 		timestampStr := result["timestamp"].(string)
 		parsed, parseErr := time.Parse(time.RFC3339Nano, timestampStr)
@@ -591,20 +342,14 @@ func TestEvent_Emit(t *testing.T) {
 }
 
 func TestEvent_Emit_Idempotent(t *testing.T) {
-	path := tempFile(t, "idempotent.log")
-	config := minimalConfig()
-	config.Outputs = []OutputConfig{
-		{Type: OutputFile, Format: FormatJSON, Path: path},
-	}
-
-	event, err := NewEvent("once", config)
-	assertNoError(t, err)
+	logger, output := newEventLogger(t)
+	event := logger.Event("once")
 
 	ctx := context.Background()
 	event.Emit(ctx)
 	event.Emit(ctx)
 
-	content := readFile(t, path)
+	content := output.String()
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	if len(lines) != 1 {
 		t.Fatalf("expected exactly one emitted line, got %d:\n%s", len(lines), content)
@@ -615,53 +360,29 @@ func TestEvent_Emit_Idempotent(t *testing.T) {
 }
 
 func TestEvent_Emit_HookChangesName(t *testing.T) {
-	output := newBufferOutput(FormatJSON)
 	rename := &testHook{name: "rename", process: func(_ context.Context, entry *Entry) error {
 		entry.Message = "checkout_v2"
 		return nil
 	}}
-	event, err := NewEvent("checkout", minimalConfig(), WithOutputs(output), WithHooks(rename))
-	assertNoError(t, err)
+	logger, output := newEventLogger(t, WithHooks(rename))
 
-	event.Emit(context.Background())
+	logger.Event("checkout").Emit(context.Background())
 
 	result := parseEventJSON(t, output.String())
 	assertEqual(t, result["event"].(string), "checkout_v2")
 }
 
-func TestEvent_Close(t *testing.T) {
-	t.Run("second_close_returns_sentinel", func(t *testing.T) {
-		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(newBufferOutput(FormatJSON)))
-		assertNoError(t, err)
-
-		assertNoError(t, event.Close())
-		if err := event.Close(); !errors.Is(err, ErrEventClosed) {
-			t.Errorf("expected ErrEventClosed, got %v", err)
-		}
-	})
-
-	t.Run("second_close_with_time_rotation_does_not_panic", func(t *testing.T) {
-		rotating, err := RotatingFile(tempFile(t, "event.log"), FormatJSON, RotationConfig{Interval: Duration(time.Hour)})
-		assertNoError(t, err)
-		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(rotating))
-		assertNoError(t, err)
-
-		assertNoError(t, event.Close())
-		if err := event.Close(); !errors.Is(err, ErrEventClosed) {
-			t.Errorf("expected ErrEventClosed, got %v", err)
-		}
-	})
-
-	t.Run("emit_after_close_writes_nothing", func(t *testing.T) {
-		output := newBufferOutput(FormatJSON)
-		event, err := NewEvent("checkout", minimalConfig(), WithOutputs(output))
-		assertNoError(t, err)
-
-		assertNoError(t, event.Close())
-		event.Emit(context.Background())
-
-		assertEqual(t, output.String(), "")
-	})
+// newEventLogger returns a logger built with options over a JSON output, closed
+// when the test ends, to derive the events under test from, and that output.
+func newEventLogger(t *testing.T, options ...Option) (Logger, *bufferOutput) {
+	t.Helper()
+	output := newBufferOutput(FormatJSON)
+	logger, err := New(minimalConfig(), append([]Option{WithOutputs(output)}, options...)...)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	t.Cleanup(func() { assertNoError(t, logger.Close()) })
+	return logger, output
 }
 
 // parseEventJSON parses a single JSON line from event output.

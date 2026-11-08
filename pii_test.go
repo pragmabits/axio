@@ -1554,13 +1554,14 @@ func TestPIIHook_MasksEveryValueTheLogWrites(t *testing.T) {
 	assertNoError(t, logger.Close())
 
 	emitted := newBufferOutput(FormatJSON)
-	event, err := NewEvent("registration", minimalConfig(), WithOutputs(emitted), WithPII(nil, nil))
+	emitter, err := New(minimalConfig(), WithOutputs(emitted), WithPII(nil, nil))
 	assertNoError(t, err)
+	event := emitter.Event("registration")
 	event.Add("customer", customer)
 	event.Add("body", payload)
 	event.SetError(fmt.Errorf("customer %s rejected", cpf))
 	event.Emit(context.Background())
-	assertNoError(t, event.Close())
+	assertNoError(t, emitter.Close())
 
 	for name, line := range map[string]string{"logger": logged.String(), "event": emitted.String()} {
 		for _, secret := range []string{cpf, "hunter2", base64.StdEncoding.EncodeToString(payload)} {

@@ -72,9 +72,9 @@ make pin-library LIBRARY_VERSION=<version>   # the same, through the Makefile
 - `axio.go` — Logger interface, core types (Environment, Level, Format)
 - `logger.go` — Logger implementation (wraps zap internally); builds the plain or audited core
 - `annotation.go` — `Annotation`, `Annotations`, and `HTTP` metadata type
-- `event.go` — Wide Event type (`Event`, `Emit`, error attachment)
+- `event.go` — Wide Event type (`Event`, `Emit`, error attachment), started from a Logger by `Logger.Event`: it owns nothing and writes through the logger's event engine, as JSON or as the Console's text
 - `config.go` — Config loading (YAML, JSON, TOML)
-- `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig, and the ownership of a file output by one Logger or Event
+- `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig, and the ownership of a file output by one Logger
 - `rotator.go` — the one rotator per file in the process (`filesByPath`): rotation by size and by time on the write, the interval kept in the lock file's mtime, backups named as lumberjack names them, cleanup and compression in the background, and the lock against other processes
 - `fileowner_linux.go`, `fileowner_other.go` — the owner of a rotated log copied to the new one: on Linux, as lumberjack does, nothing elsewhere
 - `canonicalpath_linux.go`, `canonicalpath_other.go` — the resolved path of a log, the registry's key: on Linux the open descriptor's path confirms the path given, any other is resolved by name with `filepath.EvalSymlinks`

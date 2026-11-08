@@ -1,12 +1,9 @@
 package axio
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/pragmabits/axio/internal/logline"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -454,21 +451,6 @@ func TestConfig_ValidateAuditOutputs(t *testing.T) {
 		_, err = New(config, WithOutputs(newBufferOutput(FormatText)), WithAuditChain(chain))
 		if !errors.Is(err, ErrAuditWithoutJSON) {
 			t.Errorf("expected ErrAuditWithoutJSON, got %v", err)
-		}
-	})
-
-	t.Run("event_with_text_outputs_only_is_accepted", func(t *testing.T) {
-		output := newBufferOutput(FormatText)
-		event, err := NewEvent("checkout", config, WithOutputs(output), WithAudit(tempFile(t, "chain.json")))
-		assertNoError(t, err)
-		if err != nil {
-			return
-		}
-		event.Emit(context.Background())
-		assertNoError(t, event.Close())
-
-		if _, _, _, ok := logline.SplitTrailer([]byte(output.String())); !ok {
-			t.Errorf("an event writes the audited JSON line to every output, got %q", output.String())
 		}
 	})
 }

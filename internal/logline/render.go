@@ -50,7 +50,7 @@ func NewRenderer(options RenderOptions) *Renderer {
 	if !options.Color {
 		entryConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 	}
-	eventConfig := ConsoleEncoderConfig()
+	eventConfig := EventConsoleEncoderConfig()
 	eventConfig.EncodeLevel = eventLevelEncoder(options.Color)
 
 	return &Renderer{
@@ -285,16 +285,4 @@ func skipKey(*record, json.RawMessage, *time.Location) error {
 // decodeString decodes a JSON string value into target.
 func decodeString(raw json.RawMessage, target *string) error {
 	return json.Unmarshal(raw, target)
-}
-
-// eventLevelEncoder writes EVENT in the level column of an event, cyan when
-// colored: the Console already uses magenta for DEBUG.
-func eventLevelEncoder(color bool) zapcore.LevelEncoder {
-	label := "EVENT"
-	if color {
-		label = "\x1b[36mEVENT\x1b[0m"
-	}
-	return func(_ zapcore.Level, encoder zapcore.PrimitiveArrayEncoder) {
-		encoder.AppendString(label)
-	}
 }

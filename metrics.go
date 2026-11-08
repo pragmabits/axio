@@ -17,8 +17,8 @@ import (
 
 // PIIOrigin is where in an entry PII was masked or a value redacted: the
 // annotation — "message" or "error" for the entry's own, or an annotation's key
-// as the line writes it — and the name of the logger that wrote the entry,
-// empty for the root logger and for events.
+// as the line writes it — and the name of the logger that wrote the entry, or
+// that the event came from, empty for the root logger and its events.
 type PIIOrigin struct {
 	Annotation string
 	Logger     string

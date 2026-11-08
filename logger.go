@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -22,12 +23,13 @@ var entryPool = sync.Pool{
 
 type logger struct {
 	engine      *zap.Logger
+	eventEngine *zap.Logger
 	trace       Tracer
 	hooks       *hookChain
 	metrics     Metrics
 	annotations []Annotation
 	outputs     []Output
-	closed      *atomic.Bool
+	lifecycle   *lifecycle
 	isFork      bool
 	audited     bool
 }
@@ -95,19 +97,20 @@ func New(config Config, options ...Option) (Logger, error) {
 		return nil, abandonOutputs(config, outputs, err)
 	}
 
-	engine, err := buildEngine(config, outputs, parts.chain, parts.metrics)
+	engine, err := buildEngine(config, outputs, parts)
 	if err != nil {
 		return nil, abandonOutputs(config, outputs, fmt.Errorf("%w: %w", ErrBuildEngine, err))
 	}
 
 	return &logger{
-		engine:  engine,
-		trace:   buildTracer(config),
-		hooks:   newHookChain(parts.metrics, parts.hooks...),
-		metrics: parts.metrics,
-		outputs: outputs,
-		closed:  new(atomic.Bool),
-		audited: parts.chain != nil,
+		engine:      engine,
+		eventEngine: buildEventEngine(outputs, parts),
+		trace:       buildTracer(config),
+		hooks:       newHookChain(parts.metrics, parts.hooks...),
+		metrics:     parts.metrics,
+		outputs:     outputs,
+		lifecycle:   new(lifecycle),
+		audited:     parts.chain != nil,
 	}, nil
 }
 
@@ -127,6 +130,21 @@ func (l logger) With(annotations ...Annotation) Logger {
 	return &l
 }
 
+func (l *logger) Event(name string) *Event {
+	inherited := len(l.annotations)
+	return &Event{
+		name:        name,
+		loggerName:  l.engine.Name(),
+		engine:      l.eventEngine,
+		hooks:       l.hooks,
+		trace:       l.trace,
+		annotations: l.annotations[:inherited:inherited],
+		lifecycle:   l.lifecycle,
+		audited:     l.audited,
+		startTime:   time.Now(),
+	}
+}
+
 func (l logger) Debug(ctx context.Context, message string, annotations ...Annotation) {
 	l.log(ctx, LevelDebug, nil, message, annotations)
 }
@@ -143,33 +161,13 @@ func (l logger) Error(ctx context.Context, err error, message string, annotation
 	l.log(ctx, LevelError, err, message, annotations)
 }
 
-// Close releases all resources associated with the logger.
-//
-// This includes closing files opened by [File] outputs.
-// It should be called when the logger is no longer needed,
-// typically with defer in main.
-//
-// Only the root logger (the one returned by [New]) owns its outputs and
-// engine. Loggers produced by [Logger.Named] and [Logger.With] share those
-// resources with the root, so calling Close on them returns [ErrLoggerNotRoot]
-// and leaves all resources untouched.
-//
-// After Close is called on the root, subsequent log calls become no-ops on
-// the root and all of its forks, and a second call to Close returns
-// [ErrLoggerClosed].
-//
-// Example:
-//
-//	logger, err := axio.New(config, axio.WithOutputs(axio.MustFile("/var/log/app.log", axio.FormatJSON)))
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer logger.Close()
 func (l *logger) Close() error {
 	if l.isFork {
 		return ErrLoggerNotRoot
 	}
-	if !l.closed.CompareAndSwap(false, true) {
+	l.lifecycle.mutex.Lock()
+	defer l.lifecycle.mutex.Unlock()
+	if !l.lifecycle.closed.CompareAndSwap(false, true) {
 		return ErrLoggerClosed
 	}
 
@@ -198,7 +196,7 @@ func (l *logger) log(
 	message string,
 	annotations []Annotation,
 ) {
-	if l.closed.Load() {
+	if l.lifecycle.closed.Load() {
 		return
 	}
 
@@ -232,13 +230,14 @@ func (l *logger) log(
 		return
 	}
 
-	l.metrics.LogsTotal(ctx, level)
 	log.Message = entry.Message
 	fields := l.fieldsFromEntry(entry)
 	if l.audited {
 		fields = append(fields, contextField(ctx))
 	}
-	log.Write(fields...)
+	if l.lifecycle.write(log, fields) {
+		l.metrics.LogsTotal(ctx, level)
+	}
 }
 
 func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
@@ -261,8 +260,7 @@ func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
 	return fields
 }
 
-// engineParts are what [New] and [NewEvent] build between the outputs and the
-// engine.
+// engineParts are what [New] builds between the outputs and the engines.
 type engineParts struct {
 	metrics Metrics
 	hooks   []Hook
@@ -289,16 +287,16 @@ func buildEngineParts(config Config) (engineParts, error) {
 }
 
 // buildEngine builds the zap logger behind a Logger: an audited core when
-// chain is set, one plain core per output otherwise.
-func buildEngine(config Config, outputs []Output, chain *HashChain, metrics Metrics) (*zap.Logger, error) {
+// there is a chain, one plain core per output otherwise.
+func buildEngine(config Config, outputs []Output, parts engineParts) (*zap.Logger, error) {
 	level := zap.NewAtomicLevelAt(toZapLevel(config.Level))
 	metadata := serviceMetadata(config)
 
 	var core zapcore.Core
-	if chain != nil {
-		core = newAuditedCore(level, outputs, metadata, chain, metrics)
+	if parts.chain != nil {
+		core = newAuditedCore(level, outputs, metadata, parts, entryEncoding())
 	} else {
-		core = newPlainCore(level, outputs, metadata)
+		core = newPlainCore(level, outputs, metadata, entryEncoding())
 	}
 	core = &reportingCore{Core: core}
 
@@ -313,12 +311,13 @@ func buildEngine(config Config, outputs []Output, chain *HashChain, metrics Metr
 	return zap.New(core, options...), nil
 }
 
-// newPlainCore writes each output in its own format. Only JSON outputs carry
-// the service metadata: in text it would repeat the same fields on every line.
-func newPlainCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field) zapcore.Core {
+// newPlainCore writes each output in its own format, in the line's encoding.
+// Only JSON outputs carry the service metadata: in text it would repeat the
+// same fields on every line.
+func newPlainCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field, encoding lineEncoding) zapcore.Core {
 	cores := make([]zapcore.Core, 0, len(outputs))
 	for _, output := range outputs {
-		core := zapcore.NewCore(buildEncoder(output.Format()), output, level)
+		core := zapcore.NewCore(encoding.encoder(output.Format()), output, level)
 		if output.Format() == FormatJSON {
 			core = core.With(metadata)
 		}
@@ -327,15 +326,15 @@ func newPlainCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapco
 	return zapcore.NewTee(cores...)
 }
 
-// newAuditedCore writes every output through the audit chain. The hash covers
-// the JSON encoding, service metadata included; text outputs get the entry
-// without metadata and with the hash shortened.
-func newAuditedCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field, chain *HashChain, metrics Metrics) zapcore.Core {
+// newAuditedCore writes every output through the audit chain, in the line's
+// encoding. The hash covers the JSON encoding, service metadata included; text
+// outputs get the entry without metadata and with the hash shortened.
+func newAuditedCore(level zapcore.LevelEnabler, outputs []Output, metadata []zapcore.Field, parts engineParts, encoding lineEncoding) zapcore.Core {
 	core := &auditCore{
 		LevelEnabler: level,
-		chain:        chain,
-		metrics:      metrics,
-		canonical:    zapcore.NewJSONEncoder(logline.JSONEncoderConfig()),
+		chain:        parts.chain,
+		metrics:      parts.metrics,
+		canonical:    zapcore.NewJSONEncoder(encoding.json),
 	}
 	addFields(core.canonical, metadata)
 	for _, output := range outputs {
@@ -343,9 +342,33 @@ func newAuditedCore(level zapcore.LevelEnabler, outputs []Output, metadata []zap
 			core.jsonOutputs = append(core.jsonOutputs, output)
 			continue
 		}
-		core.textSinks = append(core.textSinks, textSink{encoder: buildEncoder(output.Format()), output: output})
+		core.textSinks = append(core.textSinks, textSink{encoder: encoding.encoder(output.Format()), output: output})
 	}
 	return core
+}
+
+// lifecycle is whether a root Logger is still open, shared by its forks and by
+// the events they start. A write holds its lock for reading from its last look
+// at closed to the end of the write, and Close holds it for writing while it
+// closes the outputs, so a write either finishes before the outputs close or
+// finds the logger closed and writes nothing: no write fails on an output
+// already closed, reaches one output and not another, or, with auditing, takes
+// the chain past the log.
+type lifecycle struct {
+	mutex  sync.RWMutex
+	closed atomic.Bool
+}
+
+// write writes the checked entry unless the logger has closed, holding the
+// lock for reading so Close waits for it, and reports whether it wrote.
+func (l *lifecycle) write(log *zapcore.CheckedEntry, fields []zap.Field) bool {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	if l.closed.Load() {
+		return false
+	}
+	log.Write(fields...)
+	return true
 }
 
 // reportingCore reports a failed write on stderr as one line prefixed axio:,
@@ -395,14 +418,29 @@ func serviceMetadata(config Config) []zapcore.Field {
 	}
 }
 
-// buildEncoder creates the appropriate encoder for the specified format.
-func buildEncoder(format Format) zapcore.Encoder {
-	switch format {
-	case FormatText:
-		return zapcore.NewConsoleEncoder(logline.ConsoleEncoderConfig())
-	default:
-		return zapcore.NewJSONEncoder(logline.JSONEncoderConfig())
+// lineEncoding is the encoder settings a kind of line is written with: in JSON,
+// and in the Console's text.
+type lineEncoding struct {
+	json zapcore.EncoderConfig
+	text zapcore.EncoderConfig
+}
+
+// entryEncoding returns the encoding of a log entry.
+func entryEncoding() lineEncoding {
+	return lineEncoding{json: logline.JSONEncoderConfig(), text: logline.ConsoleEncoderConfig()}
+}
+
+// eventEncoding returns the encoding of a wide event.
+func eventEncoding() lineEncoding {
+	return lineEncoding{json: logline.EventEncoderConfig(), text: logline.EventConsoleEncoderConfig()}
+}
+
+// encoder returns the encoder of an output in format.
+func (l lineEncoding) encoder(format Format) zapcore.Encoder {
+	if format == FormatText {
+		return zapcore.NewConsoleEncoder(l.text)
 	}
+	return zapcore.NewJSONEncoder(l.json)
 }
 
 func toZapLevel[T ~string | ~[]byte](level T) zapcore.Level {

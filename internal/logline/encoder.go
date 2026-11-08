@@ -52,17 +52,18 @@ func ConsoleEncoderConfig() zapcore.EncoderConfig {
 	}
 }
 
-// EventEncoderConfig returns the encoder settings of a wide event, which is
-// always JSON. It differs from [JSONEncoderConfig] in carrying the event name
-// under [EventKey] and in having no level, logger name, caller or stacktrace:
-// an event's severity lives in its own fields. Any other value is encoded with
+// EventEncoderConfig returns the encoder settings of a wide event in JSON. It
+// differs from [JSONEncoderConfig] in carrying the event name under [EventKey]
+// and in having no level, caller or stacktrace: an event's severity lives in
+// its own fields. The name of the logger it came from is written under
+// [LoggerKey], and left out when empty. Any other value is encoded with
 // [ValueOptions].
 func EventEncoderConfig() zapcore.EncoderConfig {
 	return zapcore.EncoderConfig{
 		TimeKey:             TimeKey,
 		LevelKey:            zapcore.OmitKey,
 		MessageKey:          EventKey,
-		NameKey:             zapcore.OmitKey,
+		NameKey:             LoggerKey,
 		CallerKey:           zapcore.OmitKey,
 		StacktraceKey:       zapcore.OmitKey,
 		LineEnding:          zapcore.DefaultLineEnding,
@@ -71,6 +72,16 @@ func EventEncoderConfig() zapcore.EncoderConfig {
 		EncodeDuration:      zapcore.MillisDurationEncoder,
 		NewReflectedEncoder: newValueEncoder,
 	}
+}
+
+// EventConsoleEncoderConfig returns the encoder settings of a wide event in the
+// Console's text: those of [ConsoleEncoderConfig], with EVENT, in cyan, in the
+// level column an entry gives its level. The [Renderer] renders an event line
+// with the same settings, so the two texts match.
+func EventConsoleEncoderConfig() zapcore.EncoderConfig {
+	config := ConsoleEncoderConfig()
+	config.EncodeLevel = eventLevelEncoder(true)
+	return config
 }
 
 // ValueOptions returns the options of the JSON encoding every encoder config
@@ -128,3 +139,15 @@ var durationNanoseconds = json.MarshalToFunc(func(encoder *jsontext.Encoder, dur
 // valueEncoding is [ValueOptions] with no marshalers of a caller's, built once
 // for every value the log writes.
 var valueEncoding = ValueOptions()
+
+// eventLevelEncoder writes EVENT in the level column of an event, cyan when
+// colored: the Console already uses magenta for DEBUG.
+func eventLevelEncoder(color bool) zapcore.LevelEncoder {
+	label := "EVENT"
+	if color {
+		label = "\x1b[36mEVENT\x1b[0m"
+	}
+	return func(_ zapcore.Level, encoder zapcore.PrimitiveArrayEncoder) {
+		encoder.AppendString(label)
+	}
+}

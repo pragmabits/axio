@@ -2,10 +2,13 @@
 //
 // Instead of scattering many log lines per request, a wide event accumulates
 // all relevant context and emits a single comprehensive log entry at the end.
+// An event comes from a Logger and writes through it: to its outputs, through
+// its PII masking and its audit chain, as JSON or as the Console's text.
 //
 // Features demonstrated:
 //   - Basic event with Add (flat fields)
-//   - Context propagation (WithEvent/EventFromContext)
+//   - Context propagation (WithEvent/EventFromContext), and an event that
+//     carries the name and annotations of the logger it came from
 //   - Annotable types (HTTP metadata)
 //   - Nested data (maps)
 //   - Simple error (SetError)
@@ -52,13 +55,14 @@ func basicEvent(ctx context.Context) {
 		Level:          axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("checkout", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("checkout")
 	event.Add("user_id", "usr_456")
 	event.Add("cart_total", 15999)
 	event.Add("coupon_applied", "SAVE20")
@@ -79,14 +83,17 @@ func contextPropagation(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	// Middleware: create event and store in context
-	event, err := axio.NewEvent("http_request", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	// Middleware: create the event from the request's logger, which gives it
+	// its name and its request_id, and store it in context
+	requestLogger := logger.Named("http").With(axio.Field("request_id", "req_7f3a"))
+	event := requestLogger.Event("http_request")
 	ctx = axio.WithEvent(ctx, event)
 
 	// Simulate handler chain enriching the event via context
@@ -123,13 +130,14 @@ func eventWithAnnotable(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("http_request", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("http_request")
 	event.With(axio.Field("http", axio.HTTP{
 		Method:     "POST",
 		URL:        "/api/v1/orders",
@@ -156,13 +164,14 @@ func eventWithNestedData(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("checkout", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("checkout")
 	event.Add("user", map[string]any{
 		"id":           "usr_456",
 		"subscription": "premium",
@@ -194,13 +203,14 @@ func eventWithSimpleError(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("payment", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("payment")
 	event.Add("user_id", "usr_456")
 	event.Add("amount_cents", 15999)
 
@@ -220,13 +230,14 @@ func eventWithDetailedError(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("payment", config)
+	logger, err := axio.New(config)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("payment")
 	event.Add("user_id", "usr_456")
 	event.Add("amount_cents", 15999)
 	event.Add("payment_provider", "stripe")
@@ -252,7 +263,7 @@ func eventWithPII(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("user_registration", config,
+	logger, err := axio.New(config,
 		axio.WithPII(
 			[]axio.PIIPattern{axio.PatternCPF, axio.PatternEmail},
 			axio.DefaultSensitiveFields(),
@@ -262,8 +273,9 @@ func eventWithPII(ctx context.Context) {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	defer event.Close()
+	defer logger.Close()
 
+	event := logger.Event("user_registration")
 	event.Add("user_id", "usr_new_001")
 	event.Add("document", "123.456.789-01")
 	event.Add("email", "john@example.com")
@@ -274,7 +286,9 @@ func eventWithPII(ctx context.Context) {
 }
 
 // eventWithAudit demonstrates audit hash chain on events.
-// Each event gets a SHA256 hash linking to the previous entry.
+// Each event gets a SHA256 hash linking to the previous entry: the full hash on
+// the JSON output, which is the one verified, and its first characters on the
+// text output. An audited logger needs a JSON output.
 func eventWithAudit(ctx context.Context) {
 	fmt.Println("=== Audit Hash Chain ===")
 
@@ -292,35 +306,29 @@ func eventWithAudit(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	// First event in the chain
-	event1, err := axio.NewEvent("access_grant", config,
+	logger, err := axio.New(config,
+		axio.WithOutputs(axio.Console(axio.FormatText), axio.Stdout(axio.FormatJSON)),
 		axio.WithAudit(storePath),
 	)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
+	defer logger.Close()
 
-	event1.Add("user_id", "usr_456")
-	event1.Add("resource", "/admin/settings")
-	event1.Add("action", "read")
-	event1.Emit(ctx)
-	event1.Close()
+	// First event in the chain
+	first := logger.Event("access_grant")
+	first.Add("user_id", "usr_456")
+	first.Add("resource", "/admin/settings")
+	first.Add("action", "read")
+	first.Emit(ctx)
 
 	// Second event links to the first via hash chain
-	event2, err := axio.NewEvent("access_grant", config,
-		axio.WithAudit(storePath),
-	)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return
-	}
-
-	event2.Add("user_id", "usr_789")
-	event2.Add("resource", "/admin/users")
-	event2.Add("action", "write")
-	event2.Emit(ctx)
-	event2.Close()
+	second := logger.Event("access_grant")
+	second.Add("user_id", "usr_789")
+	second.Add("resource", "/admin/users")
+	second.Add("action", "write")
+	second.Emit(ctx)
 
 	fmt.Println()
 }
@@ -343,7 +351,7 @@ func eventWithFileOutput(ctx context.Context) {
 		Level:       axio.LevelInfo,
 	}
 
-	event, err := axio.NewEvent("checkout", config,
+	logger, err := axio.New(config,
 		axio.WithOutputs(axio.MustFile(filePath, axio.FormatJSON)),
 	)
 	if err != nil {
@@ -351,10 +359,14 @@ func eventWithFileOutput(ctx context.Context) {
 		return
 	}
 
+	event := logger.Event("checkout")
 	event.Add("user_id", "usr_456")
 	event.Add("cart_total", 15999)
 	event.Emit(ctx)
-	event.Close()
+	if err := logger.Close(); err != nil {
+		fmt.Printf("Error closing logger: %v\n", err)
+		return
+	}
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {

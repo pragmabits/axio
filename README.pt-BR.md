@@ -365,7 +365,7 @@ logger, _ := axio.New(config, axio.WithOutputs(out))
 defer logger.Close()
 ```
 
-Todo output sobre um arquivo usa o único rotador do processo para ele, então um logger e quantos eventos forem podem escrever no mesmo caminho, cada um com o seu `RotatingFile` ou pelo mesmo `OutputConfig`. Um valor de `Output`, porém, pertence ao `Logger` ou `Event` que o recebe, e passá-lo a um segundo falha com `ErrOutputInUse`. O mesmo caminho aberto com outra rotação, ou como `File` comum, falha com `ErrRotationConflict`. Enquanto algum output tem o arquivo aberto, o processo segura um lock no arquivo ao lado (`app.log.lock`), e outro processo que abra o mesmo arquivo rotativo falha no `New` com `ErrRotatingFileLocked`. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
+Todo output sobre um arquivo usa o único rotador do processo para ele, então quantos loggers forem podem escrever no mesmo caminho, cada um com o seu `RotatingFile` ou pelo mesmo `OutputConfig`. Um valor de `Output`, porém, pertence ao `Logger` que o recebe, e passá-lo a um segundo falha com `ErrOutputInUse`. O mesmo caminho aberto com outra rotação, ou como `File` comum, falha com `ErrRotationConflict`. Enquanto algum output tem o arquivo aberto, o processo segura um lock no arquivo ao lado (`app.log.lock`), e outro processo que abra o mesmo arquivo rotativo falha no `New` com `ErrRotatingFileLocked`. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
 
 O arquivo rotaciona na escrita que o levaria além de `MaxSize`, ou na primeira escrita depois que `Interval` passou desde a última rotação, por tamanho ou por tempo. A hora da última rotação é a data de modificação do arquivo de lock, então um reinício não recomeça o intervalo, e um arquivo em que nada foi escrito não rotaciona. Uma escrita maior que `MaxSize` vai inteira para o arquivo. Uma rotação que falha guarda a linha no arquivo atual, aparece no stderr e em `LastRotationError` (`RotationErrorReporter`), e é tentada de novo depois de mais um intervalo ou de mais `MaxSize`. Os backups têm o nome que o lumberjack dá, `app-2006-01-02T15-04-05.000.log`, e depois de cada rotação os mais antigos são removidos por `MaxBackups` e `MaxAge` e o resto é comprimido com `Compress`, em segundo plano: o `Close` não espera.
 
@@ -671,7 +671,7 @@ O hash cobre exatamente o que foi escrito: mensagem, erro, stacktrace, metadados
 {"level":"info","timestamp":"2026-09-23T15:16:24.230105632Z","logger":"orders","caller":"app/main.go:26","message":"order created","order_id":"ord_8812","previous_hash":"","hash":"28d41c7b24128b63eed1ed71b77bc63e3f9b9b463af820a3171a0a1927b3f3a8"}
 ```
 
-Só saídas JSON são verificáveis. A saída de texto de um Logger mostra os 6 primeiros caracteres do hash, para achar a mesma entrada no JSON; um Event auditado escreve a sua linha JSON, com o trailer, em toda saída.
+Só saídas JSON são verificáveis. Uma saída de texto mostra os 6 primeiros caracteres do hash, para achar a mesma entrada ou o mesmo evento no JSON.
 
 #### Configuração
 
@@ -683,11 +683,11 @@ logger, _ := axio.New(config,
 )
 ```
 
-Todo Logger e Event auditado com o mesmo caminho num processo estende **uma** cadeia, qualquer que tenha sido criado primeiro.
+Todo Logger auditado com o mesmo caminho num processo, e todo evento que ele inicia, estende **uma** cadeia, qualquer que tenha sido criado primeiro.
 
-Um Logger auditado precisa de uma saída JSON: só as linhas JSON carregam os hashes contra os quais o log é verificado, então `New` devolve `ErrAuditWithoutJSON` quando todas as saídas são de texto. Um Event escreve JSON em toda saída e não tem essa exigência.
+Um Logger auditado precisa de uma saída JSON: só as linhas JSON carregam os hashes contra os quais o log é verificado, então `New` devolve `ErrAuditWithoutJSON` quando todas as saídas são de texto.
 
-O `New` (ou o `NewEvent`) toma um lock exclusivo num arquivo ao lado do store (`chain.json.lock`) e o segura enquanto o processo roda: um segundo processo com o mesmo store falha no `New` com `ErrChainStoreLocked`, em vez de bifurcar a cadeia. Um `FileStore` passado por `WithAuditChain` é travado do mesmo jeito, e a cadeia é então carregada dele de novo, para continuar, em vez de bifurcar, o que outro processo salvou depois que o `NewHashChain` a carregou. Ler o store, como a verificação faz, não toma lock. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
+O `New` toma um lock exclusivo num arquivo ao lado do store (`chain.json.lock`) e o segura enquanto o processo roda: um segundo processo com o mesmo store falha no `New` com `ErrChainStoreLocked`, em vez de bifurcar a cadeia. Um `FileStore` passado por `WithAuditChain` é travado do mesmo jeito, e a cadeia é então carregada dele de novo, para continuar, em vez de bifurcar, o que outro processo salvou depois que o `NewHashChain` a carregou. Ler o store, como a verificação faz, não toma lock. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
 
 #### Verificando um log
 
@@ -719,7 +719,7 @@ Para arquivos rotacionados, `axio.VerifyLines(reader, previousHash)` confere um 
 
 #### ChainStore Customizado
 
-Implemente `ChainStore` para backends customizados (Redis, PostgreSQL, etc.) e passe a cadeia com `WithAuditChain`. Loggers e Events que recebem a mesma cadeia estendem uma cadeia só:
+Implemente `ChainStore` para backends customizados (Redis, PostgreSQL, etc.) e passe a cadeia com `WithAuditChain`. Loggers que recebem a mesma cadeia, e os eventos que eles iniciam, estendem uma cadeia só:
 
 ```go
 type ChainStore interface {
@@ -820,7 +820,7 @@ Axio emite métricas sobre o próprio processo de logging, permitindo monitorar 
 | `audit.records` | Counter   | -                                 | Registros de auditoria criados |
 | `hook.duration` | Histogram | `hook.name`, `error`              | Duração de execução de hooks   |
 
-`annotation` é onde o PII estava na entrada: `message`, `error`, ou a chave de uma anotação como a linha a escreve. `logger` é o nome dado com `Named`, vazio no logger raiz e nos eventos. `reason` é por que um valor foi redigido inteiro: `field` (o nome é sensível), `depth` (aninhado além do limite), `token` (um JWT ou JWE, compacto ou em serialização JSON) ou `binary` (bytes que não são texto). Uma série só existe para uma combinação que aconteceu, então, com chaves de anotação fixas no código, são algumas centenas no máximo; chaves montadas em tempo de execução multiplicam esse número.
+`annotation` é onde o PII estava na entrada: `message`, `error`, ou a chave de uma anotação como a linha a escreve. `logger` é o nome dado com `Named`, que o evento leva do logger de onde veio; fica vazio no logger raiz e nos eventos dele. `reason` é por que um valor foi redigido inteiro: `field` (o nome é sensível), `depth` (aninhado além do limite), `token` (um JWT ou JWE, compacto ou em serialização JSON) ou `binary` (bytes que não são texto). Uma série só existe para uma combinação que aconteceu, então, com chaves de anotação fixas no código, são algumas centenas no máximo; chaves montadas em tempo de execução multiplicam esse número.
 
 #### Configuração
 
@@ -838,7 +838,7 @@ logger, _ := axio.New(config, axio.WithMetrics(provider))
 
 #### Interface Metrics
 
-A interface que um hook que implementa `MetricsAware` recebe por `SetMetrics`. O `New` e o `NewEvent` montam a implementação do próprio axio a partir do `MeterProvider` dado a `WithMetrics`, e nenhuma option aceita outra: para chegar a outro backend, passe um `MeterProvider` apoiado no exporter OpenTelemetry dele.
+A interface que um hook que implementa `MetricsAware` recebe por `SetMetrics`. O `New` monta a implementação do próprio axio a partir do `MeterProvider` dado a `WithMetrics`, e nenhuma option aceita outra: para chegar a outro backend, passe um `MeterProvider` apoiado no exporter OpenTelemetry dele.
 
 ```go
 type Metrics interface {
@@ -860,15 +860,18 @@ type Metrics interface {
 
 Wide events omitem o campo de nível — a severidade é expressa pelos próprios campos do evento (`status_code`, `error`, etc.), não por níveis tradicionais de log.
 
+Um evento vem de um `Logger` e escreve por ele: nas saídas dele, pelo mascaramento de PII, pelos hooks e pela cadeia de auditoria dele. Iniciar um evento não monta nada disso e aloca só o evento, então um por requisição custa pouco. O evento leva as anotações de `With` e o nome de `Named` do logger de onde veio, é escrito qualquer que seja o nível desse logger e não escreve nada depois que o logger raiz é fechado. Uma saída JSON recebe o evento em JSON; uma saída de texto, como o `Console`, recebe em texto, com `EVENT` na coluna de nível, o mesmo texto que o `axio render` mostra.
+
 #### Uso Básico
 
 ```go
-event, err := axio.NewEvent("checkout", config)
+logger, err := axio.New(config)
 if err != nil {
     return err
 }
-defer event.Close()
+defer logger.Close()
 
+event := logger.Event("checkout")
 event.Add("user_id", userID)
 event.Add("cart_total", 15999)
 event.Add("item_count", 3)
@@ -881,21 +884,19 @@ event.Emit(ctx)
 
 | Método | Descrição |
 | ------ | --------- |
-| `NewEvent(name, config, ...Option)` | Cria um novo evento usando o mesmo Config/Option de `New` |
+| `logger.Event(name)` | Inicia um evento escrito pelo logger, com as anotações de `With` e o nome de `Named` dele |
 | `Add(key, value)` | Adiciona um campo chave-valor (thread-safe) |
 | `With(...Annotation)` | Adiciona anotações, incluindo tipos `Annotable` como `HTTP` |
 | `SetError(err, ...Annotation)` | Registra um erro com anotações de detalhe opcionais |
-| `Emit(ctx)` | Escreve o evento como uma única entrada (calcula `duration_ms`, executa hooks; um hook pode renomear o evento) |
-| `Close()` | Libera recursos de saída (chame depois de `Emit`); um `Emit` depois do `Close` não escreve nada, e um segundo `Close` devolve `ErrEventClosed` |
+| `Emit(ctx)` | Escreve o evento como uma única entrada (calcula `duration_ms`, executa hooks; um hook pode renomear o evento); só a primeira chamada escreve, e nenhuma escreve depois que o logger raiz é fechado |
 
 #### Propagação via Context (padrão middleware)
 
 Armazene o evento no contexto para que handlers downstream possam enriquecê-lo:
 
 ```go
-// Middleware: cria e armazena
-event, _ := axio.NewEvent("http_request", config)
-defer event.Close()
+// Middleware: cria a partir do logger da requisição e armazena
+event := logger.With(axio.Field("request_id", requestID)).Event("http_request")
 ctx = axio.WithEvent(ctx, event)
 
 // Handler: enriquece a partir do contexto
@@ -927,21 +928,23 @@ event.SetError(err,
 
 #### Integração com Recursos
 
-Wide events suportam as mesmas Options do logger padrão:
+As Options vão no `New`, e todo evento que o logger inicia segue essas Options:
 
 ```go
-// Com mascaramento de PII, ligado por padrão como no logger
-event, _ := axio.NewEvent("user_registration", config)
+// Com mascaramento de PII, ligado por padrão
+logger, _ := axio.New(config)
+event := logger.Event("user_registration")
 
-// Com hash chain de auditoria
-event, _ := axio.NewEvent("access_grant", config,
+// Com hash chain de auditoria: um logger auditado precisa de uma saída JSON
+logger, _ := axio.New(config,
+    axio.WithOutputs(axio.Stdout(axio.FormatJSON)),
     axio.WithAudit("/var/lib/axio/chain.json"),
 )
+event := logger.Event("access_grant")
 
 // Com tracing
-event, _ := axio.NewEvent("http_request", config,
-    axio.WithTracer(axio.Otel()),
-)
+logger, _ := axio.New(config, axio.WithTracer(axio.Otel()))
+event := logger.Event("http_request")
 ```
 
 ---
@@ -1269,7 +1272,7 @@ logger.Error(ctx, err, "falha ao confirmar pagamento",
 | `ErrBuildEngine`         | Falha ao construir engine de logging | Verifique combinação de outputs e config     |
 | `ErrOpenFile`            | Falha ao abrir arquivo de log        | Verifique caminho e permissões               |
 | `ErrOutputClosed`        | Output de arquivo fechado duas vezes | Feche cada output uma vez                    |
-| `ErrOutputInUse`         | Output de arquivo dado a um segundo dono | Abra um output por Logger ou Event       |
+| `ErrOutputInUse`         | Output de arquivo dado a um segundo dono | Abra um output por Logger                |
 | `ErrRotationConflict`    | Caminho já aberto com outra rotação  | Uma rotação por caminho no processo          |
 | `ErrRotatingFileLocked`  | Outro processo segura o arquivo rotativo | Um processo por arquivo rotativo         |
 | `ErrLoadChainState`      | Falha ao carregar estado da chain    | Verifique arquivo de chain                   |
@@ -1286,4 +1289,3 @@ logger.Error(ctx, err, "falha ao confirmar pagamento",
 | `ErrNilTracer`           | Tracer passado a WithTracer é nil    | Passe um Tracer não-nulo ou omita a opção    |
 | `ErrLoggerClosed`        | Logger já foi fechado                | Guarda idempotente; cheque com `errors.Is`   |
 | `ErrLoggerNotRoot`       | Close chamado em um Logger derivado  | Apenas o root retornado por `New` pode fechar|
-| `ErrEventClosed`         | Event já foi fechado                 | Guarda idempotente; cheque com `errors.Is`   |

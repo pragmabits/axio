@@ -77,8 +77,8 @@ buffered data, and that error is worth handling; nothing will flag it.
 
 **A cleanup does not stop at the first failure.** Releasing several resources
 attempts every one and returns the failures together with `errors.Join`, so one
-file that fails to close does not leave the others open: `Logger.Close`,
-`Event.Close`, and `WithAgentMode` closing the outputs it discards.
+file that fails to close does not leave the others open: `Logger.Close`, and
+`WithAgentMode` closing the outputs it discards.
 
 **The log path has no one to return an error to.** `Info`, `Error`, `Emit` and
 the rest return nothing and must not panic in the caller's code. A failure there

@@ -74,12 +74,16 @@ make pin-library LIBRARY_VERSION=<version>   # the same, through the Makefile
 - `annotation.go` — `Annotation`, `Annotations`, and `HTTP` metadata type
 - `event.go` — Wide Event type (`Event`, `Emit`, error attachment)
 - `config.go` — Config loading (YAML, JSON, TOML)
-- `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig
+- `output.go` — Output interface + implementations (Console, Stdout, File, RotatingFile) + RotationConfig, and the ownership of a file output by one Logger or Event
+- `rotator.go` — the one rotator per file in the process (`filesByPath`): rotation by size and by time on the write, the interval kept in the lock file's mtime, backups named as lumberjack names them, cleanup and compression in the background, and the lock against other processes
+- `fileowner_linux.go`, `fileowner_other.go` — the owner of a rotated log copied to the new one: on Linux, as lumberjack does, nothing elsewhere
+- `canonicalpath_linux.go`, `canonicalpath_other.go` — the resolved path of a log, the registry's key: on Linux the open descriptor's path confirms the path given, any other is resolved by name with `filepath.EvalSymlinks`
+- `openlogfile_unix.go`, `openlogfile_other.go` — opening a rotating log and its lock with the descriptor left out of the runtime's poller on Unix; `os.OpenFile` elsewhere
 - `options.go` — Functional options (WithOutputs, WithPII, WithPIIDisabled, WithAudit, WithAuditChain, etc.)
 - `hook.go` — Hook chain processing (PII → custom hooks)
 - `pii.go` — PII masking (CPF, CNPJ, credit card, email, phone) of the message, the error and every annotation, structured values walked as the JSON the log writes (`logline.ValueOptions`), binary bytes — `[]byte`, byte arrays, named byte slices — redacted inside them, a JWS/JWE in JSON serialization redacted whole, no built-in pattern matching inside a whole UUID (RFC 9562 version and variant, or nil), a number glued to a label masked and one inside a hex identifier not
 - `audit.go` — Hash chain: `HashChain` (Add, Verify), `VerifyLines`, `FileStore` (locked per process), and the audited core that hashes each JSON line as it is written
-- `storelock_flock.go`, `storelock_other.go` — the `FileStore` lock: flock where it exists, nothing elsewhere
+- `storelock_flock.go`, `storelock_other.go` — the lock of a `FileStore` and of a rotating file: flock where it exists, nothing elsewhere
 - `tracing.go` — OpenTelemetry trace extraction
 - `metrics.go` — OTel metrics
 - `duration.go` — duration parsing for config

@@ -365,6 +365,10 @@ logger, _ := axio.New(config, axio.WithOutputs(out))
 defer logger.Close()
 ```
 
+Todo output sobre um arquivo usa o único rotador do processo para ele, então um logger e quantos eventos forem podem escrever no mesmo caminho, cada um com o seu `RotatingFile` ou pelo mesmo `OutputConfig`. Um valor de `Output`, porém, pertence ao `Logger` ou `Event` que o recebe, e passá-lo a um segundo falha com `ErrOutputInUse`. O mesmo caminho aberto com outra rotação, ou como `File` comum, falha com `ErrRotationConflict`. Enquanto algum output tem o arquivo aberto, o processo segura um lock no arquivo ao lado (`app.log.lock`), e outro processo que abra o mesmo arquivo rotativo falha no `New` com `ErrRotatingFileLocked`. O lock usa `flock`, então Windows, Solaris e AIX ficam sem ele.
+
+O arquivo rotaciona na escrita que o levaria além de `MaxSize`, ou na primeira escrita depois que `Interval` passou desde a última rotação, por tamanho ou por tempo. A hora da última rotação é a data de modificação do arquivo de lock, então um reinício não recomeça o intervalo, e um arquivo em que nada foi escrito não rotaciona. Uma escrita maior que `MaxSize` vai inteira para o arquivo. Uma rotação que falha guarda a linha no arquivo atual, aparece no stderr e em `LastRotationError` (`RotationErrorReporter`), e é tentada de novo depois de mais um intervalo ou de mais `MaxSize`. Os backups têm o nome que o lumberjack dá, `app-2006-01-02T15-04-05.000.log`, e depois de cada rotação os mais antigos são removidos por `MaxBackups` e `MaxAge` e o resto é comprimido com `Compress`, em segundo plano: o `Close` não espera.
+
 `MustRotatingFile` está disponível para inicializações em que a falha deve ser fatal.
 
 ---
@@ -1265,6 +1269,9 @@ logger.Error(ctx, err, "falha ao confirmar pagamento",
 | `ErrBuildEngine`         | Falha ao construir engine de logging | Verifique combinação de outputs e config     |
 | `ErrOpenFile`            | Falha ao abrir arquivo de log        | Verifique caminho e permissões               |
 | `ErrOutputClosed`        | Output de arquivo fechado duas vezes | Feche cada output uma vez                    |
+| `ErrOutputInUse`         | Output de arquivo dado a um segundo dono | Abra um output por Logger ou Event       |
+| `ErrRotationConflict`    | Caminho já aberto com outra rotação  | Uma rotação por caminho no processo          |
+| `ErrRotatingFileLocked`  | Outro processo segura o arquivo rotativo | Um processo por arquivo rotativo         |
 | `ErrLoadChainState`      | Falha ao carregar estado da chain    | Verifique arquivo de chain                   |
 | `ErrSaveChainState`      | Falha ao salvar estado da chain      | Verifique permissões de escrita              |
 | `ErrMarshalChainState`   | Falha ao serializar estado da chain  | Erro interno de serialização                 |

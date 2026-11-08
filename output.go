@@ -1,21 +1,13 @@
 package axio
 
 import (
+	"errors"
 	"fmt"
-	"math"
 	"os"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
-
-// unlimitedMegabytes is the size lumberjack is given for a [RotationConfig]
-// with no MaxSize: it reads zero as 100 MB, so no size-based rotation takes a
-// size no file reaches, the largest whose bytes fit an int64.
-const unlimitedMegabytes = int(min(int64(math.MaxInt), math.MaxInt64>>20))
 
 // OutputType defines the log output destination.
 type OutputType string
@@ -82,8 +74,8 @@ type Output interface {
 	Close() error
 }
 
-// RotationErrorReporter is implemented by outputs that record errors from
-// background rotation. Detect via type assertion on an [Output]:
+// RotationErrorReporter is implemented by outputs that record the outcome of
+// their rotation, by size or by time. Detect via type assertion on an [Output]:
 //
 //	if reporter, ok := out.(axio.RotationErrorReporter); ok {
 //	    if err := reporter.LastRotationError(); err != nil {
@@ -152,26 +144,25 @@ func (o *output) Close() error {
 	return nil
 }
 
-// fileOutput encapsulates a file with its path for identification.
-// When rotation is configured, lumberjack handles the underlying file;
-// otherwise, a plain os.File is used.
+// fileOutput encapsulates a file with its path for identification. A rotating
+// one writes through the rotator its file shares with every other output on
+// it; a plain one writes to its own os.File. After Close, a write returns
+// [ErrOutputClosed] wrapping [os.ErrClosed] and opens nothing again.
 type fileOutput struct {
 	*output
-	path              string
-	file              *os.File              // used for plain files (nil when rotating)
-	lumberjack        *lumberjack.Logger    // used for rotating files (nil otherwise)
-	interval          Duration              // time-based rotation interval (zero if disabled)
-	ticker            *time.Ticker          // time-based rotation (nil otherwise)
-	done              chan struct{}         // stops time rotation goroutine (nil otherwise)
-	rotationWG        sync.WaitGroup        // waits for the rotation goroutine to exit on Close
-	lastRotationError atomic.Pointer[error] // most recent time-based rotation outcome
-	closed            atomic.Bool           // set by the first Close
+	path    string
+	key     string      // the plain file's key in filesByPath (empty when rotating)
+	file    *os.File    // used for plain files (nil when rotating)
+	rotator *rotator    // used for rotating files (nil otherwise)
+	owned   atomic.Bool // set by the Logger or Event the output is given to
+	closed  atomic.Bool // set by the first Close
 }
 
 // File creates an output that writes to a file at the specified path.
 //
 // The file is created if it doesn't exist, or logs are appended if it already exists.
-// Returns [ErrOpenFile] if the file cannot be opened.
+// Returns [ErrOpenFile] if the file cannot be opened, and [ErrRotationConflict]
+// if this process has it open as a [RotatingFile].
 //
 // The file must be closed by calling [Logger.Close] when the logger is no longer needed.
 //
@@ -188,6 +179,12 @@ func File(path string, format Format) (Output, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrOpenFile, path, err)
 	}
+	key, err := registerPlainFile(path, file)
+	if err != nil {
+		// Nothing was written through the file, so its close error says nothing.
+		_ = file.Close()
+		return nil, err
+	}
 
 	return &fileOutput{
 		output: &output{
@@ -196,6 +193,7 @@ func File(path string, format Format) (Output, error) {
 			outputType:  OutputFile,
 		},
 		path: path,
+		key:  key,
 		file: file,
 	}, nil
 }
@@ -221,6 +219,17 @@ func MustFile(path string, format Format) Output {
 //
 // Rotation is triggered by file size (MaxSize), time interval (Interval), or both.
 // When both are configured, whichever condition is met first triggers rotation.
+// It happens on a write: the one that would take the file past MaxSize, or the
+// first once Interval has passed since the last rotation, whose time is kept as
+// the modification time of the lock file beside the log (path.lock). A file
+// nothing was written to is not rotated.
+//
+// Every output on one file shares this process's rotator for it, whatever path
+// reaches the file, so each Logger and Event can open its own. The first takes
+// the lock, which is held until the last one closes. Returns [ErrOpenFile] when
+// the file cannot be opened, [ErrRotationConflict] when this process has it open
+// with another rotation or as a [File], and [ErrRotatingFileLocked] when another
+// process holds it.
 //
 // Example:
 //
@@ -232,35 +241,19 @@ func MustFile(path string, format Format) Output {
 //	    Interval:   axio.Duration(24 * time.Hour),
 //	})
 func RotatingFile(path string, format Format, rotation RotationConfig) (Output, error) {
-	maxSize := rotation.MaxSize
-	if maxSize == 0 {
-		maxSize = unlimitedMegabytes
+	writer, err := openRotator(path, rotation)
+	if err != nil {
+		return nil, err
 	}
-	lumber := &lumberjack.Logger{
-		Filename:   path,
-		MaxSize:    maxSize,
-		MaxAge:     rotation.MaxAge,
-		MaxBackups: rotation.MaxBackups,
-		Compress:   rotation.Compress,
-		LocalTime:  rotation.LocalTime,
-	}
-
-	fileOut := &fileOutput{
+	return &fileOutput{
 		output: &output{
-			WriteSyncer: zapcore.AddSync(lumber),
+			WriteSyncer: writer,
 			format:      format,
 			outputType:  OutputFile,
 		},
-		path:       path,
-		lumberjack: lumber,
-		interval:   rotation.Interval,
-	}
-
-	if rotation.Interval > 0 {
-		fileOut.startTimeRotation(time.Duration(rotation.Interval))
-	}
-
-	return fileOut, nil
+		path:    path,
+		rotator: writer,
+	}, nil
 }
 
 // MustRotatingFile is like [RotatingFile] but panics on error.
@@ -285,25 +278,28 @@ func MustRotatingFile(path string, format Format, rotation RotationConfig) Outpu
 	return out
 }
 
-// Close releases resources associated with this file output.
-// For rotating files, stops the time-based rotation goroutine (waiting for it
-// to exit) and then closes lumberjack. For plain files, closes the os.File.
-// A second call returns [ErrOutputClosed].
+func (f *fileOutput) Write(data []byte) (int, error) {
+	if f.closed.Load() {
+		return 0, fmt.Errorf("%w: %s: %w", ErrOutputClosed, f.path, os.ErrClosed)
+	}
+	return f.output.Write(data)
+}
+
+// Close releases resources associated with this file output. A rotating
+// file gives back its reference to the rotator, the last one closing the file
+// and its lock; a plain file closes its os.File. A second call returns
+// [ErrOutputClosed].
 func (f *fileOutput) Close() error {
 	if !f.closed.CompareAndSwap(false, true) {
 		return fmt.Errorf("%w: %s", ErrOutputClosed, f.path)
 	}
-	if f.ticker != nil {
-		f.ticker.Stop()
-		close(f.done)
-		f.rotationWG.Wait()
-	}
-	if f.lumberjack != nil {
-		if err := f.lumberjack.Close(); err != nil {
+	if f.rotator != nil {
+		if err := f.rotator.release(); err != nil {
 			return fmt.Errorf("close rotating file %s: %w", f.path, err)
 		}
 		return nil
 	}
+	releasePlainFile(f.key)
 	if f.file != nil {
 		if err := f.file.Close(); err != nil {
 			return fmt.Errorf("close file %s: %w", f.path, err)
@@ -312,37 +308,33 @@ func (f *fileOutput) Close() error {
 	return nil
 }
 
-// LastRotationError returns the error from the most recent time-based rotation
-// attempt, or nil if the most recent attempt succeeded or no rotation has
-// occurred yet. Size-based rotations performed by lumberjack on Write are not
-// observed by this method.
-func (f *fileOutput) LastRotationError() error {
-	if stored := f.lastRotationError.Load(); stored != nil {
-		return *stored
+// claim makes the output belong to the Logger or Event being built. Returns
+// [ErrOutputClosed] for a closed output and [ErrOutputInUse] for one that
+// already belongs to another.
+func (f *fileOutput) claim() error {
+	if f.closed.Load() {
+		return fmt.Errorf("%w: %s", ErrOutputClosed, f.path)
+	}
+	if !f.owned.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: %s", ErrOutputInUse, f.path)
 	}
 	return nil
 }
 
-func (f *fileOutput) startTimeRotation(interval time.Duration) {
-	f.ticker = time.NewTicker(interval)
-	f.done = make(chan struct{})
-	f.rotationWG.Add(1)
+// unclaim gives the output back to its caller, after the Logger or Event it
+// was given to failed to be built.
+func (f *fileOutput) unclaim() {
+	f.owned.Store(false)
+}
 
-	go func() {
-		defer f.rotationWG.Done()
-		for {
-			select {
-			case <-f.ticker.C:
-				if err := f.lumberjack.Rotate(); err != nil {
-					f.lastRotationError.Store(&err)
-				} else {
-					f.lastRotationError.Store(nil)
-				}
-			case <-f.done:
-				return
-			}
-		}
-	}()
+// LastRotationError returns the error from the most recent rotation attempt,
+// by size or by time, or nil if it succeeded or no rotation has been attempted.
+// A plain file never rotates, and always returns nil.
+func (f *fileOutput) LastRotationError() error {
+	if f.rotator == nil {
+		return nil
+	}
+	return f.rotator.lastRotationError()
 }
 
 // RotationConfig configures log file rotation behavior.
@@ -377,7 +369,8 @@ type RotationConfig struct {
 	// LocalTime determines whether the timestamps in backup file names use local time.
 	// By default, UTC is used.
 	LocalTime bool `json:"localTime,omitempty" yaml:"localTime,omitempty" toml:"localTime,omitempty" mapstructure:"localTime,omitempty"`
-	// Interval is the time duration between rotations (e.g., "24h", "1h", "30m").
+	// Interval is the time after the last rotation, by size or by time, from
+	// which the next write rotates the file (e.g., "24h", "1h", "30m").
 	// Zero means no time-based rotation.
 	Interval Duration `json:"interval,omitempty" yaml:"interval,omitempty" toml:"interval,omitempty" mapstructure:"interval,omitempty"`
 }
@@ -423,44 +416,110 @@ type OutputConfig struct {
 //  2. Creates concrete output for each configuration
 //  3. For [OutputFile], opens the specified file
 //
-// Returns error if any output cannot be created.
+// Returns error if any output cannot be created, after closing the ones
+// created before it.
 func buildOutputs(config Config) ([]Output, error) {
 	if len(config.resolvedOutputs) > 0 {
 		return config.resolvedOutputs, nil
 	}
 
 	outputs := make([]Output, 0, len(config.Outputs))
-
 	for index, outputConfig := range config.Outputs {
-		var output Output
-		var err error
-
-		switch outputConfig.Type {
-		case OutputConsole:
-			output = Console(outputConfig.Format)
-
-		case OutputStdout:
-			output = Stdout(outputConfig.Format)
-
-		case OutputFile:
-			if outputConfig.Path == "" {
-				return nil, fmt.Errorf("output[%d]: type 'file' requires 'path'", index)
-			}
-			if outputConfig.Rotation.Enabled() {
-				output, err = RotatingFile(outputConfig.Path, outputConfig.Format, outputConfig.Rotation)
-			} else {
-				output, err = File(outputConfig.Path, outputConfig.Format)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("output[%d]: %w", index, err)
-			}
-
-		default:
-			return nil, fmt.Errorf("output[%d]: unknown type: %s", index, outputConfig.Type)
+		output, err := buildOutput(index, outputConfig)
+		if err != nil {
+			return nil, errors.Join(err, closeOutputs(outputs))
 		}
-
 		outputs = append(outputs, output)
 	}
-
 	return outputs, nil
+}
+
+// buildOutput creates the output configured at index of [Config.Outputs].
+func buildOutput(index int, outputConfig OutputConfig) (Output, error) {
+	switch outputConfig.Type {
+	case OutputConsole:
+		return Console(outputConfig.Format), nil
+	case OutputStdout:
+		return Stdout(outputConfig.Format), nil
+	case OutputFile:
+		if outputConfig.Path == "" {
+			return nil, fmt.Errorf("output[%d]: type 'file' requires 'path'", index)
+		}
+		var output Output
+		var err error
+		if outputConfig.Rotation.Enabled() {
+			output, err = RotatingFile(outputConfig.Path, outputConfig.Format, outputConfig.Rotation)
+		} else {
+			output, err = File(outputConfig.Path, outputConfig.Format)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("output[%d]: %w", index, err)
+		}
+		return output, nil
+	default:
+		return nil, fmt.Errorf("output[%d]: unknown type: %s", index, outputConfig.Type)
+	}
+}
+
+// openOutputs builds the outputs of config and claims those given through
+// [WithOutputs] for the Logger or Event being built, all or none. Returns
+// [ErrBuildOutputs], wrapping [ErrOutputInUse] or [ErrOutputClosed] for an
+// output that cannot be claimed.
+func openOutputs(config Config) ([]Output, error) {
+	outputs, err := buildOutputs(config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
+	}
+	if err := claimOutputs(outputs); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
+	}
+	return outputs, nil
+}
+
+// claimOutputs claims every file output of outputs, and none when one of them
+// cannot be claimed.
+func claimOutputs(outputs []Output) error {
+	for index, output := range outputs {
+		file, ok := output.(*fileOutput)
+		if !ok {
+			continue
+		}
+		if err := file.claim(); err != nil {
+			unclaimOutputs(outputs[:index])
+			return err
+		}
+	}
+	return nil
+}
+
+// unclaimOutputs gives every file output of outputs back to its caller.
+func unclaimOutputs(outputs []Output) {
+	for _, output := range outputs {
+		if file, ok := output.(*fileOutput); ok {
+			file.unclaim()
+		}
+	}
+}
+
+// abandonOutputs undoes [openOutputs] for a Logger or Event that failed to be
+// built after it, and returns cause: it closes the outputs built from
+// [Config.Outputs] and gives those passed to [WithOutputs] back to the caller,
+// who still holds them.
+func abandonOutputs(config Config, outputs []Output, cause error) error {
+	if len(config.resolvedOutputs) > 0 {
+		unclaimOutputs(outputs)
+		return cause
+	}
+	return errors.Join(cause, closeOutputs(outputs))
+}
+
+// closeOutputs closes every output, and returns the failures together.
+func closeOutputs(outputs []Output) error {
+	var errs []error
+	for _, output := range outputs {
+		if err := output.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

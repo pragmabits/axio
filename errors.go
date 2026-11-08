@@ -55,6 +55,17 @@ var (
 	// ErrOutputClosed indicates a file output has already been closed.
 	// Returned by Close on subsequent calls.
 	ErrOutputClosed = errors.New("output already closed")
+	// ErrOutputInUse indicates a file output given to a Logger or an Event
+	// that another one already owns: the first to close it would close it for
+	// both.
+	ErrOutputInUse = errors.New("output already belongs to a logger or event")
+	// ErrRotationConflict indicates a path already open in this process with
+	// another rotation, or with rotation where it has none: two rotations of
+	// one file would move it under each other.
+	ErrRotationConflict = errors.New("file is already open with another rotation")
+	// ErrRotatingFileLocked indicates that another process holds the lock of a
+	// rotating file: two processes rotating one file lose lines.
+	ErrRotatingFileLocked = errors.New("rotating file is in use by another process")
 )
 
 var (

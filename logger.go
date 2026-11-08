@@ -85,39 +85,29 @@ func New(config Config, options ...Option) (Logger, error) {
 		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
 	}
 
-	outputs, err := buildOutputs(config)
+	outputs, err := openOutputs(config)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
+		return nil, err
 	}
 
-	metrics, err := buildMetrics(config)
+	parts, err := buildEngineParts(config)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildMetrics, err)
+		return nil, abandonOutputs(config, outputs, err)
 	}
 
-	hooks, err := buildHooks(config)
+	engine, err := buildEngine(config, outputs, parts.chain, parts.metrics)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
-	}
-
-	chain, err := buildAuditChain(config)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildAudit, err)
-	}
-
-	engine, err := buildEngine(config, outputs, chain, metrics)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildEngine, err)
+		return nil, abandonOutputs(config, outputs, fmt.Errorf("%w: %w", ErrBuildEngine, err))
 	}
 
 	return &logger{
 		engine:  engine,
 		trace:   buildTracer(config),
-		hooks:   newHookChain(metrics, hooks...),
-		metrics: metrics,
+		hooks:   newHookChain(parts.metrics, parts.hooks...),
+		metrics: parts.metrics,
 		outputs: outputs,
 		closed:  new(atomic.Bool),
-		audited: chain != nil,
+		audited: parts.chain != nil,
 	}, nil
 }
 
@@ -269,6 +259,33 @@ func (l *logger) fieldsFromEntry(entry *Entry) []zap.Field {
 	}
 
 	return fields
+}
+
+// engineParts are what [New] and [NewEvent] build between the outputs and the
+// engine.
+type engineParts struct {
+	metrics Metrics
+	hooks   []Hook
+	chain   *HashChain
+}
+
+// buildEngineParts builds the metrics, the hooks and the audit chain of config,
+// returning [ErrBuildMetrics], [ErrBuildHooks] or [ErrBuildAudit] for the one
+// that fails.
+func buildEngineParts(config Config) (engineParts, error) {
+	metrics, err := buildMetrics(config)
+	if err != nil {
+		return engineParts{}, fmt.Errorf("%w: %w", ErrBuildMetrics, err)
+	}
+	hooks, err := buildHooks(config)
+	if err != nil {
+		return engineParts{}, fmt.Errorf("%w: %w", ErrBuildHooks, err)
+	}
+	chain, err := buildAuditChain(config)
+	if err != nil {
+		return engineParts{}, fmt.Errorf("%w: %w", ErrBuildAudit, err)
+	}
+	return engineParts{metrics: metrics, hooks: hooks, chain: chain}, nil
 }
 
 // buildEngine builds the zap logger behind a Logger: an audited core when

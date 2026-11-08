@@ -2,8 +2,10 @@ package axio
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -255,6 +257,24 @@ func TestBuildOutputs(t *testing.T) {
 		assertError(t, err)
 	})
 
+	t.Run("failure_closes_the_outputs_it_opened", func(t *testing.T) {
+		path := tempFile(t, "opened.log")
+		config := Config{
+			Outputs: []OutputConfig{
+				{Type: OutputFile, Format: FormatJSON, Path: path, Rotation: RotationConfig{MaxSize: 10}},
+				{Type: OutputFile, Format: FormatJSON, Path: "/nonexistent/dir/file.log"},
+			},
+		}
+
+		_, err := buildOutputs(config)
+		assertError(t, err)
+		other, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 20})
+		assertNoError(t, err)
+		if other != nil {
+			assertNoError(t, other.Close())
+		}
+	})
+
 	t.Run("unknown_type_fails", func(t *testing.T) {
 		config := Config{
 			Outputs: []OutputConfig{
@@ -352,7 +372,7 @@ func TestRotationConfig_Enabled(t *testing.T) {
 }
 
 func TestRotatingFile(t *testing.T) {
-	maxSize := func(t *testing.T, rotation RotationConfig) int {
+	maxBytes := func(t *testing.T, rotation RotationConfig) int64 {
 		t.Helper()
 		output, err := RotatingFile(tempFile(t, "sized.log"), FormatJSON, rotation)
 		assertNoError(t, err)
@@ -361,17 +381,19 @@ func TestRotatingFile(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected a *fileOutput, got %T", output)
 		}
-		return file.lumberjack.MaxSize
+		return file.rotator.maxBytes
 	}
 
 	t.Run("zero_max_size_never_rotates_by_size", func(t *testing.T) {
-		if size := maxSize(t, RotationConfig{Interval: Duration(time.Hour)}); size < 1<<30 {
-			t.Errorf("lumberjack got MaxSize %d MB, want a size no file reaches; 0 is its 100 MB default", size)
-		}
+		assertEqual(t, maxBytes(t, RotationConfig{Interval: Duration(time.Hour)}), int64(0))
+	})
+
+	t.Run("max_size_too_large_for_bytes_never_rotates_by_size", func(t *testing.T) {
+		assertEqual(t, maxBytes(t, RotationConfig{MaxSize: math.MaxInt}), int64(0))
 	})
 
 	t.Run("max_size_is_kept", func(t *testing.T) {
-		assertEqual(t, maxSize(t, RotationConfig{MaxSize: 50}), 50)
+		assertEqual(t, maxBytes(t, RotationConfig{MaxSize: 50}), int64(50<<20))
 	})
 
 	t.Run("creates_with_size_rotation", func(t *testing.T) {
@@ -433,17 +455,64 @@ func TestRotatingFile(t *testing.T) {
 		}
 	})
 
-	t.Run("close_stops_ticker", func(t *testing.T) {
-		path := tempFile(t, "close-ticker.log")
+	t.Run("closes_with_time_rotation", func(t *testing.T) {
+		path := tempFile(t, "close-interval.log")
 
 		output, err := RotatingFile(path, FormatJSON, RotationConfig{
 			Interval: Duration(time.Hour),
 		})
 		assertNoError(t, err)
 
-		// Close should not panic or error
-		err = output.Close()
+		assertNoError(t, output.Close())
+	})
+}
+
+func TestRotatingFile_Registry(t *testing.T) {
+	t.Run("other_rotation_on_open_path_fails", func(t *testing.T) {
+		path := tempFile(t, "app.log")
+		first, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 10})
 		assertNoError(t, err)
+		defer first.Close()
+
+		_, err = RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 20})
+		if !errors.Is(err, ErrRotationConflict) {
+			t.Errorf("expected ErrRotationConflict, got %v", err)
+		}
+	})
+
+	t.Run("plain_file_on_rotating_path_fails", func(t *testing.T) {
+		path := tempFile(t, "app.log")
+		rotating, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		defer rotating.Close()
+
+		_, err = File(path, FormatJSON)
+		if !errors.Is(err, ErrRotationConflict) {
+			t.Errorf("expected ErrRotationConflict, got %v", err)
+		}
+	})
+
+	t.Run("other_rotation_after_last_close_is_accepted", func(t *testing.T) {
+		path := tempFile(t, "app.log")
+		first, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		assertNoError(t, first.Close())
+
+		second, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 20})
+		assertNoError(t, err)
+		assertNoError(t, second.Close())
+	})
+
+	t.Run("rotating_file_on_plain_path_fails", func(t *testing.T) {
+		path := tempFile(t, "app.log")
+		plain, err := File(path, FormatJSON)
+		assertNoError(t, err)
+		defer plain.Close()
+
+		_, err = RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 10})
+		if !errors.Is(err, ErrRotationConflict) {
+			t.Errorf("expected ErrRotationConflict, got %v", err)
+		}
 	})
 }
 
@@ -543,9 +612,8 @@ func TestRotatingFile_TimeRotation(t *testing.T) {
 
 		// Rotation may have created a backup; just verify current file is writable
 		// and the backup exists
-		entries, _ := os.ReadDir(directory)
-		if len(entries) < 2 {
-			t.Errorf("expected rotated backup file, got %d files", len(entries))
+		if files := len(logFiles(t, directory)); files < 2 {
+			t.Errorf("expected rotated backup file, got %d files", files)
 		}
 	})
 }
@@ -587,23 +655,56 @@ outputs:
 }
 
 func TestFileOutput_LastRotationError(t *testing.T) {
-	t.Run("nil_when_unused", func(t *testing.T) {
+	t.Run("nil_for_a_plain_file", func(t *testing.T) {
 		output := &fileOutput{}
 		if got := output.LastRotationError(); got != nil {
 			t.Fatalf("expected nil, got %v", got)
 		}
 	})
 
-	t.Run("stores_and_clears", func(t *testing.T) {
-		output := &fileOutput{}
-		sentinel := errors.New("rotate failed")
-		output.lastRotationError.Store(&sentinel)
-		if got := output.LastRotationError(); got != sentinel {
-			t.Fatalf("expected %v, got %v", sentinel, got)
+	t.Run("records_a_failed_size_rotation", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs a directory the process cannot write to")
 		}
-		output.lastRotationError.Store(nil)
-		if got := output.LastRotationError(); got != nil {
-			t.Fatalf("expected nil after clear, got %v", got)
+		directory := tempDir(t)
+		output, err := RotatingFile(filepath.Join(directory, "app.log"), FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		reporter, ok := output.(RotationErrorReporter)
+		if !ok {
+			t.Fatalf("expected a RotationErrorReporter, got %T", output)
+		}
+		output.(*fileOutput).rotator.maxBytes = 10
+		_, err = output.Write([]byte("first\n"))
+		assertNoError(t, err)
+		if err := os.Chmod(directory, 0o500); err != nil {
+			t.Fatalf("chmod %s: %v", directory, err)
+		}
+		defer func() { _ = os.Chmod(directory, 0o700) }()
+		stderr := captureStderr(t)
+		_, err = output.Write([]byte("second\n"))
+		stderr()
+		assertNoError(t, err)
+		assertNoError(t, output.Close())
+
+		if reporter.LastRotationError() == nil {
+			t.Error("expected the failed rotation in LastRotationError")
+		}
+	})
+}
+
+func TestFileOutput_Write(t *testing.T) {
+	t.Run("write_after_close_returns_sentinel", func(t *testing.T) {
+		for _, open := range []func(string) (Output, error){
+			func(path string) (Output, error) { return File(path, FormatJSON) },
+			func(path string) (Output, error) { return RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 10}) },
+		} {
+			output, err := open(tempFile(t, "app.log"))
+			assertNoError(t, err)
+			assertNoError(t, output.Close())
+
+			if _, err := output.Write([]byte("late\n")); !errors.Is(err, ErrOutputClosed) || !errors.Is(err, os.ErrClosed) {
+				t.Errorf("expected ErrOutputClosed wrapping os.ErrClosed, got %v", err)
+			}
 		}
 	})
 }

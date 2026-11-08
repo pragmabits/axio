@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // tempDir creates a temporary directory for testing.
@@ -147,6 +149,47 @@ func readLines(t *testing.T, path string) []string {
 		}
 	}
 	return lines
+}
+
+// logFiles returns the paths of the files in directory a rotating log writes —
+// the log and its backups — leaving out the lock file beside them.
+func logFiles(t *testing.T, directory string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read directory %s: %v", directory, err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".lock") {
+			continue
+		}
+		paths = append(paths, filepath.Join(directory, entry.Name()))
+	}
+	return paths
+}
+
+// countLogLines returns the number of non-empty lines in the log files of
+// directory.
+func countLogLines(t *testing.T, directory string) int {
+	t.Helper()
+	count := 0
+	for _, path := range logFiles(t, directory) {
+		count += len(readLines(t, path))
+	}
+	return count
+}
+
+// settledGoroutines waits up to two seconds for the number of goroutines to
+// fall to limit, and returns the number it last saw.
+func settledGoroutines(limit int) int {
+	deadline := time.Now().Add(2 * time.Second)
+	count := runtime.NumGoroutine()
+	for count > limit && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		count = runtime.NumGoroutine()
+	}
+	return count
 }
 
 // parseJSONLines decodes every line of content as a JSON object.

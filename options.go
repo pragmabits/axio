@@ -106,7 +106,7 @@ func WithAgentMode() Option {
 		config.resolvedOutputs = nil
 		var errs []error
 		for _, output := range discarded {
-			if err := output.Close(); err != nil {
+			if err := closeDiscarded(output); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -351,4 +351,16 @@ func WithTracer(tracer Tracer) Option {
 		}
 		return nil
 	}
+}
+
+// closeDiscarded closes an output [WithAgentMode] discards. A file output is
+// claimed first, so one that belongs to another Logger or Event is left open
+// and reported with [ErrOutputInUse], as [New] would report it.
+func closeDiscarded(output Output) error {
+	if file, ok := output.(*fileOutput); ok {
+		if err := file.claim(); err != nil {
+			return err
+		}
+	}
+	return output.Close()
 }

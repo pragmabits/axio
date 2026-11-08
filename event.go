@@ -83,40 +83,30 @@ func NewEvent(name string, config Config, options ...Option) (*Event, error) {
 		return nil, fmt.Errorf("%w: %w", ErrValidateConfig, err)
 	}
 
-	outputs, err := buildOutputs(config)
+	outputs, err := openOutputs(config)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildOutputs, err)
+		return nil, err
 	}
 
-	metrics, err := buildMetrics(config)
+	parts, err := buildEngineParts(config)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildMetrics, err)
+		return nil, abandonOutputs(config, outputs, err)
 	}
 
-	hooks, err := buildHooks(config)
+	engine, err := buildEventEngine(outputs, parts.chain, parts.metrics)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildHooks, err)
-	}
-
-	chain, err := buildAuditChain(config)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildAudit, err)
-	}
-
-	engine, err := buildEventEngine(outputs, chain, metrics)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrBuildEngine, err)
+		return nil, abandonOutputs(config, outputs, fmt.Errorf("%w: %w", ErrBuildEngine, err))
 	}
 
 	return &Event{
 		name:      name,
 		engine:    engine,
-		hooks:     newHookChain(metrics, hooks...),
+		hooks:     newHookChain(parts.metrics, parts.hooks...),
 		trace:     buildTracer(config),
-		metrics:   metrics,
+		metrics:   parts.metrics,
 		startTime: time.Now(),
 		outputs:   outputs,
-		audited:   chain != nil,
+		audited:   parts.chain != nil,
 	}, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +46,104 @@ func TestNewEvent(t *testing.T) {
 
 		if event == nil {
 			t.Fatal("event should not be nil")
+		}
+	})
+}
+
+func TestNewEvent_RotatingFile(t *testing.T) {
+	rotatingConfig := func(path string, rotation RotationConfig) Config {
+		config := minimalConfig()
+		config.Outputs = []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path, Rotation: rotation}}
+		return config
+	}
+	emit := func(t *testing.T, config Config, payload string) {
+		t.Helper()
+		event, err := NewEvent("extraction", config)
+		if err != nil {
+			t.Errorf("new event: %v", err)
+			return
+		}
+		event.Add("payload", payload)
+		event.Emit(context.Background())
+		assertNoError(t, event.Close())
+	}
+
+	t.Run("two_hundred_events_leave_no_goroutine", func(t *testing.T) {
+		config := rotatingConfig(tempFile(t, "events.log"), RotationConfig{MaxSize: 10})
+		before := runtime.NumGoroutine()
+		for range 200 {
+			emit(t, config, "x")
+		}
+		if after := settledGoroutines(before); after > before {
+			t.Errorf("200 events left %d goroutines behind", after-before)
+		}
+	})
+
+	t.Run("concurrent_events_lose_no_line", func(t *testing.T) {
+		directory := tempDir(t)
+		config := rotatingConfig(filepath.Join(directory, "events.log"), RotationConfig{MaxSize: 1})
+		payload := strings.Repeat("x", 8<<10)
+		stderr := captureStderr(t)
+		var group sync.WaitGroup
+		for range 8 {
+			group.Go(func() {
+				for range 200 {
+					emit(t, config, payload)
+				}
+			})
+		}
+		group.Wait()
+		reported := stderr()
+
+		assertEqual(t, countLogLines(t, directory), 1600)
+		locks, err := filepath.Glob(filepath.Join(directory, "*.lock"))
+		assertNoError(t, err)
+		assertEqual(t, len(locks), 1)
+		if strings.Contains(reported, "axio:") {
+			t.Errorf("expected no failure on stderr, got:\n%s", reported)
+		}
+	})
+
+	t.Run("sequential_events_rotate_by_interval", func(t *testing.T) {
+		directory := tempDir(t)
+		config := rotatingConfig(filepath.Join(directory, "events.log"), RotationConfig{Interval: Duration(50 * time.Millisecond)})
+		deadline := time.Now().Add(400 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			emit(t, config, "x")
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		if files := len(logFiles(t, directory)); files < 2 {
+			t.Errorf("expected a backup beside the log, got %d file(s)", files)
+		}
+	})
+
+	t.Run("file_output_in_a_second_owner_fails", func(t *testing.T) {
+		output, err := RotatingFile(tempFile(t, "shared.log"), FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		defer logger.Close()
+
+		_, err = NewEvent("first", minimalConfig(), WithOutputs(output))
+		if !errors.Is(err, ErrOutputInUse) {
+			t.Errorf("expected ErrOutputInUse, got %v", err)
+		}
+	})
+
+	t.Run("logger_and_events_on_one_path_close_cleanly", func(t *testing.T) {
+		for _, rotation := range []RotationConfig{{MaxSize: 10}, {}} {
+			path := tempFile(t, "shared.log")
+			config := rotatingConfig(path, rotation)
+			logger, err := New(config)
+			assertNoError(t, err)
+			for range 3 {
+				emit(t, config, "x")
+			}
+			logger.Info(context.Background(), "after the events")
+			assertNoError(t, logger.Close())
+
+			assertEqual(t, len(readLines(t, path)), 4)
 		}
 	})
 }

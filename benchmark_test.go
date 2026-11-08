@@ -3,6 +3,7 @@ package axio
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -470,6 +471,35 @@ func BenchmarkNoopTracer_Extract(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		tracer.Extract(ctx)
+	}
+}
+
+// BenchmarkNewEvent_RotatingFile measures one event per unit of work over a
+// rotating file, built, emitted and closed in sequence: each one opens the
+// file and its lock and gives them back.
+func BenchmarkNewEvent_RotatingFile(b *testing.B) {
+	config := minimalConfig()
+	config.Environment = EnvironmentStaging
+	config.Outputs = []OutputConfig{{
+		Type:     OutputFile,
+		Format:   FormatJSON,
+		Path:     filepath.Join(b.TempDir(), "app.log"),
+		Rotation: RotationConfig{MaxSize: 100},
+	}}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		event, err := NewEvent("checkout", config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		event.Add("user", "abc")
+		event.Emit(ctx)
+		if err := event.Close(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

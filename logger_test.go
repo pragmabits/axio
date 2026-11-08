@@ -362,6 +362,55 @@ func TestLogger_WithNilAnnotation(t *testing.T) {
 	logger.With().Info(context.Background(), "test")
 }
 
+func TestNew_OutputOwnership(t *testing.T) {
+	failingConfig := func() Config {
+		config := minimalConfig()
+		config.PIICustomPatterns = []CustomPII{{Name: "broken", Pattern: "(", Mask: "x"}}
+		return config
+	}
+
+	t.Run("failed_new_releases_its_outputs", func(t *testing.T) {
+		path := tempFile(t, "app.log")
+		config := failingConfig()
+		config.Outputs = []OutputConfig{{Type: OutputFile, Format: FormatJSON, Path: path, Rotation: RotationConfig{MaxSize: 10}}}
+		_, err := New(config)
+		if !errors.Is(err, ErrBuildHooks) {
+			t.Fatalf("expected ErrBuildHooks, got %v", err)
+		}
+
+		other, err := RotatingFile(path, FormatJSON, RotationConfig{MaxSize: 20})
+		assertNoError(t, err)
+		if other != nil {
+			assertNoError(t, other.Close())
+		}
+	})
+
+	t.Run("failed_new_returns_given_outputs_to_the_caller", func(t *testing.T) {
+		output, err := RotatingFile(tempFile(t, "app.log"), FormatJSON, RotationConfig{MaxSize: 10})
+		assertNoError(t, err)
+		_, err = New(failingConfig(), WithOutputs(output))
+		if !errors.Is(err, ErrBuildHooks) {
+			t.Fatalf("expected ErrBuildHooks, got %v", err)
+		}
+
+		logger, err := New(minimalConfig(), WithOutputs(output))
+		assertNoError(t, err)
+		logger.Info(context.Background(), "after the failed new")
+		assertNoError(t, logger.Close())
+	})
+
+	t.Run("claim_refuses_a_closed_output", func(t *testing.T) {
+		output, err := File(tempFile(t, "app.log"), FormatJSON)
+		assertNoError(t, err)
+		assertNoError(t, output.Close())
+
+		_, err = New(minimalConfig(), WithOutputs(output))
+		if !errors.Is(err, ErrOutputClosed) || !errors.Is(err, ErrBuildOutputs) {
+			t.Errorf("expected ErrBuildOutputs wrapping ErrOutputClosed, got %v", err)
+		}
+	})
+}
+
 func TestLogger_Close(t *testing.T) {
 	t.Run("closes_file_outputs", func(t *testing.T) {
 		path := tempFile(t, "close.log")

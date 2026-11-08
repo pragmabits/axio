@@ -365,6 +365,10 @@ logger, _ := axio.New(config, axio.WithOutputs(out))
 defer logger.Close()
 ```
 
+Every output on one file shares the process's one rotator for it, so a logger and any number of events can write to the same path, each through its own `RotatingFile` or the same `OutputConfig`. An `Output` value, though, belongs to the one `Logger` or `Event` it is given to, and giving it to a second fails with `ErrOutputInUse`. The same path opened with another rotation, or as a plain `File`, fails with `ErrRotationConflict`. While any output has the file open, the process holds a lock on the file beside it (`app.log.lock`), and another process opening the same rotating file fails in `New` with `ErrRotatingFileLocked`. The lock uses `flock`, so Windows, Solaris and AIX have none.
+
+A file rotates on the write that would take it past `MaxSize`, or on the first write once `Interval` has passed since its last rotation, by size or by time. The time of the last rotation is the lock file's modification time, so a restart does not start the interval again, and a file nothing was written to is not rotated. A write larger than `MaxSize` goes whole into the file. A rotation that fails keeps the line in the current file, is reported on stderr and by `LastRotationError` (`RotationErrorReporter`), and is tried again after another interval or another `MaxSize`. Backups are named as lumberjack names them, `app-2006-01-02T15-04-05.000.log`, and after each rotation the oldest are removed by `MaxBackups` and `MaxAge` and the rest compressed when `Compress` is set, in the background: `Close` does not wait for it.
+
 `MustRotatingFile` is available for initialization where failure should be fatal.
 
 ---
@@ -1265,6 +1269,9 @@ logger.Error(ctx, err, "failed to confirm payment",
 | `ErrBuildEngine`         | Failed to build logging engine       | Check output and config combination          |
 | `ErrOpenFile`            | Failed to open log file              | Check path and permissions                   |
 | `ErrOutputClosed`        | File output closed a second time     | Close each output once                       |
+| `ErrOutputInUse`         | File output given to a second owner  | Open one output per Logger or Event          |
+| `ErrRotationConflict`    | Path already open with another rotation | One rotation per path in the process      |
+| `ErrRotatingFileLocked`  | Another process holds the rotating file | One process per rotating file             |
 | `ErrLoadChainState`      | Failed to load chain state           | Check chain file                             |
 | `ErrSaveChainState`      | Failed to save chain state           | Check write permissions                      |
 | `ErrMarshalChainState`   | Failed to marshal chain state        | Internal serialization error                 |

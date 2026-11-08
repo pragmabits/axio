@@ -93,7 +93,8 @@ func timeRotation(ctx context.Context) {
 		return
 	}
 
-	// Write lines, wait for ticker, write again
+	// Write lines, wait past the interval, and write again: the write after the
+	// interval rotates the file
 	for index := range 10 {
 		logger.Info(ctx, "before time rotation", axio.Field("line", index))
 	}
@@ -114,7 +115,8 @@ func reportBackups(tempDir, activeName, label string) {
 		if info != nil {
 			fmt.Printf("  - %s (%d bytes)\n", entry.Name(), info.Size())
 		}
-		if entry.Name() != activeName {
+		// The lock beside a rotating log is no backup.
+		if entry.Name() != activeName && !strings.HasSuffix(entry.Name(), ".lock") {
 			backups++
 		}
 	}

@@ -286,6 +286,22 @@ func TestWithOutputs_NoDoubleOpen(t *testing.T) {
 	}
 }
 
+func TestWithAgentMode_OutputOwnedElsewhere(t *testing.T) {
+	path := tempFile(t, "owned.log")
+	owned, err := File(path, FormatJSON)
+	assertNoError(t, err)
+	owner, err := New(minimalConfig(), WithOutputs(owned))
+	assertNoError(t, err)
+
+	_, err = New(minimalConfig(), WithOutputs(owned), WithAgentMode())
+	if !errors.Is(err, ErrOutputInUse) {
+		t.Errorf("expected ErrOutputInUse, got %v", err)
+	}
+	owner.Info(context.Background(), "still open")
+	assertNoError(t, owner.Close())
+	assertEqual(t, len(readLines(t, path)), 1)
+}
+
 func TestWithAgentMode_OverridesEarlierOutputs(t *testing.T) {
 	path := tempFile(t, "discarded.log")
 	discarded, err := File(path, FormatText)
